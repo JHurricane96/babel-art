@@ -14,7 +14,19 @@ npm test
 
 For automated browser checks, install Chromium on your system and run `npm run test:browser`. Set `CHROME_BIN` to a different Chromium binary if necessary. The check uses local ports 4174 and 9223 and writes ignored screenshots to `artifacts/`.
 
-The app itself is static HTML/CSS/ES modules and WebGL. The Node server is a development convenience; static hosting can serve the project without a backend. Serve over HTTP rather than opening index.html as a file. No hosted deployment is configured in this milestone.
+The app itself is static HTML/CSS/ES modules and WebGL. The Node server is a development convenience; static hosting can serve the project without a backend. Serve over HTTP rather than opening index.html as a file. A GitHub Actions workflow packages and deploys the frontend to GitHub Pages.
+
+## GitHub Pages
+
+The `Deploy GitHub Pages` workflow runs core tests, packages only browser assets into `dist/`, and deploys on pushes to `main`. It can also be run manually from Actions. No API keys or custom secrets are needed.
+
+One-time setup: open **Settings → Pages → Build and deployment → Source** and select **GitHub Actions**. Then open **Actions → Deploy GitHub Pages** and run the workflow (or re-run a failed deployment after enabling Pages).
+
+Expected default address: https://JHurricane96.github.io/babel-art/ . The successful deployment job reports the actual URL. Private repositories require a GitHub plan that supports Pages; keep the repository private unless you intentionally choose to change its visibility. The published app and its frontend assets are normally publicly accessible even when the source repository is private.
+
+To inspect the deployment package locally, run `npm run build:pages`. Only `index.html`, `style.css`, `simulator/`, `renderer/`, `shared/`, and `.nojekyll` are included. Tests, development scripts, documentation, and Git metadata are excluded. Relative URLs support the `/babel-art/` project path without rewriting the app.
+
+The hosted app uses browser storage at its hosting origin. Localhost saves do not transfer automatically; export and import JSON to move work to the hosted app.
 
 ## Explore
 
