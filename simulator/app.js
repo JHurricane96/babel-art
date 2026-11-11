@@ -368,7 +368,7 @@ function setPlaying(value) {
 $("play").onclick = () => setPlaying(!playing);
 $("step").onclick = () => {
   setPlaying(false);
-  project.time = Math.min(86400, project.time + 1 / 60);
+  project.time = project.time + 1 / 60;
   changed();
 };
 $("scrub").oninput = (e) => {
@@ -511,8 +511,7 @@ function draw(now) {
   clock.align(project.time, project.scene.speed);
   if (playing && !runtime.pending && !document.hidden) {
     clock.advance(dt, project.scene.speed);
-    project.time = Math.min(86400, clock.sceneMs / 1000);
-    if (project.time === 86400) setPlaying(false);
+    project.time = clock.sceneMs / 1000;
   }
   const samples = project.layout.map((p, i) =>
     clock.frame(

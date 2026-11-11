@@ -103,10 +103,18 @@ export class Flock implements Simulation {
       s.data.slice(i * 4, i * 4 + 4),
     );
   }
-  paint(ctx: CanvasRenderingContext2D, w: number, h: number, style: string) {
+  paint(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    style: string,
+    colors?: number[][],
+  ) {
     ctx.fillStyle = "#06121c";
     ctx.fillRect(0, 0, w, h);
-    ctx.fillStyle = "#9de9ce";
+    ctx.fillStyle = colors
+      ? `rgb(${colors[1].map((n) => Math.round(n * 255)).join(",")})`
+      : "#9de9ce";
     this.agents.forEach((a) => {
       ctx.save();
       ctx.translate(a[0] * w, a[1] * h);
@@ -253,7 +261,13 @@ export class Platformer implements Simulation {
     ] = s.data;
     this.platforms = level(this.seed + this.stage);
   }
-  paint(ctx: CanvasRenderingContext2D, w: number, h: number, style: string) {
+  paint(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    style: string,
+    colors?: number[][],
+  ) {
     const scale = h / 400,
       cam = Math.max(0, this.x - 180);
     ctx.save();
@@ -272,12 +286,18 @@ export class Platformer implements Simulation {
     }
     ctx.translate(-cam, 0);
     this.platforms.forEach((p, i) => {
-      ctx.fillStyle = pixel ? "#729e70" : "#b0b3ef";
+      ctx.fillStyle = colors
+        ? `rgb(${colors[1].map((n) => Math.round(n * 255)).join(",")})`
+        : pixel
+          ? "#729e70"
+          : "#b0b3ef";
       ctx.fillRect(p.x, p.y, p.width, 10);
       ctx.fillStyle = pixel ? "#34483f" : "#3b3a56";
       ctx.fillRect(p.x, p.y + 10, p.width, 400 - p.y);
       if (i > this.ground) {
-        ctx.fillStyle = "#e9ca79";
+        ctx.fillStyle = colors
+          ? `rgb(${colors[2].map((n) => Math.round(n * 255)).join(",")})`
+          : "#e9ca79";
         ctx.beginPath();
         ctx.arc(p.x + 30, p.y - 30, 5, 0, Math.PI * 2);
         ctx.fill();

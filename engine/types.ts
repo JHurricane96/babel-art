@@ -59,5 +59,6 @@ export interface EntitySimulation extends Simulation {
     w: number,
     h: number,
     style: string,
+    colors?: number[][],
   ): void;
 }

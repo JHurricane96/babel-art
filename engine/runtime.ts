@@ -317,7 +317,8 @@ export class Runtime {
             ? Math.max(...available)
             : Math.min(...this.states.keys()),
         );
-        const cacheKey = String(snap?.tick || 0) + ":" + scene.style;
+        const cacheKey =
+          String(snap?.tick || 0) + ":" + scene.style + ":" + scene.palette;
         const cached = this.entityTextures.get(cacheKey);
         if (cached) {
           this.entityTextures.delete(cacheKey);
@@ -333,6 +334,7 @@ export class Runtime {
           640,
           400,
           scene.style,
+          colors,
         );
         const texture = gl.createTexture()!;
         gl.bindTexture(gl.TEXTURE_2D, texture);

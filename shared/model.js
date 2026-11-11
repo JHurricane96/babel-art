@@ -170,7 +170,7 @@ export function validateProject(input) {
     layout,
     timingEnabled: input.timingEnabled,
     time:
-      number(input.time, 0, 86400, "time") *
+      number(input.time, 0, 315360000, "time") *
       (input.schemaVersion === 1 ? scene.speed : 1),
     ...(input.checkpoint
       ? { checkpoint: validateCheckpoint(input.checkpoint, scene) }
@@ -188,7 +188,7 @@ function validateCheckpoint(c, scene) {
     !c ||
     !Number.isInteger(c.tick) ||
     c.tick < 0 ||
-    c.tick > 5184000 ||
+    c.tick > 18921600000 ||
     !Array.isArray(c.data) ||
     !c.data.every((v) => typeof v === "number" && Number.isFinite(v))
   )
@@ -258,7 +258,7 @@ function validateEvents(events, id) {
   if (!Array.isArray(events) || events.length > 10000)
     throw new Error("Invalid timeline");
   return events.map((e) => {
-    if (!Number.isInteger(e.tick) || e.tick < 0 || e.tick > 5184000)
+    if (!Number.isInteger(e.tick) || e.tick < 0 || e.tick > 18921600000)
       throw new Error("Invalid event");
     return { tick: e.tick, params: parameters(id, e.params) };
   });
