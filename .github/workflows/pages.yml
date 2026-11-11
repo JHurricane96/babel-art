@@ -22,8 +22,16 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Install dependencies
+        run: npm ci
+      - name: Type check
+        run: npm run typecheck
       - name: Run core tests
         run: npm test
+      - name: Browser checks
+        run: npm run test:browser
+        env:
+          CHROME_BIN: google-chrome
       - name: Package frontend
         run: npm run build:pages
       - name: Upload Pages artifact

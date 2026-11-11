@@ -26,3 +26,7 @@ Start with two matching monitors and two renderer nodes before buying four. Reco
 Phone slow-motion footage provides an initial qualitative view of discontinuities. Rolling-shutter camera artifacts must be considered; it is not definitive timing metrology. For quantitative work use suitably positioned photodiodes and a shared acquisition clock, or a validated high-frame-rate global-shutter camera. Measure multiple positions across panels and distinguish source frame alignment, scanout and panel response/processing latency. Define acceptable skew from the actual visual results before choosing hardware.
 
 NTP/chrony synchronization does not provide HDMI/DP frame lock. Verify exact professional GPU/controller, driver, operating-system, monitor-timing and panel-latency behavior before treating any hardware path as synchronized.
+
+## Stateful worlds
+
+Living Tapestry, Chemical Garden, Murmuration and Platformer Terrarium share a 60 Hz world simulation. Their display timings select retained states/images, including separate samples for rolling scanout. Clock drift is disabled for these scenes. History holds 64 ticks; restoring a checkpoint initially has less history, so the oldest available state is used until buffers refill. A/B switching changes presentation only. Checkpoints plus timestamped parameter edits support backward seeking; long seeks replay asynchronously and can be cancelled.
