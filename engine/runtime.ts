@@ -1,7 +1,10 @@
-import { Flock, Platformer } from "./entities";
+import type { EntitySimulation } from "./types";
 import { registry } from "../scenes/registry";
 import { Grid, program, vertex } from "./grid";
 import type { Simulation, Snapshot, World } from "./types";
+function isEntity(s: Simulation | undefined): s is EntitySimulation {
+  return !!s && "paint" in s;
+}
 const display = `precision highp float;varying vec2 uv;uniform vec4 rect,world;uniform float rotation;uniform sampler2D state;uniform vec3 c0,c1,c2;uniform int image,style,scan;uniform float age,period;uniform sampler2D previous;uniform vec2 texel;void main(){vec2 a=(vec2(uv.x,1.-uv.y)-.5)*rect.zw;vec2 p=rect.xy+rect.zw*.5+mat2(cos(rotation),sin(rotation),-sin(rotation),cos(rotation))*a;vec2 st=(p-world.xy)/world.zw;float row=scan==2?1.-(1.-uv.y):1.-uv.y;bool old=scan>0&&age<row*period;vec4 v=old?texture2D(previous,st):texture2D(state,st);if(image==1){gl_FragColor=v;return;}vec3 c=mix(c0*.08,c1,style==0?0.:v.g*.6);c=mix(c,c2,clamp(v.r,0.,1.));if(style==2){float dx=texture2D(state,st+vec2(texel.x,0.)).g-texture2D(state,st-vec2(texel.x,0.)).g;float dy=texture2D(state,st+vec2(0.,texel.y)).g-texture2D(state,st-vec2(0.,texel.y)).g;c=mix(c0,c2,clamp(v.g*2.,0.,1.))*(.7+dot(normalize(vec3(dx*15.,dy*15.,1.)),normalize(vec3(-1.,-1.,2.))))*.5;}gl_FragColor=vec4(c,1.);}`;
 const positioned = vertex
   .replace(
@@ -211,7 +214,7 @@ export class Runtime {
           if (nearest.extra?.params)
             (this.sim as Grid).params = nearest.extra.params as any;
         } else {
-          const old = this.sim as Grid | Flock | Platformer;
+          const old = this.sim;
           this.sim.dispose();
           this.sim = registry[this.id].create!(
             this.gl,
@@ -297,7 +300,7 @@ export class Runtime {
       ["none", "top-down", "bottom-up"].indexOf(frame.scan),
     );
     colors.forEach((c, i) => gl.uniform3fv(u("c" + i), c));
-    if (this.sim instanceof Flock || this.sim instanceof Platformer) {
+    if (isEntity(this.sim)) {
       const live = this.sim.snapshot();
       const makeTexture = (time: number) => {
         const wanted = Math.max(0, Math.floor((time / 1000) * 60)),
@@ -318,7 +321,7 @@ export class Runtime {
         if (snap) this.sim!.restore(snap);
         this.entityCanvas.width = 640;
         this.entityCanvas.height = 400;
-        (this.sim as Flock | Platformer).paint(
+        (this.sim as EntitySimulation).paint(
           this.entityCanvas.getContext("2d")!,
           640,
           400,

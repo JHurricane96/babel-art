@@ -1,4 +1,4 @@
-export const RELEASE = 1;
+export const RELEASE = 2;
 export const stages: Record<string, number> = {
   tapestry: 1,
   chemical: 2,

@@ -70,7 +70,16 @@ function remember() {
 }
 function update(fn) {
   remember();
+  const previousId = project.scene.id,
+    previousSeed = project.scene.seed;
   fn(project);
+  if (previousId !== project.scene.id || previousSeed !== project.scene.seed) {
+    project.time = 0;
+    delete project.checkpoint;
+    delete project.events;
+    delete project.initialParams;
+    if (previousId !== project.scene.id) delete project.world;
+  }
   sync();
   changed();
 }
