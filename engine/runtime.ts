@@ -129,7 +129,7 @@ export class Runtime {
     if (!(this.sim instanceof Grid)) {
       const snap = this.snapshotWithParams();
       this.states.set(snap.tick, snap);
-      while (this.states.size > 64)
+      while (this.states.size > 192)
         this.states.delete(this.states.keys().next().value!);
       if (snap.tick % 300 === 0) {
         this.checkpoints.set(snap.tick, snap);
@@ -176,7 +176,14 @@ export class Runtime {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.history.set(this.sim.tick, t);
-    while (this.history.size > 64) {
+    const historyLimit = Math.min(
+      192,
+      Math.floor(
+        (96 * 1024 * 1024) /
+          (this.sim.width * this.sim.height * 4 * (this.sim.chemical ? 4 : 1)),
+      ),
+    );
+    while (this.history.size > historyLimit) {
       const k = this.history.keys().next().value!;
       gl.deleteTexture(this.history.get(k)!);
       this.history.delete(k);

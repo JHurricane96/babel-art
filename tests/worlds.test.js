@@ -86,3 +86,17 @@ test("platformer recovers after a fall and continues autonomously", () => {
   for (let i = 0; i < 18000; i++) p.step();
   assert.ok(p.stage > 0);
 });
+test("presentation refresh remains physical time across speed changes", async () => {
+  const { PresentationClock } = await import("../engine/clock.ts");
+  const c = new PresentationClock();
+  c.align(0, 1);
+  c.advance(1, 1);
+  c.advance(1, 0.5);
+  assert.equal(c.wallMs, 2000);
+  assert.equal(c.sceneMs, 1500);
+  assert.equal(c.sceneAt(500), 500);
+  assert.equal(c.sceneAt(1500), 1250);
+  const f = c.frame({ current: 1900, previous: 1800 });
+  assert.equal(f.contentAge, 100);
+  assert.equal(f.current, 1450);
+});

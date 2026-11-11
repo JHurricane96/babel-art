@@ -1,3 +1,4 @@
+import { PresentationClock } from "../engine/clock.ts";
 import { RELEASE, stages } from "../scenes/release.ts";
 import { parseText, applyCommand } from "../engine/commands.ts";
 import {
@@ -500,26 +501,31 @@ $("import").onchange = async (e) => {
 };
 window.addEventListener("pagehide", persist);
 setInterval(persist, 10000);
+const clock = new PresentationClock();
 let fpsAt = performance.now(),
   frames = 0,
   diagnosticAt = 0;
 function draw(now) {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
+  clock.align(project.time, project.scene.speed);
   if (playing && !runtime.pending && !document.hidden) {
-    project.time = Math.min(86400, project.time + dt * project.scene.speed);
+    clock.advance(dt, project.scene.speed);
+    project.time = Math.min(86400, clock.sceneMs / 1000);
     if (project.time === 86400) setPlaying(false);
   }
   const samples = project.layout.map((p, i) =>
-    frameAt(
-      project.time * 1000,
-      {
-        ...p.timing,
-        drift:
-          SCENES[project.scene.id].kind === "procedural" ? p.timing.drift : 0,
-      },
-      i,
-      project.timingEnabled,
+    clock.frame(
+      frameAt(
+        clock.wallMs,
+        {
+          ...p.timing,
+          drift:
+            SCENES[project.scene.id].kind === "procedural" ? p.timing.drift : 0,
+        },
+        i,
+        project.timingEnabled,
+      ),
     ),
   );
   if (!runtime.pending) {
@@ -567,10 +573,10 @@ function draw(now) {
     frames = 0;
   }
   if (now - diagnosticAt > 150) {
-    const ages = samples.map((f) => project.time * 1000 - f.current),
+    const ages = samples.map((f) => f.contentAge),
       spread =
-        Math.max(...samples.map((f) => f.current)) -
-        Math.min(...samples.map((f) => f.current));
+        Math.max(...samples.map((f) => f.sourceWallMs)) -
+        Math.min(...samples.map((f) => f.sourceWallMs));
     $("diagnostics").replaceChildren(
       ...ages.map((v, i) => {
         const d = document.createElement("div");
