@@ -1,3 +1,7 @@
+import {
+  CHEMICAL_PRESETS,
+  selectedChemicalPreset,
+} from "../engine/chemical.ts";
 import { PresentationClock } from "../engine/clock.ts";
 import { RELEASE, stages } from "../scenes/release.ts";
 import { parseText, applyCommand } from "../engine/commands.ts";
@@ -602,25 +606,48 @@ function syncParameters() {
   const box = $("scene-parameters");
   box.replaceChildren();
   if (project.scene.id === "chemical") {
+    const label = document.createElement("label");
+    label.textContent = "Garden preset";
+    label.htmlFor = "chemical-preset";
     const preset = document.createElement("select");
-    [
-      "Choose a chemical preset",
-      "Coral",
-      "Dividing cells",
-      "Labyrinth",
-    ].forEach((v) => preset.add(new Option(v, v)));
+    preset.id = "chemical-preset";
+    const custom = new Option("Custom parameters", "");
+    custom.disabled = true;
+    preset.add(custom);
+    Object.keys(CHEMICAL_PRESETS).forEach((name) =>
+      preset.add(new Option(name, name)),
+    );
+    preset.value = selectedChemicalPreset(project.scene.params);
+    const restart = (recipe) =>
+      update((p) => {
+        if (recipe) Object.assign(p.scene.params, recipe);
+        p.time = 0;
+        delete p.checkpoint;
+        delete p.events;
+        delete p.initialParams;
+        // Presets reset the simulation even if the seed and resolution are unchanged.
+        runtime.key = "";
+      });
     preset.onchange = () => {
-      const values = {
-        Coral: [0.0545, 0.062],
-        "Dividing cells": [0.0367, 0.0649],
-        Labyrinth: [0.029, 0.057],
-      };
-      if (values[preset.value])
-        update((p) => {
-          [p.scene.params.feed, p.scene.params.kill] = values[preset.value];
-        });
+      const recipe = CHEMICAL_PRESETS[preset.value];
+      if (!recipe) return;
+      const focused = document.activeElement === preset;
+      restart(recipe);
+      if (focused) $("chemical-preset").focus({ preventScroll: true });
     };
-    box.append(preset);
+    label.append(preset);
+    box.append(label);
+    const button = document.createElement("button");
+    button.id = "chemical-restart";
+    button.textContent = "Restart garden ↻";
+    button.type = "button";
+    button.onclick = () => restart();
+    box.append(button);
+    const note = document.createElement("p");
+    note.className = "note";
+    note.textContent =
+      "Choosing a preset starts a fresh garden. Feed and kill controls tune the current one.";
+    box.append(note);
   }
   const def = SCENES[project.scene.id];
   for (const [key, spec] of Object.entries(def.parameters)) {

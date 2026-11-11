@@ -49,10 +49,12 @@ See [Architecture](docs/architecture.md) and [Timing experiments and hardware va
 ## Autonomous worlds
 
 - **Living Tapestry:** Conway’s Life and cyclic automata, with generation trails, configurable rate/resolution, and seeded colony injections.
-- **Chemical Garden:** GPU Gray–Scott chemistry, coral/dividing-cell/labyrinth presets, feed/kill controls, and embossed/flat styles. Requires WebGL2 floating-point render targets.
+- **Chemical Garden:** GPU Gray–Scott chemistry, coral/dividing-cell/labyrinth presets, feed/kill controls, and embossed/flat styles. Selecting a preset starts a fresh garden; **Restart garden** also recovers a collapsed saved simulation while preserving your chosen parameters. Requires WebGL2 floating-point render targets.
 - **Murmuration:** Interacting agents with flocking, obstacle avoidance, changing attractors and an optional predator.
 - **Platformer Terrarium:** Autonomous exploration of seeded platform worlds, collectibles, recovery and level progression. Pixel and geometric styles share the same game state. There are no player controls.
 
 Stateful scenes have fixed-step simulation, bounded recent history, saved checkpoints and cancellable replay when seeking. Scene-clock drift remains available only for procedural scenes. Timing still illustrates presentation differences rather than measuring real monitor synchronization.
 
 Use `ENDURANCE=1 npm run test:browser` for accelerated 30-minute simulation checks per new scene. These are simulation-time checks, not a 30-minute wall-clock hardware soak test. Screenshots and performance are captured in the test browser; Pi performance is unverified.
+
+Chemical-specific regression checks: `npm run test:chemical` tests the actual GPU simulation for ongoing activity, spatial contrast, preset selection and restart behavior.

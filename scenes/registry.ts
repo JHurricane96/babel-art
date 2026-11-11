@@ -1,3 +1,4 @@
+import { CHEMICAL_PRESETS, DEFAULT_CHEMICAL_PRESET } from "../engine/chemical";
 import { Grid } from "../engine/grid";
 import { Flock, Platformer } from "../engine/entities";
 import type { Scene, Params } from "../engine/types";
@@ -102,14 +103,14 @@ registry.chemical = {
     },
     feed: {
       label: "Feed rate",
-      value: 0.0367,
+      value: CHEMICAL_PRESETS[DEFAULT_CHEMICAL_PRESET].feed,
       min: 0.01,
       max: 0.08,
       step: 0.0001,
     },
     kill: {
       label: "Kill rate",
-      value: 0.0649,
+      value: CHEMICAL_PRESETS[DEFAULT_CHEMICAL_PRESET].kill,
       min: 0.03,
       max: 0.075,
       step: 0.0001,

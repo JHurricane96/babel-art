@@ -1,3 +1,4 @@
+import { initialChemicalState } from "./chemical";
 import type { Params, Simulation, Snapshot } from "./types";
 import { rng } from "./types";
 export function program(gl: WebGLRenderingContext, vs: string, fs: string) {
@@ -73,25 +74,21 @@ export class Grid implements Simulation {
         "Chemical Garden requires WebGL2 floating-point render targets.",
       );
     this.prog = program(gl, vertex, chemical ? chemistry : update);
-    const random = rng(seed),
-      data = chemical
-        ? new Float32Array(this.width * this.height * 4)
-        : new Uint8Array(this.width * this.height * 4);
-    for (let i = 0; i < data.length; i += 4) {
-      data[i] =
-        params.rule === "cyclic"
-          ? Math.floor(random() * 16) * 17
-          : random() > 0.78
-            ? 255
-            : 0;
-      data[i + 1] = data[i];
-      data[i + 3] = 255;
-      if (chemical) {
-        data[i] = 1;
-        data[i + 1] = random() > 0.96 ? 0.8 : 0;
-        data[i + 3] = 1;
+    const random = rng(seed);
+    const data = chemical
+      ? initialChemicalState(this.width, this.height, seed)
+      : new Uint8Array(this.width * this.height * 4);
+    if (!chemical)
+      for (let i = 0; i < data.length; i += 4) {
+        data[i] =
+          params.rule === "cyclic"
+            ? Math.floor(random() * 16) * 17
+            : random() > 0.78
+              ? 255
+              : 0;
+        data[i + 1] = data[i];
+        data[i + 3] = 255;
       }
-    }
     for (let i = 0; i < 2; i++) this.textures.push(this.texture(data));
   }
   texture(data: Uint8Array | Float32Array) {
@@ -222,4 +219,4 @@ export class Grid implements Simulation {
 
 const chemistry = `precision highp float;varying vec2 uv;uniform sampler2D state;uniform vec2 size;uniform float feed,kill,tick,seed;uniform int inject;
 vec2 cell(vec2 d){return texture2D(state,fract(uv+d/size)).rg;}
-void main(){vec2 c=cell(vec2(0.)),lap=-c;for(int y=-1;y<=1;y++)for(int x=-1;x<=1;x++){if(x==0&&y==0)continue;lap+=cell(vec2(float(x),float(y)))*(x==0||y==0?.2:.05);}float reaction=c.r*c.g*c.g;vec2 next=c+vec2(lap.r-reaction+feed*(1.-c.r),.5*lap.g+reaction-(kill+feed)*c.g);if(inject==1&&mod(tick,1800.)<.5&&distance(uv,vec2(fract(sin(tick+seed)*437.1),.5))<.04)next=vec2(.5,1.);gl_FragColor=vec4(clamp(next,0.,1.),0.,1.);}`;
+void main(){vec2 c=cell(vec2(0.)),lap=-c;for(int y=-1;y<=1;y++)for(int x=-1;x<=1;x++){if(x==0&&y==0)continue;lap+=cell(vec2(float(x),float(y)))*(x==0||y==0?.2:.05);}float reaction=c.r*c.g*c.g;vec2 next=c+vec2(lap.r-reaction+feed*(1.-c.r),.5*lap.g+reaction-(kill+feed)*c.g);if(inject==1&&mod(tick,1800.)<.5&&distance(uv,vec2(fract(sin(tick+seed)*437.1),.5))<.04)next=vec2(.5,.25);gl_FragColor=vec4(clamp(next,0.,1.),0.,1.);}`;

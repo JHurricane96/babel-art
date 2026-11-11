@@ -9,7 +9,8 @@
     "test": "node --import tsx --test tests/*.test.js",
     "test:browser": "node scripts/browser-check.mjs",
     "build:pages": "vite build --base=/babel-art/",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:chemical": "node scripts/check-chemical.mjs"
   },
   "engines": {
     "node": ">=22"
