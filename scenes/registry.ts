@@ -126,17 +126,17 @@ registry.murmuration = {
   name: "Murmuration",
   subtitle: "A thousand small decisions",
   description:
-    "A flock organizes, scatters, and reunites around changing attractors.",
+    "Banking birds gather into breathing formations, divide into streams and reunite above a shifting landscape.",
   version: 1,
   kind: "entities",
   create: (gl, seed, params) => new Flock(seed, params),
-  styles: ["luminous"],
+  styles: ["luminous", "silhouette"],
   parameters: {
     population: {
       label: "Population · restart",
-      value: 220,
+      value: 480,
       min: 20,
-      max: 300,
+      max: 900,
       step: 10,
       restart: true,
     },
@@ -155,12 +155,14 @@ registry.platformer = {
   name: "Platformer terrarium",
   subtitle: "A little adventure, forever",
   description:
-    "An autonomous explorer crosses generated worlds. Change its style without interrupting the journey.",
+    "An autonomous expedition crosses glasswood forests, amber ruins and tidal observatories, surveying landmarks among living scenery.",
   version: 1,
   kind: "entities",
   create: (gl, seed, params) => new Platformer(seed, params),
   styles: ["pixel", "geometric"],
-  parameters: {},
+  parameters: {
+    richness: { label: "World detail", value: 0.8, min: 0, max: 1, step: 0.05 },
+  },
 };
 registry.rivers = {
   name: "Particle rivers",

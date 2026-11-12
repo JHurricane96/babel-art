@@ -248,7 +248,12 @@ function validateCheckpoint(c, scene) {
     throw new Error("Invalid network checkpoint");
   if (
     scene.id === "platformer" &&
-    (c.data.length !== 9 ||
+    (![9, 10, 11].includes(c.data.length) ||
+      (c.data.length >= 10 &&
+        (!Number.isInteger(c.data[9]) ||
+          c.data[9] < 0 ||
+          c.data[9] >= 2 ** 22)) ||
+      (c.data.length === 11 && ![0, 1].includes(c.data[10])) ||
       !Number.isInteger(c.data[4]) ||
       c.data[4] < 0 ||
       c.data[4] > 21 ||

@@ -48,6 +48,10 @@ jobs:
         run: npm run test:networks
         env:
           CHROME_BIN: google-chrome
+      - name: Autonomous world regressions
+        run: npm run test:worlds
+        env:
+          CHROME_BIN: google-chrome
       - name: Package frontend
         run: npm run build:pages
       - name: Upload Pages artifact

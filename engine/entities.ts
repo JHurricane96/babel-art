@@ -1,6 +1,6 @@
-import { EvolutionSchedule, variationOf, actionFor } from "./evolution";
+import { paintTerrarium, paintMurmuration } from "./world-art";
+import { EvolutionSchedule, variationOf } from "./evolution";
 import { choreography } from "./choreography";
-import { ground, ink } from "./art";
 import type { EvolutionAction } from "./evolution";
 import type { Simulation, Snapshot, Params } from "./types";
 import { rng } from "./types";
@@ -43,34 +43,43 @@ export class Flock implements Simulation {
         gy = Math.floor(a[1] * 10);
       for (let y = -1; y <= 1; y++)
         for (let x = -1; x <= 1; x++)
-          for (const j of grid.get(`${gx + x},${gy + y}`) || []) {
+          for (
+            let k = 0,
+              group =
+                grid.get(`${(gx + x + 10) % 10},${(gy + y + 10) % 10}`) || [],
+              limit = Math.min(12, group.length);
+            k < limit;
+            k++
+          ) {
+            const j =
+              group[(k + i * 7 + Math.floor(this.tick / 12)) % group.length];
             if (i === j) continue;
             const b = this.agents[j],
-              dx = a[0] - b[0],
-              dy = a[1] - b[1],
+              dx = ((a[0] - b[0] + 1.5) % 1) - 0.5,
+              dy = ((a[1] - b[1] + 1.5) % 1) - 0.5,
               d = dx * dx + dy * dy;
             if (d > 0.012 || d < 1e-9) continue;
-            sx += dx / (d + 0.0001);
-            sy += dy / (d + 0.0001);
+            if (d < 0.0008) {
+              sx += dx / (d + 0.0001);
+              sy += dy / (d + 0.0001);
+            }
             ax += b[2];
             ay += b[3];
-            cx += b[0];
-            cy += b[1];
+            cx += a[0] - dx;
+            cy += a[1] - dy;
             count++;
           }
       let vx = a[2],
         vy = a[3];
       if (count) {
         vx +=
-          (sx * 0.001 +
-            (ax / count) * 0.05 +
-            (cx / count - a[0]) * Number(this.params.cohesion)) *
-          0.04;
+          sx * 0.00001 +
+          (ax / count - a[2]) * 0.07 +
+          (cx / count - a[0]) * Number(this.params.cohesion) * 0.12;
         vy +=
-          (sy * 0.001 +
-            (ay / count) * 0.05 +
-            (cy / count - a[1]) * Number(this.params.cohesion)) *
-          0.04;
+          sy * 0.00001 +
+          (ay / count - a[3]) * 0.07 +
+          (cy / count - a[1]) * Number(this.params.cohesion) * 0.12;
       }
       const t = this.tick / 60,
         variation = variationOf(this.params);
@@ -78,16 +87,34 @@ export class Flock implements Simulation {
       const chapter = choreography(t, this.seed);
       const split = variation * chapter.split;
       const vortex = variation * chapter.vortex;
-      const goalX = 0.5 + (i % 2 ? 1 : -1) * 0.28 * Math.sin(t * 0.063),
-        goalY = 0.5 + 0.28 * Math.cos(t * 0.089 + (i % 2) * 2);
-      vx += (goalX - a[0]) * 0.002 * split;
-      vy += (goalY - a[1]) * 0.002 * split;
-      vx += -(a[1] - 0.5) * 0.003 * vortex;
-      vy += (a[0] - 0.5) * 0.003 * vortex;
-      const tx = 0.5 + 0.3 * Math.sin(t * 0.08),
-        ty = 0.5 + 0.3 * Math.cos(t * 0.09);
-      vx += (tx - a[0]) * (0.001 + variation * chapter.gather * 0.003);
-      vy += (ty - a[1]) * (0.001 + variation * chapter.gather * 0.003);
+      const phase = t * 0.057 + this.seed * 0.001;
+      const cohort = i % 3;
+      const centerX = 0.5 + 0.18 * Math.sin(phase + cohort * split * 2.1);
+      const centerY =
+        0.43 + 0.17 * Math.cos(phase * 0.79 + cohort * split * 2.1);
+      const dx = a[0] - centerX,
+        dy = (a[1] - centerY) * 1.3;
+      const radius = Math.hypot(dx, dy) || 0.01;
+      const desiredRadius =
+        0.12 + 0.09 * (0.5 + 0.5 * Math.sin(t * 0.031 + cohort));
+      const radial = (radius - desiredRadius) * vortex;
+      vx +=
+        ((centerX - a[0]) * chapter.gather -
+          dy * vortex -
+          (dx / radius) * radial +
+          Math.cos(phase + cohort) * split * 0.16) *
+        0.035 *
+        variation;
+      vy +=
+        ((centerY - a[1]) * chapter.gather +
+          dx * vortex -
+          (dy / radius) * radial +
+          Math.sin(phase * 0.8 + cohort) * split * 0.12) *
+        0.035 *
+        variation;
+      // A small circulating wind varies locally without overwhelming neighbors.
+      vx += Math.sin(a[1] * 9 + t * 0.17) * variation * 0.0005;
+      vy += Math.cos(a[0] * 8 - t * 0.13) * variation * 0.0005;
       const presence =
         variation > 0
           ? Math.pow(0.5 + 0.5 * Math.sin(t * 0.083 + this.seed * 0.001), 2)
@@ -101,19 +128,19 @@ export class Flock implements Simulation {
           vy += (dy * 0.01 * presence) / (d + 0.005);
         }
       }
-      const ox = a[0] - 0.5,
-        oy = a[1] - 0.5,
-        od = ox * ox + oy * oy;
-      if (od < 0.02) {
-        vx += (ox * 0.005) / (od + 0.001);
-        vy += (oy * 0.005) / (od + 0.001);
-      }
-      const norm = Math.hypot(vx, vy) || 1,
-        speed =
-          Number(this.params.velocity) *
-          (1 + variation * 0.2 * Math.sin(t * 0.23 + i * 0.07));
-      vx = (vx / norm) * speed;
-      vy = (vy / norm) * speed;
+      const desired = Math.atan2(vy, vx),
+        previous = Math.atan2(a[3], a[2]);
+      const turn = Math.atan2(
+        Math.sin(desired - previous),
+        Math.cos(desired - previous),
+      );
+      const heading = previous + Math.max(-0.075, Math.min(0.075, turn));
+      const speed =
+        Number(this.params.velocity) *
+        (1 + variation * 0.16 * Math.sin(t * 0.23 + i * 0.07)) *
+        (1 - Math.min(0.18, count * 0.003));
+      vx = Math.cos(heading) * speed;
+      vy = Math.sin(heading) * speed;
       return [(a[0] + vx / 60 + 1) % 1, (a[1] + vy / 60 + 1) % 1, vx, vy];
     });
     this.agents = next;
@@ -137,10 +164,10 @@ export class Flock implements Simulation {
     const random = rng(this.seed + action.serial * 997),
       count = Math.max(
         1,
-        Math.round(this.agents.length * [0, 0.08, 0.25, 0.5][action.kind]),
+        Math.round(this.agents.length * [0, 0.08, 0.25, 1][action.kind]),
       );
     for (let i = 0; i < count; i++) {
-      const at = (i * 13 + action.serial) % this.agents.length,
+      const at = (i + action.serial) % this.agents.length,
         angle = random() * Math.PI * 2;
       if (action.kind === 1) {
         const a = this.agents[at],
@@ -162,6 +189,10 @@ export class Flock implements Simulation {
   activitySample() {
     const sample = new Float32Array(640);
     for (const a of this.agents) {
+      if (!a.every(Number.isFinite)) {
+        sample[0] = NaN;
+        return sample;
+      }
       const i =
         Math.min(19, Math.floor(a[1] * 20)) * 32 +
         Math.min(31, Math.floor(a[0] * 32));
@@ -176,88 +207,7 @@ export class Flock implements Simulation {
     style: string,
     colors?: number[][],
   ) {
-    const palette = colors || [
-      [0.03, 0.1, 0.2],
-      [0.3, 0.8, 0.7],
-      [1, 0.8, 0.5],
-    ];
-    const detail = Number(this.params.richness ?? 0.8);
-    ground(ctx, w, h, palette);
-    // Low-contrast clouds provide broad color masses behind the fine agents.
-    for (let group = 0; group < 3; group++) {
-      const members = this.agents.filter((_, i) => i % 3 === group);
-      const x =
-        (members.reduce((sum, a) => sum + a[0], 0) / members.length) * w;
-      const y =
-        (members.reduce((sum, a) => sum + a[1], 0) / members.length) * h;
-      const cloud = ctx.createRadialGradient(x, y, 0, x, y, w * 0.4);
-      cloud.addColorStop(
-        0,
-        ink(palette[1], palette[2], group / 2, 0.12 * detail),
-      );
-      cloud.addColorStop(1, ink(palette[0], palette[0], 0, 0));
-      ctx.fillStyle = cloud;
-      ctx.fillRect(0, 0, w, h);
-    }
-    ctx.lineWidth = 0.6;
-    ctx.strokeStyle = ink(palette[1], palette[2], 0.3, detail * 0.16);
-    ctx.beginPath();
-    this.agents.forEach((a, i) => {
-      for (let j = i + 1; j < Math.min(i + 9, this.agents.length); j++) {
-        const b = this.agents[j];
-        if (Math.hypot(a[0] - b[0], a[1] - b[1]) > 0.13) continue;
-        ctx.moveTo(a[0] * w, a[1] * h);
-        ctx.lineTo(b[0] * w, b[1] * h);
-      }
-    });
-    ctx.stroke();
-    this.agents.forEach((a, i) => {
-      const warm = (i % 11) / 10;
-      ctx.strokeStyle = ink(palette[1], palette[2], warm, detail * 0.35);
-      ctx.beginPath();
-      ctx.moveTo(a[0] * w, a[1] * h);
-      ctx.lineTo((a[0] - a[2] * 0.3) * w, (a[1] - a[3] * 0.3) * h);
-      ctx.stroke();
-      ctx.fillStyle = ink(palette[1], palette[2], warm);
-      ctx.save();
-      ctx.translate(a[0] * w, a[1] * h);
-      ctx.rotate(Math.atan2(a[3] * h, a[2] * w));
-      ctx.beginPath();
-      ctx.moveTo(6, 0);
-      ctx.lineTo(-4, -2.5);
-      ctx.lineTo(-2, 0);
-      ctx.lineTo(-4, 2.5);
-      ctx.closePath();
-      ctx.fill();
-      ctx.strokeStyle = ink(palette[2], [1, 1, 1], 0.25, detail * 0.7);
-      ctx.beginPath();
-      ctx.moveTo(-2, 0);
-      ctx.lineTo(4, 0);
-      ctx.stroke();
-      ctx.restore();
-    });
-    if (this.params.predator) {
-      const presence =
-        variationOf(this.params) > 0
-          ? Math.pow(
-              0.5 +
-                0.5 * Math.sin((this.tick / 60) * 0.083 + this.seed * 0.001),
-              2,
-            )
-          : 1;
-      ctx.globalAlpha = presence;
-      ctx.fillStyle = "#ef8e68";
-      ctx.beginPath();
-      ctx.arc(
-        (0.5 + 0.3 * Math.sin((this.tick / 60) * 0.3)) * w,
-        (0.5 + 0.3 * Math.cos((this.tick / 60) * 0.23)) * h,
-        8,
-        0,
-        Math.PI * 2,
-      );
-      ctx.fill();
-      ctx.globalAlpha = 1;
-    }
+    paintMurmuration(this, ctx, w, h, style, colors);
   }
   dispose() {}
 }
@@ -266,16 +216,20 @@ export interface Platform {
   y: number;
   width: number;
 }
-export function level(seed: number): Platform[] {
+export function level(seed: number, legacy = false): Platform[] {
   const r = rng(seed);
   let x = 0,
     y = 310;
   const result: Platform[] = [];
   for (let i = 0; i < 22; i++) {
-    const width = 110 + Math.floor(r() * 60);
+    const width = legacy
+      ? 110 + Math.floor(r() * 60)
+      : 95 + Math.floor(r() * 90);
     result.push({ x, y, width });
-    x += width + 25 + Math.floor(r() * 30);
-    y = Math.max(220, Math.min(330, y + Math.floor(r() * 41) - 20));
+    x += width + 25 + Math.floor(r() * (legacy ? 30 : 50));
+    y = legacy
+      ? Math.max(220, Math.min(330, y + Math.floor(r() * 41) - 20))
+      : Math.max(180, Math.min(330, y + Math.floor(r() * 111) - 55));
   }
   return result;
 }
@@ -291,6 +245,8 @@ export class Platformer implements Simulation {
   deaths = 0;
   coins = 0;
   cooldown = 0;
+  visited = 0;
+  terrainVersion = 1;
   constructor(
     public seed: number,
     public params: Params,
@@ -308,7 +264,24 @@ export class Platformer implements Simulation {
       oldX = this.x;
     const on = this.platforms[this.ground],
       next = this.platforms[this.ground + 1];
-    if (this.vy === 0 && next && this.x > on.x + on.width - 22) this.vy = -410;
+    if (
+      this.vy === 0 &&
+      this.ground % 4 === 2 &&
+      !(this.visited & (1 << this.ground)) &&
+      this.x >= on.x + on.width * 0.65 - 6
+    ) {
+      this.visited |= 1 << this.ground;
+      this.cooldown = 24;
+      return;
+    }
+    if (this.vy === 0 && next && this.x > on.x + on.width - 30) {
+      const rise = Math.max(0, on.y - next.y);
+      this.vy = -Math.sqrt(2 * 1000 * (70 + rise));
+      const flight =
+        (-this.vy + Math.sqrt(this.vy * this.vy + 2000 * (next.y - on.y))) /
+        1000;
+      this.vx = Math.max(60, Math.min(190, (next.x + 32 - this.x) / flight));
+    }
     this.x += this.vx / 60;
     this.vy += 1000 / 60;
     this.y += this.vy / 60;
@@ -323,7 +296,10 @@ export class Platformer implements Simulation {
       ) {
         this.y = p.y;
         this.vy = 0;
-        if (i > this.ground) this.coins++;
+        if (i > this.ground) {
+          this.coins++;
+        }
+        this.vx = 105;
         this.ground = i;
         break;
       }
@@ -338,6 +314,8 @@ export class Platformer implements Simulation {
     const last = this.platforms.at(-1)!;
     if (this.x > last.x + last.width - 25) {
       this.stage++;
+      this.terrainVersion = 1;
+      this.visited = 0;
       this.platforms = level(this.seed + this.stage);
       this.x = 25;
       this.ground = 0;
@@ -360,11 +338,14 @@ export class Platformer implements Simulation {
         this.deaths,
         this.coins,
         this.cooldown,
+        this.visited,
+        this.terrainVersion,
       ],
     };
   }
   restore(s: Snapshot) {
-    if (s.data.length !== 9) throw new Error("Invalid platform checkpoint");
+    if (![9, 10, 11].includes(s.data.length))
+      throw new Error("Invalid platform checkpoint");
     this.tick = s.tick;
     [
       this.x,
@@ -377,7 +358,9 @@ export class Platformer implements Simulation {
       this.coins,
       this.cooldown,
     ] = s.data;
-    this.platforms = level(this.seed + this.stage);
+    this.visited = s.data[9] ?? (1 << (this.ground + 1)) - 1;
+    this.terrainVersion = s.data[10] ?? (s.data.length === 9 ? 0 : 1);
+    this.platforms = level(this.seed + this.stage, this.terrainVersion === 0);
   }
   paint(
     ctx: CanvasRenderingContext2D,
@@ -386,61 +369,7 @@ export class Platformer implements Simulation {
     style: string,
     colors?: number[][],
   ) {
-    const scale = h / 400,
-      cam = Math.max(0, this.x - 180);
-    ctx.save();
-    ctx.scale(scale, scale);
-    const width = w / scale;
-    const pixel = style === "pixel";
-    ctx.fillStyle = pixel ? "#10263c" : "#171b29";
-    ctx.fillRect(0, 0, width, 400);
-    for (let i = 0; i < 12; i++) {
-      ctx.fillStyle = i % 2 ? "#203d54" : "#1b334b";
-      const px =
-        ((((i * 170 - cam * 0.2) % (width + 170)) + width + 170) %
-          (width + 170)) -
-        100;
-      ctx.fillRect(px, 110 + (i % 3) * 25, 95, 250);
-    }
-    ctx.translate(-cam, 0);
-    this.platforms.forEach((p, i) => {
-      ctx.fillStyle = colors
-        ? `rgb(${colors[1].map((n) => Math.round(n * 255)).join(",")})`
-        : pixel
-          ? "#729e70"
-          : "#b0b3ef";
-      ctx.fillRect(p.x, p.y, p.width, 10);
-      ctx.fillStyle = pixel ? "#34483f" : "#3b3a56";
-      ctx.fillRect(p.x, p.y + 10, p.width, 400 - p.y);
-      if (i > this.ground) {
-        ctx.fillStyle = colors
-          ? `rgb(${colors[2].map((n) => Math.round(n * 255)).join(",")})`
-          : "#e9ca79";
-        ctx.beginPath();
-        ctx.arc(p.x + 30, p.y - 30, 5, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    });
-    ctx.fillStyle = this.cooldown ? "#e59887" : "#f1d09a";
-    if (pixel) {
-      ctx.fillRect(this.x - 7, this.y - 24, 14, 24);
-      ctx.fillStyle = "#152c3e";
-      ctx.fillRect(this.x + 2, this.y - 20, 3, 3);
-      ctx.fillStyle = "#8dc9bb";
-      ctx.fillRect(this.x - 8, this.y - 11, 16, 8);
-    } else {
-      ctx.beginPath();
-      ctx.arc(this.x, this.y - 12, 12, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.restore();
-    ctx.fillStyle = "#c1dfac";
-    ctx.font = "12px monospace";
-    ctx.fillText(
-      `WORLD ${this.stage + 1}  ◇ ${this.coins}  ↻ ${this.deaths}`,
-      16,
-      24,
-    );
+    paintTerrarium(this, ctx, w, h, style, colors);
   }
   dispose() {}
 }
