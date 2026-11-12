@@ -4,6 +4,7 @@ import { CHEMICAL_PRESETS, DEFAULT_CHEMICAL_PRESET } from "../engine/chemical";
 import { Grid } from "../engine/grid";
 import { Flock, Platformer } from "../engine/entities";
 import { ParticleRivers } from "../engine/particles";
+import { SlimeNetworks, SLIME_PRESETS } from "../engine/slime";
 import type { Scene, Params } from "../engine/types";
 import { fragment as ribbons } from "./ribbons";
 import { fragment as julia } from "./julia";
@@ -195,6 +196,48 @@ registry.rivers = {
     },
   },
 };
+registry.slime = {
+  name: "Slime mold networks",
+  subtitle: "A living map of connections",
+  description:
+    "Sensing agents weave branching trails between moving nutrient pools. Old paths dissolve as new connections take shape.",
+  version: 1,
+  kind: "entities",
+  create: (gl, seed, params) => new SlimeNetworks(seed, params),
+  styles: ["luminous", "etched"],
+  presets: SLIME_PRESETS,
+  parameters: {
+    recipe: {
+      label: "Network topology",
+      value: "mycelium",
+      options: Object.keys(SLIME_PRESETS),
+      restart: true,
+      hidden: true,
+    },
+    population: {
+      label: "Agents · restart",
+      value: 2400,
+      min: 600,
+      max: 4000,
+      step: 100,
+      restart: true,
+    },
+    branching: {
+      label: "Branching",
+      value: 0.65,
+      min: 0.1,
+      max: 1,
+      step: 0.05,
+    },
+    persistence: {
+      label: "Trail memory",
+      value: 0.968,
+      min: 0.94,
+      max: 0.985,
+      step: 0.001,
+    },
+  },
+};
 export const defaults = (id: string): Params =>
   Object.fromEntries(
     Object.entries(registry[id].parameters).map(([k, v]) => [k, v.value]),
@@ -225,7 +268,7 @@ export function parameters(id: string, value: Params = {}): Params {
   return result;
 }
 
-for (const id of ["tapestry", "chemical", "murmuration", "rivers"])
+for (const id of ["tapestry", "chemical", "murmuration", "rivers", "slime"])
   Object.assign(registry[id].parameters, {
     variation: { label: "Variation", value: 0.65, min: 0, max: 1, step: 0.05 },
     autoRecovery: { label: "Automatic recovery", value: true },
@@ -249,6 +292,7 @@ for (const id of [
   "chemical",
   "murmuration",
   "rivers",
+  "slime",
   "interference",
   "contours",
 ])

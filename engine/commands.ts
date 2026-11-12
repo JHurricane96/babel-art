@@ -28,6 +28,8 @@ export function applyCommand(project: any, command: Command) {
         delete project.checkpoint;
         delete project.events;
         delete project.initialParams;
+        delete project.replayFloor;
+        delete project.baseCheckpoint;
       }
       scene.params = parameters(scene.id, {
         ...scene.params,
@@ -79,6 +81,7 @@ export function parseText(text: string, project: any): Command | undefined {
   for (const style of registry[project.scene.id].styles)
     if (t.includes(style)) return { type: "style", value: style };
   const aliases: Record<string, string[]> = {
+    slime: ["slime", "mycelium", "network"],
     rivers: ["particle", "river", "flow field"],
     interference: ["interference", "bloom"],
     contours: ["contour", "topography", "landscape"],

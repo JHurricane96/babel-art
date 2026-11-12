@@ -7,6 +7,14 @@ export interface Parameter {
   step?: number;
   options?: string[];
   restart?: boolean;
+  hidden?: boolean;
+}
+export interface ScenePreset {
+  name: string;
+  description: string;
+  params: Params;
+  palette?: string;
+  style?: string;
 }
 export interface Scene {
   name: string;
@@ -17,6 +25,7 @@ export interface Scene {
   fragment?: string;
   parameters: Record<string, Parameter>;
   styles: string[];
+  presets?: Record<string, ScenePreset>;
   create?: (
     gl: WebGLRenderingContext,
     seed: number,
@@ -38,6 +47,7 @@ export interface Simulation {
   seed: number;
   params: Params;
   tick: number;
+  historyBudgetBytes?: number;
   step(): void;
   snapshot(): Snapshot;
   restore(s: Snapshot): void;

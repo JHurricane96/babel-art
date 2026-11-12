@@ -52,6 +52,7 @@ See [Architecture](docs/architecture.md) and [Timing experiments and hardware va
 - **Chemical Garden:** GPU Gray–Scott chemistry, coral/dividing-cell/labyrinth presets, feed/kill controls, and embossed/flat styles. Selecting a preset starts a fresh garden; **Restart garden** also recovers a collapsed saved simulation while preserving your chosen parameters. Requires WebGL2 floating-point render targets.
 - **Murmuration:** Interacting agents with flocking, obstacle avoidance, changing attractors and an optional predator.
 - **Particle Rivers:** Seeded agents trace luminous currents, tributaries and moving vortices. Fixed-length trails and continuous recirculation keep the ink flowing without accumulating canvas history.
+- **Slime Mold Networks:** Sensing agents build and abandon a shared trail field around moving nutrient pools. Mycelium, Copper Delta and Night Bloom presets combine topology, trail memory, color and surface style. The field starts with an established weave; use **Restart network** to start it again.
 - **Platformer Terrarium:** Autonomous exploration of seeded platform worlds, collectibles, recovery and level progression. Pixel and geometric styles share the same game state. There are no player controls.
 
 Stateful scenes have fixed-step simulation, bounded recent history, saved checkpoints and cancellable replay when seeking. Scene-clock drift remains available only for procedural scenes. Timing still illustrates presentation differences rather than measuring real monitor synchronization.
@@ -76,3 +77,11 @@ Run `npm run test:evolution` for the recovery and visual regressions. Run `npm r
 The simulation scenes now expose **Surface detail**, independent of Variation and playback speed. Chemical Garden adds smooth pigment shading and membrane relief; Tapestry has colored mosaic cells; Murmuration adds fine flight trails and connections. Interference Bloom and Living Contours add veins and strata. Four new palettes bring the catalog to eight. Appearance changes preserve the simulation state.
 
 See [art direction](docs/art-direction.md) for the composition goals. `npm run test:visuals` checks real browser rendering, color/contrast, appearance controls, particle replay and portable checkpoints, and saves review images in `artifacts/rich-*.png`. Normal per-artwork validation uses short browser checks and accelerated simulations; multi-hour soaks are reserved for runtime or installation qualification.
+
+## Adaptive preview quality
+
+Preview resolution defaults to **Auto**. It reduces resolution after sustained slow frames and cautiously restores it after a longer period of fast frames. The same scale applies to all four panels and to entity image textures. Pauses, hidden tabs and replay work do not drive adaptation. Economy, Balanced and High remain available for a fixed resolution.
+
+Quality changes preserve every agent, trail, simulation rule, playhead and timing setting. They adjust the displayed image resolution; they cannot eliminate a CPU simulation bottleneck. Preview quality is a local session setting, independent of saved artwork recipes.
+
+`npm run test:networks` reviews all three network presets, their visual range and evolution, invalid-state recovery, exact replay, project validation, non-destructive quality changes and bounded live playback. Review screenshots are saved under `artifacts/slime-*.png`.

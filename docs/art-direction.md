@@ -32,6 +32,13 @@ color masses. Particle Rivers combines broad streams, fine silk-like trails,
 and occasional bright heads. Contours and Interference add strata and fine
 veins to their larger moving structures.
 
+Slime Mold Networks layers an organic concentration field with fine directional
+filaments and bright agent tips. Tone mapping keeps pigment visible in dense
+regions. Mycelium, Copper Delta and Night Bloom have curated combinations of
+topology, density, trail memory, palette and surface style. Moving nutrient pools
+redirect the network while old trails decay. Broad paths and quiet gaps provide
+structure at a distance; fine marks reward a closer view.
+
 ## Time and review
 
 Chapter transitions blend gradually between gathering, splitting, and vortex

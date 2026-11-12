@@ -3,6 +3,7 @@ import {
   selectedChemicalPreset,
 } from "../engine/chemical.ts";
 import { PresentationClock } from "../engine/clock.ts";
+import { AdaptiveQuality } from "../engine/quality.ts";
 import { RELEASE, stages } from "../scenes/release.ts";
 import { parseText, applyCommand } from "../engine/commands.ts";
 import {
@@ -48,6 +49,8 @@ try {
   toast("Storage could not be restored. Export important work.");
 }
 const runtime = new Runtime($("wall"));
+const adaptiveQuality = new AdaptiveQuality();
+$("quality").onchange = () => adaptiveQuality.reset();
 function portable() {
   return {
     ...project,
@@ -81,6 +84,7 @@ function update(fn) {
     previousSeed = project.scene.seed;
   fn(project);
   if (previousId !== project.scene.id || previousSeed !== project.scene.seed) {
+    adaptiveQuality.reset();
     project.time = 0;
     delete project.checkpoint;
     delete project.events;
@@ -548,7 +552,19 @@ function draw(now) {
   }
   if (playing && !runtime.pending && !document.hidden)
     runtime.observeHealth(clock.wallMs / 1000);
-  const quality = Number($("quality").value);
+  const automatic = $("quality").value === "auto";
+  const quality = automatic
+    ? adaptiveQuality.observe(
+        elapsed,
+        playing && !runtime.pending && !document.hidden,
+      )
+    : Number($("quality").value);
+  runtime.setPresentationScale(quality);
+  const qualityMessage = automatic
+    ? `Auto · ${Math.round(quality * 100)}% · adjusts detail to keep motion smooth`
+    : "Manual resolution";
+  if ($("quality-status").textContent !== qualityMessage)
+    $("quality-status").textContent = qualityMessage;
   runtime.begin(
     $("wall").clientWidth * quality,
     $("wall").clientHeight * quality,
@@ -625,6 +641,63 @@ function draw(now) {
 function syncParameters() {
   const box = $("scene-parameters");
   box.replaceChildren();
+  const def = SCENES[project.scene.id];
+  if (def.presets) {
+    const label = document.createElement("label");
+    label.textContent = "Network preset";
+    label.htmlFor = "scene-preset";
+    const select = document.createElement("select");
+    select.id = "scene-preset";
+    const custom = new Option("Custom parameters", "");
+    custom.disabled = true;
+    select.add(custom);
+    for (const [id, preset] of Object.entries(def.presets))
+      select.add(new Option(preset.name, id));
+    select.value =
+      Object.keys(def.presets).find((id) =>
+        Object.entries(def.presets[id].params).every(
+          ([key, value]) => project.scene.params[key] === value,
+        ),
+      ) || "";
+    const restart = (preset) =>
+      update((p) => {
+        if (preset) {
+          Object.assign(p.scene.params, preset.params);
+          if (preset.palette) p.scene.palette = preset.palette;
+          if (preset.style) p.scene.style = preset.style;
+        }
+        p.time = 0;
+        for (const key of [
+          "checkpoint",
+          "events",
+          "initialParams",
+          "replayFloor",
+          "baseCheckpoint",
+        ])
+          delete p[key];
+        runtime.key = "";
+        adaptiveQuality.reset();
+      });
+    select.onchange = () => {
+      const preset = def.presets[select.value];
+      if (preset) {
+        restart(preset);
+        $("scene-preset").focus({ preventScroll: true });
+      }
+    };
+    label.append(select);
+    const button = document.createElement("button");
+    button.id = "scene-restart";
+    button.type = "button";
+    button.textContent = "Restart network ↻";
+    button.onclick = () => restart();
+    const note = document.createElement("p");
+    note.className = "note";
+    note.textContent = select.value
+      ? def.presets[select.value].description
+      : "Adjusted network settings. Choosing a preset starts a fresh network.";
+    box.append(label, button, note);
+  }
   if (project.scene.id === "chemical") {
     const label = document.createElement("label");
     label.textContent = "Garden preset";
@@ -671,8 +744,8 @@ function syncParameters() {
       "Choosing a preset starts a fresh garden. Feed and kill controls tune the current one.";
     box.append(note);
   }
-  const def = SCENES[project.scene.id];
   for (const [key, spec] of Object.entries(def.parameters)) {
+    if (spec.hidden) continue;
     const label = document.createElement("label");
     label.textContent = spec.label;
     const field = document.createElement(spec.options ? "select" : "input");
@@ -712,10 +785,9 @@ function syncParameters() {
   if (def.kind !== "procedural" && project.scene.id !== "platformer") {
     const note = document.createElement("p");
     note.className = "note";
-    note.textContent =
-      project.scene.id === "rivers"
-        ? "Variation changes the currents. Particles continually recirculate; Surface detail changes their appearance."
-        : "Variation drives changes over time. For an unforced simulation, set it to zero and turn off automatic recovery and autonomous events.";
+    note.textContent = ["rivers", "slime"].includes(project.scene.id)
+      ? "Variation changes the currents or nutrient pools. Agents continually recirculate; Surface detail changes their appearance."
+      : "Variation drives changes over time. For an unforced simulation, set it to zero and turn off automatic recovery and autonomous events.";
     box.append(note);
   }
   const label = document.createElement("label");
@@ -739,4 +811,9 @@ document.addEventListener("visibilitychange", () => {
 sync();
 requestAnimationFrame(draw);
 if (import.meta.env.DEV || import.meta.env.MODE === "soak")
-  window.babelDebug = { runtime, project: () => project, clock };
+  window.babelDebug = {
+    runtime,
+    project: () => project,
+    clock,
+    quality: adaptiveQuality,
+  };

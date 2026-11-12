@@ -23,6 +23,7 @@ export class Runtime {
   programs = new Map<string, WebGLProgram>();
   sim?: Simulation;
   entityCanvas = document.createElement("canvas");
+  entityScale = 1;
   id = "";
   key = "";
   events: { tick: number; params?: any; intervention?: EvolutionAction }[] = [];
@@ -97,11 +98,11 @@ export class Runtime {
       ":" +
       scene.seed +
       ":" +
-      (scene.params?.population || 0) +
-      ":" +
-      (scene.params?.resolution || 128) +
-      ":" +
-      (scene.params?.rule || "");
+      JSON.stringify(
+        Object.keys(registry[scene.id].parameters)
+          .filter((key) => registry[scene.id].parameters[key].restart)
+          .map((key) => [key, scene.params?.[key]]),
+      );
     if (this.key === key) {
       if (this.sim && JSON.stringify(scene.params) !== this.requestedParams) {
         this.events = this.events.filter((e) => e.tick < this.sim!.tick);
@@ -155,7 +156,12 @@ export class Runtime {
         2,
         Math.min(
           192,
-          Math.floor((24 * 1024 * 1024) / Math.max(1, snap.data.length * 8)),
+          Math.floor(
+            Math.min(
+              48 * 1024 * 1024,
+              this.sim.historyBudgetBytes ?? 24 * 1024 * 1024,
+            ) / Math.max(1, snap.data.length * 8),
+          ),
         ),
       );
       while (this.states.size > stateLimit)
@@ -351,6 +357,13 @@ export class Runtime {
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
   }
+  setPresentationScale(scale: number) {
+    const next = Math.max(0.5, Math.min(2, scale));
+    if (this.entityScale === next) return;
+    this.entityScale = next;
+    this.entityTextures.forEach((texture) => this.gl.deleteTexture(texture));
+    this.entityTextures.clear();
+  }
   draw(
     panel: any,
     scene: any,
@@ -417,10 +430,14 @@ export class Runtime {
           return cached;
         }
         if (snap) this.sim!.restore(snap);
-        this.entityCanvas.width = 640;
-        this.entityCanvas.height = 400;
+        this.entityCanvas.width = Math.round(640 * this.entityScale);
+        this.entityCanvas.height = Math.round(400 * this.entityScale);
+        const context = this.entityCanvas.getContext("2d", {
+          willReadFrequently: true,
+        })!;
+        context.setTransform(this.entityScale, 0, 0, this.entityScale, 0, 0);
         (this.sim as EntitySimulation).paint(
-          this.entityCanvas.getContext("2d", { willReadFrequently: true })!,
+          context,
           640,
           400,
           scene.style,
@@ -441,7 +458,14 @@ export class Runtime {
           this.entityCanvas,
         );
         this.entityTextures.set(cacheKey, texture);
-        while (this.entityTextures.size > 64) {
+        const textureLimit = Math.min(
+          64,
+          Math.floor(
+            (64 * 1024 * 1024) /
+              (this.entityCanvas.width * this.entityCanvas.height * 4),
+          ),
+        );
+        while (this.entityTextures.size > textureLimit) {
           const key = this.entityTextures.keys().next().value!;
           gl.deleteTexture(this.entityTextures.get(key)!);
           this.entityTextures.delete(key);

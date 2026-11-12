@@ -1,5 +1,6 @@
 import { validateSchedule, validateAction } from "../engine/evolution.ts";
 import { PARTICLE_STRIDE } from "../engine/particles.ts";
+import { SLIME_CELLS } from "../engine/slime.ts";
 import { PERFECT } from "./timing.js";
 
 import { registry, defaults, parameters } from "../scenes/registry.ts";
@@ -235,6 +236,16 @@ function validateCheckpoint(c, scene) {
       !c.data.every((v) => v >= 0 && v <= 1))
   )
     throw new Error("Invalid particle checkpoint");
+  if (
+    scene.id === "slime" &&
+    (c.data.length !== SLIME_CELLS + Number(params.population) * 3 ||
+      !c.data.every((v, i) =>
+        i < SLIME_CELLS || (i - SLIME_CELLS) % 3 < 2
+          ? v >= 0 && v <= 1
+          : v >= 0 && v < Math.PI * 2,
+      ))
+  )
+    throw new Error("Invalid network checkpoint");
   if (
     scene.id === "platformer" &&
     (c.data.length !== 9 ||
