@@ -1,3 +1,4 @@
+import { display, entityDisplay } from "./display";
 import { ActivityMonitor, actionFor, variationOf } from "./evolution";
 import type { EvolutionAction } from "./evolution";
 import type { EntitySimulation } from "./types";
@@ -7,15 +8,6 @@ import type { Simulation, Snapshot, World } from "./types";
 function isEntity(s: Simulation | undefined): s is EntitySimulation {
   return !!s && "paint" in s;
 }
-const display = `precision highp float;varying vec2 uv;uniform vec4 rect,world;uniform float rotation;uniform sampler2D state;uniform vec3 c0,c1,c2;uniform int image,style,scan;uniform float age,period;uniform sampler2D previous;uniform vec2 texel;uniform float evolutionTime,variation,recoveryMix;void main(){vec2 a=(vec2(uv.x,1.-uv.y)-.5)*rect.zw;vec2 p=rect.xy+rect.zw*.5+mat2(cos(rotation),sin(rotation),-sin(rotation),cos(rotation))*a;vec2 st=(p-world.xy)/world.zw;
-float time=evolutionTime;
-vec2 original=st;
-if(image==0)st+=variation*.008*vec2(sin(st.y*9.+time*.13),cos(st.x*11.-time*.11));
-vec2 warp=original*6.+variation*.7*vec2(sin(original.y*5.+time*.17),cos(original.x*4.-time*.11));
-float field=.5+.5*sin(warp.x+sin(warp.y+time*.23)-time*.19);
-vec3 living=mix(c0*.3,c1*.8,field)*(.6+.4*sin(warp.y*2.-time*.21));
-float blend=max(variation*.055,recoveryMix);
-float row=scan==2?1.-(1.-uv.y):1.-uv.y;bool old=scan>0&&age<row*period;vec4 v=old?texture2D(previous,st):texture2D(state,st);if(!(v.r>=0.&&v.r<=1.)||!(v.g>=0.&&v.g<=1.))v=vec4(0.);if(image==1){gl_FragColor=vec4(mix(v.rgb,living,blend),1.);return;}vec3 c=mix(c0*.08,c1,style==0?0.:v.g*.6);c=mix(c,c2,clamp(v.r,0.,1.));if(style==2){float dx=texture2D(state,st+vec2(texel.x,0.)).g-texture2D(state,st-vec2(texel.x,0.)).g;float dy=texture2D(state,st+vec2(0.,texel.y)).g-texture2D(state,st-vec2(0.,texel.y)).g;c=mix(c0,c2,clamp(v.g*2.,0.,1.))*(.7+dot(normalize(vec3(dx*15.,dy*15.,1.)),normalize(vec3(-1.+variation*sin(time*.11),-1.+variation*cos(time*.09),2.))))*.5;}if(!(c.r>=0.&&c.r<100.)||!(c.g>=0.&&c.g<100.)||!(c.b>=0.&&c.b<100.))c=living;gl_FragColor=vec4(mix(c,living,blend),1.);}`;
 const positioned = vertex
   .replace(
     "void main()",
@@ -159,7 +151,14 @@ export class Runtime {
     if (!(this.sim instanceof Grid)) {
       const snap = this.snapshotWithParams();
       this.states.set(snap.tick, snap);
-      while (this.states.size > 192)
+      const stateLimit = Math.max(
+        2,
+        Math.min(
+          192,
+          Math.floor((24 * 1024 * 1024) / Math.max(1, snap.data.length * 8)),
+        ),
+      );
+      while (this.states.size > stateLimit)
         this.states.delete(this.states.keys().next().value!);
       if (snap.tick % 300 === 0) {
         this.checkpoints.set(snap.tick, snap);
@@ -360,13 +359,17 @@ export class Runtime {
     colors: number[][],
   ) {
     const gl = this.gl,
-      key = this.sim ? "grid" : scene.id;
+      key = isEntity(this.sim) ? "entity" : this.sim ? "grid" : scene.id;
     let p = this.programs.get(key);
     if (!p) {
       p = program(
         gl,
         positioned,
-        this.sim ? display : registry[scene.id].fragment!,
+        isEntity(this.sim)
+          ? entityDisplay
+          : this.sim
+            ? display
+            : registry[scene.id].fragment!,
       );
       this.programs.set(key, p);
     }
@@ -392,6 +395,7 @@ export class Runtime {
     gl.uniform1f(u("evolutionTime"), renderSeconds);
     gl.uniform1f(u("variation"), this.sim ? variationOf(this.sim.params) : 0);
     gl.uniform1f(u("recoveryMix"), this.fallbackLevel);
+    gl.uniform1f(u("richness"), Number(scene.params?.richness ?? 0.8));
     colors.forEach((c, i) => gl.uniform3fv(u("c" + i), c));
     if (isEntity(this.sim)) {
       const live = this.sim.snapshot();
@@ -416,7 +420,7 @@ export class Runtime {
         this.entityCanvas.width = 640;
         this.entityCanvas.height = 400;
         (this.sim as EntitySimulation).paint(
-          this.entityCanvas.getContext("2d")!,
+          this.entityCanvas.getContext("2d", { willReadFrequently: true })!,
           640,
           400,
           scene.style,
@@ -458,14 +462,12 @@ export class Runtime {
         this.world.width,
         this.world.height,
       );
-      gl.uniform1i(u("image"), 1);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       this.sim.restore(live);
       return;
     }
 
     if (this.sim) {
-      gl.uniform1i(u("image"), 0);
       gl.uniform1i(
         u("style"),
         scene.style === "flat" ? 0 : scene.style === "embossed" ? 2 : 1,

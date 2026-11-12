@@ -51,6 +51,7 @@ See [Architecture](docs/architecture.md) and [Timing experiments and hardware va
 - **Living Tapestry:** Conway’s Life and cyclic automata, with generation trails, configurable rate/resolution, and seeded colony injections.
 - **Chemical Garden:** GPU Gray–Scott chemistry, coral/dividing-cell/labyrinth presets, feed/kill controls, and embossed/flat styles. Selecting a preset starts a fresh garden; **Restart garden** also recovers a collapsed saved simulation while preserving your chosen parameters. Requires WebGL2 floating-point render targets.
 - **Murmuration:** Interacting agents with flocking, obstacle avoidance, changing attractors and an optional predator.
+- **Particle Rivers:** Seeded agents trace luminous currents, tributaries and moving vortices. Fixed-length trails and continuous recirculation keep the ink flowing without accumulating canvas history.
 - **Platformer Terrarium:** Autonomous exploration of seeded platform worlds, collectibles, recovery and level progression. Pixel and geometric styles share the same game state. There are no player controls.
 
 Stateful scenes have fixed-step simulation, bounded recent history, saved checkpoints and cancellable replay when seeking. Scene-clock drift remains available only for procedural scenes. Timing still illustrates presentation differences rather than measuring real monitor synchronization.
@@ -69,3 +70,9 @@ Chemical-specific regression checks: `npm run test:chemical` tests the actual GP
 - Save/load retains evolution schedules and recovery events. Very long event histories are compacted into a checkpoint, which becomes the earliest replayable time.
 
 Run `npm run test:evolution` for the recovery and visual regressions. Run `npm run test:soak -- --hours 8 --scene chemical` for a real eight-hour browser soak. Its JSON report is written under `artifacts/`; simulated-time tests do not replace this validation.
+
+## Richer still frames
+
+The simulation scenes now expose **Surface detail**, independent of Variation and playback speed. Chemical Garden adds smooth pigment shading and membrane relief; Tapestry has colored mosaic cells; Murmuration adds fine flight trails and connections. Interference Bloom and Living Contours add veins and strata. Four new palettes bring the catalog to eight. Appearance changes preserve the simulation state.
+
+See [art direction](docs/art-direction.md) for the composition goals. `npm run test:visuals` checks real browser rendering, color/contrast, appearance controls, particle replay and portable checkpoints, and saves review images in `artifacts/rich-*.png`. Normal per-artwork validation uses short browser checks and accelerated simulations; multi-hour soaks are reserved for runtime or installation qualification.

@@ -1,4 +1,6 @@
 import { EvolutionSchedule, variationOf, actionFor } from "./evolution";
+import { choreography } from "./choreography";
+import { ground, ink } from "./art";
 import type { EvolutionAction } from "./evolution";
 import type { Simulation, Snapshot, Params } from "./types";
 import { rng } from "./types";
@@ -73,9 +75,9 @@ export class Flock implements Simulation {
       const t = this.tick / 60,
         variation = variationOf(this.params);
       // Slowly exchange gathering, split-stream and vortex influences.
-      const split =
-        variation * (0.5 + 0.5 * Math.sin(t * 0.047 + this.seed * 0.001));
-      const vortex = variation * (0.5 + 0.5 * Math.sin(t * 0.071 + 1.7));
+      const chapter = choreography(t, this.seed);
+      const split = variation * chapter.split;
+      const vortex = variation * chapter.vortex;
       const goalX = 0.5 + (i % 2 ? 1 : -1) * 0.28 * Math.sin(t * 0.063),
         goalY = 0.5 + 0.28 * Math.cos(t * 0.089 + (i % 2) * 2);
       vx += (goalX - a[0]) * 0.002 * split;
@@ -84,8 +86,8 @@ export class Flock implements Simulation {
       vy += (a[0] - 0.5) * 0.003 * vortex;
       const tx = 0.5 + 0.3 * Math.sin(t * 0.08),
         ty = 0.5 + 0.3 * Math.cos(t * 0.09);
-      vx += (tx - a[0]) * 0.001;
-      vy += (ty - a[1]) * 0.001;
+      vx += (tx - a[0]) * (0.001 + variation * chapter.gather * 0.003);
+      vy += (ty - a[1]) * (0.001 + variation * chapter.gather * 0.003);
       const presence =
         variation > 0
           ? Math.pow(0.5 + 0.5 * Math.sin(t * 0.083 + this.seed * 0.001), 2)
@@ -174,12 +176,49 @@ export class Flock implements Simulation {
     style: string,
     colors?: number[][],
   ) {
-    ctx.fillStyle = "#06121c";
-    ctx.fillRect(0, 0, w, h);
-    ctx.fillStyle = colors
-      ? `rgb(${colors[1].map((n) => Math.round(n * 255)).join(",")})`
-      : "#9de9ce";
-    this.agents.forEach((a) => {
+    const palette = colors || [
+      [0.03, 0.1, 0.2],
+      [0.3, 0.8, 0.7],
+      [1, 0.8, 0.5],
+    ];
+    const detail = Number(this.params.richness ?? 0.8);
+    ground(ctx, w, h, palette);
+    // Low-contrast clouds provide broad color masses behind the fine agents.
+    for (let group = 0; group < 3; group++) {
+      const members = this.agents.filter((_, i) => i % 3 === group);
+      const x =
+        (members.reduce((sum, a) => sum + a[0], 0) / members.length) * w;
+      const y =
+        (members.reduce((sum, a) => sum + a[1], 0) / members.length) * h;
+      const cloud = ctx.createRadialGradient(x, y, 0, x, y, w * 0.4);
+      cloud.addColorStop(
+        0,
+        ink(palette[1], palette[2], group / 2, 0.12 * detail),
+      );
+      cloud.addColorStop(1, ink(palette[0], palette[0], 0, 0));
+      ctx.fillStyle = cloud;
+      ctx.fillRect(0, 0, w, h);
+    }
+    ctx.lineWidth = 0.6;
+    ctx.strokeStyle = ink(palette[1], palette[2], 0.3, detail * 0.16);
+    ctx.beginPath();
+    this.agents.forEach((a, i) => {
+      for (let j = i + 1; j < Math.min(i + 9, this.agents.length); j++) {
+        const b = this.agents[j];
+        if (Math.hypot(a[0] - b[0], a[1] - b[1]) > 0.13) continue;
+        ctx.moveTo(a[0] * w, a[1] * h);
+        ctx.lineTo(b[0] * w, b[1] * h);
+      }
+    });
+    ctx.stroke();
+    this.agents.forEach((a, i) => {
+      const warm = (i % 11) / 10;
+      ctx.strokeStyle = ink(palette[1], palette[2], warm, detail * 0.35);
+      ctx.beginPath();
+      ctx.moveTo(a[0] * w, a[1] * h);
+      ctx.lineTo((a[0] - a[2] * 0.3) * w, (a[1] - a[3] * 0.3) * h);
+      ctx.stroke();
+      ctx.fillStyle = ink(palette[1], palette[2], warm);
       ctx.save();
       ctx.translate(a[0] * w, a[1] * h);
       ctx.rotate(Math.atan2(a[3] * h, a[2] * w));
@@ -190,6 +229,11 @@ export class Flock implements Simulation {
       ctx.lineTo(-4, 2.5);
       ctx.closePath();
       ctx.fill();
+      ctx.strokeStyle = ink(palette[2], [1, 1, 1], 0.25, detail * 0.7);
+      ctx.beginPath();
+      ctx.moveTo(-2, 0);
+      ctx.lineTo(4, 0);
+      ctx.stroke();
       ctx.restore();
     });
     if (this.params.predator) {

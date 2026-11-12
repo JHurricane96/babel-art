@@ -1,5 +1,6 @@
 import { RELEASE, stages } from "../scenes/release";
 import { registry, defaults, parameters } from "../scenes/registry";
+import { PALETTES } from "./palettes";
 export type Command =
   | { type: "scene"; id: string }
   | { type: "parameter"; key: string; value: string | number | boolean }
@@ -48,7 +49,7 @@ export function applyCommand(project: any, command: Command) {
       scene.speed = command.value;
       break;
     case "palette":
-      if (!["aurora", "ember", "iris", "moss"].includes(command.value))
+      if (!Object.hasOwn(PALETTES, command.value))
         throw new Error("Invalid palette");
       scene.palette = command.value;
       break;
@@ -72,16 +73,20 @@ export function parseText(text: string, project: any): Command | undefined {
     return { type: "speed", value: Math.min(3, project.scene.speed * 1.5) };
   if (/warmer|ember/.test(t)) return { type: "palette", value: "ember" };
   if (/cooler|aurora/.test(t)) return { type: "palette", value: "aurora" };
+  for (const id of Object.keys(PALETTES))
+    if (t === id || t === `palette ${id}`)
+      return { type: "palette", value: id };
   for (const style of registry[project.scene.id].styles)
     if (t.includes(style)) return { type: "style", value: style };
   const aliases: Record<string, string[]> = {
+    rivers: ["particle", "river", "flow field"],
     interference: ["interference", "bloom"],
     contours: ["contour", "topography", "landscape"],
     tapestry: ["life", "cellular", "tapestry"],
     chemical: ["chemical", "coral", "reaction"],
     murmuration: ["flock", "birds", "murmuration"],
     platformer: ["platform", "game", "mario"],
-    fireflies: ["fireflies", "particles"],
+    fireflies: ["fireflies", "gap travelers"],
     ribbons: ["ribbon", "wave"],
     julia: ["julia", "fractal"],
     test: ["sync study"],

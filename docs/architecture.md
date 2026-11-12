@@ -51,6 +51,16 @@ Interference Bloom and Living Contours are analytic shader scenes with continuou
 
 ## Validation for long runs
 
+Normal artwork changes use fast unit/browser regressions and accelerated runs of the actual simulation across seeds. A multi-hour soak is an occasional shared-runtime or installation qualification check, rather than a requirement for each new artwork.
+
 `npm run test:evolution` checks forced extinction recovery on the GPU, intervention replay, compaction round trips, and visible change in both analytic scenes. Unit checks also advance the controller through eight simulated hours; that is not a wall-clock soak.
 
 For an actual real-time run: `npm run test:soak -- --hours 8 --scene chemical`. The command builds an isolated instrumented production bundle under ignored `artifacts/soak-site/`, launches its own browser, and writes `artifacts/soak-chemical.json`. Supported scenes also include tapestry, murmuration, interference, contours, and platformer. The runner samples visible frame changes, JS heap, FPS, activity and recovery counts, and every bounded history container. A failed invariant stops the run and records the failure. Reports explicitly say running, failed or passed; only a completed run establishes the corresponding duration. Normal production builds omit the test instrumentation.
+
+## Materials, chapters, and Particle Rivers
+
+`engine/display.ts` owns grid presentation independently of GPU simulation updates. Chemical concentration is bilinearly interpolated for shading without requiring float-linear texture extensions. Lighting, pigment, membrane accents, and world-space grain only affect presentation. Flat rendering remains available. Procedural scenes receive the same Surface detail control; entity scenes draw palette-aware layers through shared canvas helpers. The palette catalog is shared by project validation and text commands.
+
+`engine/choreography.ts` supplies continuous, seeded chapter weights from simulation time. Murmuration and Particle Rivers blend gathering, splitting, and vortex influences rather than jumping between modes. The particle engine advects a fixed population, stores six previous trail points per agent, and recirculates a small deterministic source each tick to prevent permanent concentration on a few orbits. The full trail is included in checkpoints and validated on import. Rendering does not depend on a growing trail canvas or hidden paint history.
+
+Entities use a separate, lightweight compositing shader. Their canvas requests `willReadFrequently` because each new image is transferred into a WebGL texture; this avoids expensive cross-context transfers with the software renderer. Entity snapshot history is capped at 192 frames and an estimated 24 MiB of numeric payload, with eight checkpoints and 64 cached image textures. JavaScript object overhead and GPU allocations are additional to the numeric payload. This preserves recent delayed frames while limiting the memory cost of larger particle populations. `npm run test:visuals` checks GPU rendering, still-frame color/contrast, appearance controls that preserve physics, exact browser replay of particle trails, and minimum progress during a short live playback check. Visual review remains necessary to assess composition and material quality.

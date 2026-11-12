@@ -713,7 +713,9 @@ function syncParameters() {
     const note = document.createElement("p");
     note.className = "note";
     note.textContent =
-      "Variation drives changes over time. For an unforced simulation, set it to zero and turn off automatic recovery and autonomous events.";
+      project.scene.id === "rivers"
+        ? "Variation changes the currents. Particles continually recirculate; Surface detail changes their appearance."
+        : "Variation drives changes over time. For an unforced simulation, set it to zero and turn off automatic recovery and autonomous events.";
     box.append(note);
   }
   const label = document.createElement("label");

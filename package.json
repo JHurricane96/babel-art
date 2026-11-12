@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "test:chemical": "node scripts/check-chemical.mjs",
     "test:evolution": "node scripts/check-evolution.mjs",
+    "test:visuals": "node scripts/check-visuals.mjs",
     "build:soak": "vite build --mode soak --base=/ --outDir artifacts/soak-site",
     "test:soak": "npm run build:soak && node scripts/soak.mjs"
   },

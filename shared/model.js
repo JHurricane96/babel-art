@@ -1,14 +1,11 @@
 import { validateSchedule, validateAction } from "../engine/evolution.ts";
+import { PARTICLE_STRIDE } from "../engine/particles.ts";
 import { PERFECT } from "./timing.js";
 
 import { registry, defaults, parameters } from "../scenes/registry.ts";
 export const SCENES = registry;
-export const PALETTES = {
-  aurora: { name: "Aurora", colors: ["#173e72", "#55c5bf", "#e7ba80"] },
-  ember: { name: "Ember", colors: ["#59254e", "#f07950", "#ffe4a3"] },
-  iris: { name: "Iris", colors: ["#342a76", "#b696ee", "#f0c9c0"] },
-  moss: { name: "Moss", colors: ["#214b47", "#9bbd8b", "#e1cf9b"] },
-};
+export { PALETTES } from "../engine/palettes.ts";
+import { PALETTES } from "../engine/palettes.ts";
 
 export function dailySeed(date = new Date()) {
   const day = date.toISOString().slice(0, 10);
@@ -232,6 +229,12 @@ function validateCheckpoint(c, scene) {
       ))
   )
     throw new Error("Invalid flock checkpoint");
+  if (
+    scene.id === "rivers" &&
+    (c.data.length !== Number(params.population) * PARTICLE_STRIDE ||
+      !c.data.every((v) => v >= 0 && v <= 1))
+  )
+    throw new Error("Invalid particle checkpoint");
   if (
     scene.id === "platformer" &&
     (c.data.length !== 9 ||

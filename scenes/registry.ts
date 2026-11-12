@@ -3,6 +3,7 @@ import { fragment as contours } from "./contours";
 import { CHEMICAL_PRESETS, DEFAULT_CHEMICAL_PRESET } from "../engine/chemical";
 import { Grid } from "../engine/grid";
 import { Flock, Platformer } from "../engine/entities";
+import { ParticleRivers } from "../engine/particles";
 import type { Scene, Params } from "../engine/types";
 import { fragment as ribbons } from "./ribbons";
 import { fragment as julia } from "./julia";
@@ -132,7 +133,7 @@ registry.murmuration = {
   parameters: {
     population: {
       label: "Population · restart",
-      value: 120,
+      value: 220,
       min: 20,
       max: 300,
       step: 10,
@@ -160,6 +161,40 @@ registry.platformer = {
   styles: ["pixel", "geometric"],
   parameters: {},
 };
+registry.rivers = {
+  name: "Particle rivers",
+  subtitle: "Currents drawn in light",
+  description:
+    "Luminous filaments stream through changing currents, split into tributaries and coil around moving vortices.",
+  version: 1,
+  kind: "entities",
+  create: (gl, seed, params) => new ParticleRivers(seed, params),
+  styles: ["silk"],
+  parameters: {
+    population: {
+      label: "Particles · restart",
+      value: 960,
+      min: 240,
+      max: 1800,
+      step: 120,
+      restart: true,
+    },
+    velocity: {
+      label: "Current speed",
+      value: 0.14,
+      min: 0.04,
+      max: 0.3,
+      step: 0.01,
+    },
+    turbulence: {
+      label: "Flow complexity",
+      value: 1.1,
+      min: 0.5,
+      max: 2,
+      step: 0.1,
+    },
+  },
+};
 export const defaults = (id: string): Params =>
   Object.fromEntries(
     Object.entries(registry[id].parameters).map(([k, v]) => [k, v.value]),
@@ -176,6 +211,7 @@ export function parameters(id: string, value: Params = {}): Params {
       if (
         typeof v !== "number" ||
         !Number.isFinite(v) ||
+        (k === "population" && !Number.isInteger(v)) ||
         v < spec.min! ||
         v > spec.max!
       )
@@ -189,7 +225,7 @@ export function parameters(id: string, value: Params = {}): Params {
   return result;
 }
 
-for (const id of ["tapestry", "chemical", "murmuration"])
+for (const id of ["tapestry", "chemical", "murmuration", "rivers"])
   Object.assign(registry[id].parameters, {
     variation: { label: "Variation", value: 0.65, min: 0, max: 1, step: 0.05 },
     autoRecovery: { label: "Automatic recovery", value: true },
@@ -207,3 +243,19 @@ registry.contours = procedural(
   "Contour lines reveal a landscape that continuously reshapes itself.",
   contours,
 );
+
+for (const id of [
+  "tapestry",
+  "chemical",
+  "murmuration",
+  "rivers",
+  "interference",
+  "contours",
+])
+  registry[id].parameters.richness = {
+    label: "Surface detail",
+    value: 0.8,
+    min: 0,
+    max: 1,
+    step: 0.05,
+  };
