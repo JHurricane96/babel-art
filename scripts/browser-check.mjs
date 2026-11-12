@@ -3,15 +3,16 @@ import {spawn} from 'node:child_process';import {mkdtemp,rm,mkdir,writeFile} fro
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const profile=await mkdtemp(path.join(os.tmpdir(),'babel-browser-'));
 const server=spawn(process.execPath,['node_modules/vite/bin/vite.js','--host','127.0.0.1','--port','4174'],{env:{...process.env,PORT:'4174'},stdio:'ignore'});
-const browser=spawn(process.env.CHROME_BIN||'chromium',['--headless','--no-sandbox','--disable-dev-shm-usage','--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader','--remote-debugging-port=9223',`--user-data-dir=${profile}`,'about:blank'],{stdio:'ignore'});
+const browser=spawn(process.env.CHROME_BIN||'chromium',['--remote-debugging-address=127.0.0.1','--headless','--no-sandbox','--disable-dev-shm-usage','--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader','--remote-debugging-port=9223',`--user-data-dir=${profile}`,'about:blank'],{stdio:['ignore','ignore','pipe']});
+let browserLog='';browser.stderr?.on('data',chunk=>{browserLog=(browserLog+chunk.toString()).slice(-4000);});
 let socket;
 try{
- let tabs;for(let i=0;i<100;i++){try{tabs=await(await fetch('http://localhost:9223/json')).json();if(tabs.length)break;}catch{}await sleep(100);}if(!tabs?.length)throw new Error('Chromium CDP unavailable');
+ let tabs;for(let i=0;i<300;i++){try{tabs=await(await fetch('http://127.0.0.1:9223/json')).json();if(tabs.length)break;}catch{}await sleep(100);}if(!tabs?.length)throw new Error('Chromium CDP unavailable (exit '+browser.exitCode+'): '+browserLog);
  socket=new WebSocket(tabs.find(x=>x.type==='page').webSocketDebuggerUrl);await new Promise(r=>socket.addEventListener('open',r,{once:true}));let id=0;const pending=new Map(),errors=[];
  socket.addEventListener('message',e=>{const m=JSON.parse(e.data);if(m.id){const p=pending.get(m.id);pending.delete(m.id);m.error?p.reject(m.error):p.resolve(m.result);}if(m.method==='Runtime.exceptionThrown')errors.push(m.params.exceptionDetails);});
  const call=(method,params={})=>new Promise((resolve,reject)=>{const n=++id;pending.set(n,{resolve,reject});socket.send(JSON.stringify({id:n,method,params}));});
  const evaluate=async expression=>{const r=await call('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true});if(r.exceptionDetails)throw new Error(JSON.stringify(r.exceptionDetails));return r.result.value;};
- await call('Runtime.enable');await call('Page.enable');await call('Emulation.setDeviceMetricsOverride',{width:1440,height:1100,deviceScaleFactor:1,mobile:false});await call('Page.navigate',{url:'http://localhost:4174'});await sleep(1500);
+ await call('Runtime.enable');await call('Page.enable');await call('Emulation.setDeviceMetricsOverride',{width:1440,height:1100,deviceScaleFactor:1,mobile:false});await call('Page.navigate',{url:'http://127.0.0.1:4174'});await sleep(1500);
  assert.equal(await evaluate(`document.querySelectorAll('#compositor').length`),1);
  await evaluate(`document.getElementById('play').click()`);await sleep(100);
  await mkdir('artifacts',{recursive:true});

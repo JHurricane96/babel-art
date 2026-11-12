@@ -25,6 +25,7 @@ export async function openBrowser({
   const browser = spawn(
     process.env.CHROME_BIN || "chromium",
     [
+      "--remote-debugging-address=127.0.0.1",
       "--headless",
       "--no-sandbox",
       "--disable-dev-shm-usage",
@@ -37,8 +38,12 @@ export async function openBrowser({
       `--user-data-dir=${profile}`,
       "about:blank",
     ],
-    { stdio: "ignore" },
+    { stdio: ["ignore", "ignore", "pipe"] },
   );
+  let browserLog = "";
+  browser.stderr?.on("data", (chunk) => {
+    browserLog = (browserLog + chunk.toString()).slice(-4000);
+  });
   let socket, startError;
   server.on("error", (e) => (startError = e));
   browser.on("error", (e) => (startError = e));
@@ -51,18 +56,18 @@ export async function openBrowser({
   };
   try {
     let tab;
-    for (let i = 0; i < 100; i++) {
+    for (let i = 0; i < 300; i++) {
       if (startError) throw startError;
       try {
-        await fetch(`http://localhost:${port}`);
+        await fetch(`http://127.0.0.1:${port}`);
         tab = (
-          await (await fetch(`http://localhost:${debugPort}/json`)).json()
+          await (await fetch(`http://127.0.0.1:${debugPort}/json`)).json()
         ).find((t) => t.type === "page");
         if (tab) break;
       } catch {}
       await sleep(100);
     }
-    if (!tab) throw new Error("Local browser failed to start");
+    if (!tab) throw new Error("Local browser failed to start: " + browserLog);
     socket = new WebSocket(tab.webSocketDebuggerUrl);
     await new Promise((r) =>
       socket.addEventListener("open", r, { once: true }),
@@ -112,7 +117,7 @@ export async function openBrowser({
       deviceScaleFactor: 1,
       mobile: false,
     });
-    await call("Page.navigate", { url: `http://localhost:${port}` });
+    await call("Page.navigate", { url: `http://127.0.0.1:${port}` });
     for (let i = 0; i < 100 && !(await evaluate("!!window.babelDebug")); i++)
       await sleep(100);
     if (!(await evaluate("!!window.babelDebug")))

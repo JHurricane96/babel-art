@@ -20,6 +20,7 @@ const server = spawn(
 const browser = spawn(
   process.env.CHROME_BIN || "chromium",
   [
+    "--remote-debugging-address=127.0.0.1",
     "--headless",
     "--no-sandbox",
     "--disable-dev-shm-usage",
@@ -30,21 +31,25 @@ const browser = spawn(
     `--user-data-dir=${profile}`,
     "about:blank",
   ],
-  { stdio: "ignore" },
+  { stdio: ["ignore", "ignore", "pipe"] },
 );
+let browserLog = "";
+browser.stderr?.on("data", (chunk) => {
+  browserLog = (browserLog + chunk.toString()).slice(-4000);
+});
 let socket;
 try {
   let tab;
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < 300; i++) {
     try {
-      tab = (await (await fetch("http://localhost:9224/json")).json()).find(
+      tab = (await (await fetch("http://127.0.0.1:9224/json")).json()).find(
         (t) => t.type === "page",
       );
       if (tab) break;
     } catch {}
     await sleep(100);
   }
-  assert.ok(tab, "Chromium CDP should start");
+  assert.ok(tab, "Chromium CDP should start: " + browserLog);
   socket = new WebSocket(tab.webSocketDebuggerUrl);
   await new Promise((resolve) =>
     socket.addEventListener("open", resolve, { once: true }),
@@ -87,7 +92,7 @@ try {
     mobile: false,
   });
   await mkdir("artifacts", { recursive: true });
-  await call("Page.navigate", { url: "http://localhost:4175" });
+  await call("Page.navigate", { url: "http://127.0.0.1:4175" });
   for (let i = 0; i < 100 && !(await evaluate("!!window.babelDebug")); i++)
     await sleep(100);
   await evaluate(
