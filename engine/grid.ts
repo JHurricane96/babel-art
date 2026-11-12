@@ -1,3 +1,5 @@
+import { EvolutionSchedule, variationOf } from "./evolution";
+import type { EvolutionAction } from "./evolution";
 import { initialChemicalState } from "./chemical";
 import type { Params, Simulation, Snapshot } from "./types";
 import { rng } from "./types";
@@ -46,11 +48,12 @@ export function program(gl: WebGLRenderingContext, vs: string, fs: string) {
 }
 export const vertex =
   "attribute vec2 p;varying vec2 uv;void main(){uv=p*.5+.5;gl_Position=vec4(p,0.,1.);}";
-const update = `precision highp float;varying vec2 uv;uniform sampler2D state;uniform vec2 size;uniform float tick,seed,trail;uniform int cyclic,inject;
+const update = `precision highp float;varying vec2 uv;uniform sampler2D state;uniform vec2 size;uniform float tick,seed,trail;uniform int cyclic,inject;uniform vec3 event;uniform float variation;
 vec4 cell(vec2 d){return texture2D(state,fract(uv+d/size));}
 void main(){vec4 c=cell(vec2(0.));float n=0.;float next=mod(floor(c.r*15.+.5)+1.,16.);float near=0.;for(int y=-1;y<=1;y++)for(int x=-1;x<=1;x++){if(x==0&&y==0)continue;float v=cell(vec2(float(x),float(y))).r;n+=step(.5,v);near+=1.-step(.1,abs(floor(v*15.+.5)-next));}
 float alive=step(.5,c.r);float v=cyclic==1?(near>=2.?next/15.:c.r):((n>2.5&&n<3.5)||(alive>.5&&n>1.5&&n<2.5)?1.:0.);
-if(inject==1&&mod(tick,600.)<.5){vec2 center=vec2(fract(sin(tick+seed)*437.1),fract(cos(tick+seed)*173.3));if(distance(uv,center)<.04)v=step(.45,fract(sin(dot(uv,vec2(123.,987.))+tick)*43758.));}
+if(inject>0){vec2 d=(uv-event.xy)*size;float radius=inject==1?5.:inject==2?12.:22.;if(length(d)<radius){float pattern=mod(floor(d.x)+2.*floor(d.y)+floor(event.z),7.);vec2 q=inject==1?floor(d)+vec2(1.):mod(floor(d)+vec2(radius),7.);float glider=((q.y==0.&&q.x==1.)||(q.y==1.&&q.x==2.)||(q.y==2.&&q.x>=0.&&q.x<=2.))?1.:0.;v=cyclic==1?mod(pattern+event.z,16.)/15.:glider;}}
+
 gl_FragColor=vec4(v,max(v,c.g*trail),0.,1.);}`;
 export class Grid implements Simulation {
   tick = 0;
@@ -60,12 +63,20 @@ export class Grid implements Simulation {
   fb: WebGLFramebuffer;
   prog: WebGLProgram;
   index = 0;
+  schedule: EvolutionSchedule;
+  pending?: EvolutionAction;
+  metrics?: {
+    program: WebGLProgram;
+    fb: WebGLFramebuffer;
+    texture: WebGLTexture;
+  };
   constructor(
     public gl: WebGLRenderingContext,
     public seed: number,
     public params: Params,
     public chemical = false,
   ) {
+    this.schedule = new EvolutionSchedule(seed);
     this.width = Number(params.resolution);
     this.height = Math.round(this.width * 0.625);
     this.fb = gl.createFramebuffer()!;
@@ -114,6 +125,13 @@ export class Grid implements Simulation {
   }
   step() {
     this.tick++;
+    const scheduled = this.schedule.advance(
+      this.tick,
+      variationOf(this.params),
+      !!this.params.autonomous,
+    );
+    if (scheduled && (!this.pending || scheduled.kind >= this.pending.kind))
+      this.pending = scheduled;
     if (
       !this.chemical &&
       this.tick % Math.max(1, Math.round(60 / Number(this.params.rate))) !== 0
@@ -150,7 +168,7 @@ export class Grid implements Simulation {
     );
     gl.uniform1i(
       gl.getUniformLocation(this.prog, "inject"),
-      this.params.autonomous ? 1 : 0,
+      this.pending ? this.pending.kind : 0,
     );
     gl.uniform1f(
       gl.getUniformLocation(this.prog, "feed"),
@@ -160,11 +178,22 @@ export class Grid implements Simulation {
       gl.getUniformLocation(this.prog, "kill"),
       Number(this.params.kill || 0.0649),
     );
+    gl.uniform3f(
+      gl.getUniformLocation(this.prog, "event"),
+      this.pending?.x ?? 0.5,
+      this.pending?.y ?? 0.5,
+      this.pending?.serial ?? 0,
+    );
+    gl.uniform1f(
+      gl.getUniformLocation(this.prog, "variation"),
+      variationOf(this.params),
+    );
     const p = gl.getAttribLocation(this.prog, "p");
     gl.enableVertexAttribArray(p);
     gl.vertexAttribPointer(p, 2, gl.FLOAT, false, 0, 0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     this.index = 1 - this.index;
+    this.pending = undefined;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
   snapshot(): Snapshot {
@@ -190,12 +219,21 @@ export class Grid implements Simulation {
       data,
     );
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    return { tick: this.tick, data: Array.from(data) };
+    return {
+      tick: this.tick,
+      data: Array.from(data),
+      extra: {
+        schedule: this.schedule.snapshot(),
+        ...(this.pending ? { pending: this.pending } : {}),
+      },
+    };
   }
   restore(s: Snapshot) {
     if (s.data.length !== this.width * this.height * 4)
       throw new Error("Checkpoint dimensions mismatch");
     this.tick = s.tick;
+    this.schedule.restore(s.extra?.schedule as any, this.tick);
+    this.pending = s.extra?.pending as EvolutionAction | undefined;
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.textures[this.index]);
     gl.texSubImage2D(
@@ -210,13 +248,114 @@ export class Grid implements Simulation {
       this.chemical ? new Float32Array(s.data) : new Uint8Array(s.data),
     );
   }
+  intervene(action: EvolutionAction) {
+    if (action.kind === 3) {
+      const data = this.chemical
+        ? initialChemicalState(
+            this.width,
+            this.height,
+            this.seed + action.serial,
+          )
+        : new Uint8Array(this.width * this.height * 4);
+      if (!this.chemical) {
+        const random = rng(this.seed + action.serial);
+        for (let i = 0; i < data.length; i += 4) {
+          data[i] = random() > 0.75 ? 255 : 0;
+          data[i + 1] = data[i];
+          data[i + 3] = 255;
+        }
+      }
+      const gl = this.gl;
+      gl.bindTexture(gl.TEXTURE_2D, this.textures[this.index]);
+      gl.texSubImage2D(
+        gl.TEXTURE_2D,
+        0,
+        0,
+        0,
+        this.width,
+        this.height,
+        gl.RGBA,
+        this.chemical ? gl.FLOAT : gl.UNSIGNED_BYTE,
+        data,
+      );
+    }
+    this.pending = action;
+  }
+  activitySample() {
+    const gl = this.gl;
+    if (!this.metrics) {
+      const texture = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA,
+        32,
+        20,
+        0,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        null,
+      );
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      this.metrics = {
+        texture,
+        fb: gl.createFramebuffer()!,
+        program: program(
+          gl,
+          vertex,
+          `precision highp float;varying vec2 uv;uniform sampler2D state;uniform int chemical;void main(){vec4 v=texture2D(state,uv);float value=chemical==1?v.g:v.r;bool bad=!(v.r>=0.&&v.r<=1.)||!(v.g>=0.&&v.g<=1.);gl_FragColor=vec4(bad?0.:value,bad?1.:0.,0.,1.);}`,
+        ),
+      };
+    }
+    const m = this.metrics;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, m.fb);
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER,
+      gl.COLOR_ATTACHMENT0,
+      gl.TEXTURE_2D,
+      m.texture,
+      0,
+    );
+    gl.viewport(0, 0, 32, 20);
+    gl.useProgram(m.program);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.textures[this.index]);
+    gl.uniform1i(gl.getUniformLocation(m.program, "state"), 0);
+    gl.uniform1i(
+      gl.getUniformLocation(m.program, "chemical"),
+      this.chemical ? 1 : 0,
+    );
+    const p = gl.getAttribLocation(m.program, "p");
+    gl.enableVertexAttribArray(p);
+    gl.vertexAttribPointer(p, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    const bytes = new Uint8Array(32 * 20 * 4);
+    gl.readPixels(0, 0, 32, 20, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return Float32Array.from({ length: 640 }, (_, i) =>
+      bytes[i * 4 + 1] > 0 ? NaN : bytes[i * 4] / 255,
+    );
+  }
   dispose() {
+    if (this.metrics) {
+      this.gl.deleteTexture(this.metrics.texture);
+      this.gl.deleteFramebuffer(this.metrics.fb);
+      this.gl.deleteProgram(this.metrics.program);
+    }
     this.textures.forEach((t) => this.gl.deleteTexture(t));
     this.gl.deleteFramebuffer(this.fb);
     this.gl.deleteProgram(this.prog);
   }
 }
 
-const chemistry = `precision highp float;varying vec2 uv;uniform sampler2D state;uniform vec2 size;uniform float feed,kill,tick,seed;uniform int inject;
+const chemistry = `precision highp float;varying vec2 uv;uniform sampler2D state;uniform vec2 size;uniform float feed,kill,tick,seed;uniform int inject;uniform vec3 event;uniform float variation;
 vec2 cell(vec2 d){return texture2D(state,fract(uv+d/size)).rg;}
-void main(){vec2 c=cell(vec2(0.)),lap=-c;for(int y=-1;y<=1;y++)for(int x=-1;x<=1;x++){if(x==0&&y==0)continue;lap+=cell(vec2(float(x),float(y)))*(x==0||y==0?.2:.05);}float reaction=c.r*c.g*c.g;vec2 next=c+vec2(lap.r-reaction+feed*(1.-c.r),.5*lap.g+reaction-(kill+feed)*c.g);if(inject==1&&mod(tick,1800.)<.5&&distance(uv,vec2(fract(sin(tick+seed)*437.1),.5))<.04)next=vec2(.5,.25);gl_FragColor=vec4(clamp(next,0.,1.),0.,1.);}`;
+void main(){vec2 c=cell(vec2(0.)),lap=-c;for(int y=-1;y<=1;y++)for(int x=-1;x<=1;x++){if(x==0&&y==0)continue;lap+=cell(vec2(float(x),float(y)))*(x==0||y==0?.2:.05);}float reaction=c.r*c.g*c.g;
+float t=tick/60.;
+vec2 flow=.10*variation*vec2(cos(uv.y*6.283+t*.19+seed*.001),sin(uv.x*6.283-t*.13));
+vec2 transport=-flow.x*(cell(vec2(1.,0.))-cell(vec2(-1.,0.)))*.5-flow.y*(cell(vec2(0.,1.))-cell(vec2(0.,-1.)))*.5;
+vec2 next=c+vec2(lap.r-reaction+feed*(1.-c.r),.5*lap.g+reaction-(kill+feed)*c.g)+transport;
+if(inject>0){vec2 d=(uv-event.xy)*size;float radius=inject==1?6.:inject==2?10.:16.;if(length(d)<radius){float edge=1.-smoothstep(radius-2.,radius,length(d));next=mix(next,vec2(.5,.25),edge*.8);}}
+gl_FragColor=vec4(clamp(next,0.,1.),0.,1.);}`;

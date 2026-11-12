@@ -41,6 +41,8 @@ export interface Simulation {
   step(): void;
   snapshot(): Snapshot;
   restore(s: Snapshot): void;
+  activitySample?(): Float32Array;
+  intervene?(action: import("./evolution").EvolutionAction): void;
   dispose(): void;
 }
 export function rng(seed: number) {

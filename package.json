@@ -10,7 +10,10 @@
     "test:browser": "node scripts/browser-check.mjs",
     "build:pages": "vite build --base=/babel-art/",
     "typecheck": "tsc --noEmit",
-    "test:chemical": "node scripts/check-chemical.mjs"
+    "test:chemical": "node scripts/check-chemical.mjs",
+    "test:evolution": "node scripts/check-evolution.mjs",
+    "build:soak": "vite build --mode soak --base=/ --outDir artifacts/soak-site",
+    "test:soak": "npm run build:soak && node scripts/soak.mjs"
   },
   "engines": {
     "node": ">=22"

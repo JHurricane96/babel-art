@@ -1,12 +1,16 @@
+import { EvolutionSchedule, variationOf, actionFor } from "./evolution";
+import type { EvolutionAction } from "./evolution";
 import type { Simulation, Snapshot, Params } from "./types";
 import { rng } from "./types";
 export class Flock implements Simulation {
   tick = 0;
   agents: number[][] = [];
+  schedule: EvolutionSchedule;
   constructor(
     public seed: number,
     public params: Params,
   ) {
+    this.schedule = new EvolutionSchedule(seed);
     const r = rng(seed);
     this.agents = Array.from({ length: Number(params.population) }, () => [
       r(),
@@ -17,6 +21,8 @@ export class Flock implements Simulation {
   }
   step() {
     this.tick++;
+    const action = this.schedule.advance(this.tick, variationOf(this.params));
+    if (action) this.intervene(action);
     const grid = new Map<string, number[]>();
     this.agents.forEach((a, i) => {
       const k = `${Math.floor(a[0] * 10)},${Math.floor(a[1] * 10)}`;
@@ -64,18 +70,33 @@ export class Flock implements Simulation {
             (cy / count - a[1]) * Number(this.params.cohesion)) *
           0.04;
       }
-      const t = this.tick / 60;
+      const t = this.tick / 60,
+        variation = variationOf(this.params);
+      // Slowly exchange gathering, split-stream and vortex influences.
+      const split =
+        variation * (0.5 + 0.5 * Math.sin(t * 0.047 + this.seed * 0.001));
+      const vortex = variation * (0.5 + 0.5 * Math.sin(t * 0.071 + 1.7));
+      const goalX = 0.5 + (i % 2 ? 1 : -1) * 0.28 * Math.sin(t * 0.063),
+        goalY = 0.5 + 0.28 * Math.cos(t * 0.089 + (i % 2) * 2);
+      vx += (goalX - a[0]) * 0.002 * split;
+      vy += (goalY - a[1]) * 0.002 * split;
+      vx += -(a[1] - 0.5) * 0.003 * vortex;
+      vy += (a[0] - 0.5) * 0.003 * vortex;
       const tx = 0.5 + 0.3 * Math.sin(t * 0.08),
         ty = 0.5 + 0.3 * Math.cos(t * 0.09);
       vx += (tx - a[0]) * 0.001;
       vy += (ty - a[1]) * 0.001;
+      const presence =
+        variation > 0
+          ? Math.pow(0.5 + 0.5 * Math.sin(t * 0.083 + this.seed * 0.001), 2)
+          : 1;
       if (this.params.predator) {
         const dx = a[0] - (0.5 + 0.3 * Math.sin(t * 0.3)),
           dy = a[1] - (0.5 + 0.3 * Math.cos(t * 0.23)),
           d = dx * dx + dy * dy;
         if (d < 0.04) {
-          vx += (dx * 0.01) / (d + 0.005);
-          vy += (dy * 0.01) / (d + 0.005);
+          vx += (dx * 0.01 * presence) / (d + 0.005);
+          vy += (dy * 0.01 * presence) / (d + 0.005);
         }
       }
       const ox = a[0] - 0.5,
@@ -86,7 +107,9 @@ export class Flock implements Simulation {
         vy += (oy * 0.005) / (od + 0.001);
       }
       const norm = Math.hypot(vx, vy) || 1,
-        speed = Number(this.params.velocity);
+        speed =
+          Number(this.params.velocity) *
+          (1 + variation * 0.2 * Math.sin(t * 0.23 + i * 0.07));
       vx = (vx / norm) * speed;
       vy = (vy / norm) * speed;
       return [(a[0] + vx / 60 + 1) % 1, (a[1] + vy / 60 + 1) % 1, vx, vy];
@@ -94,14 +117,55 @@ export class Flock implements Simulation {
     this.agents = next;
   }
   snapshot(): Snapshot {
-    return { tick: this.tick, data: this.agents.flat() };
+    return {
+      tick: this.tick,
+      data: this.agents.flat(),
+      extra: { schedule: this.schedule.snapshot() },
+    };
   }
   restore(s: Snapshot) {
     if (s.data.length % 4) throw new Error("Invalid flock checkpoint");
     this.tick = s.tick;
+    this.schedule.restore(s.extra?.schedule as any, this.tick);
     this.agents = Array.from({ length: s.data.length / 4 }, (_, i) =>
       s.data.slice(i * 4, i * 4 + 4),
     );
+  }
+  intervene(action: EvolutionAction) {
+    const random = rng(this.seed + action.serial * 997),
+      count = Math.max(
+        1,
+        Math.round(this.agents.length * [0, 0.08, 0.25, 0.5][action.kind]),
+      );
+    for (let i = 0; i < count; i++) {
+      const at = (i * 13 + action.serial) % this.agents.length,
+        angle = random() * Math.PI * 2;
+      if (action.kind === 1) {
+        const a = this.agents[at],
+          dx = action.x - a[0],
+          dy = action.y - a[1],
+          length = Math.hypot(dx, dy) || 1;
+        a[2] = (dx / length) * Number(this.params.velocity);
+        a[3] = (dy / length) * Number(this.params.velocity);
+        continue;
+      }
+      this.agents[at] = [
+        (action.x + 0.15 * Math.cos(angle) + 1) % 1,
+        (action.y + 0.15 * Math.sin(angle) + 1) % 1,
+        Math.cos(angle) * Number(this.params.velocity),
+        Math.sin(angle) * Number(this.params.velocity),
+      ];
+    }
+  }
+  activitySample() {
+    const sample = new Float32Array(640);
+    for (const a of this.agents) {
+      const i =
+        Math.min(19, Math.floor(a[1] * 20)) * 32 +
+        Math.min(31, Math.floor(a[0] * 32));
+      sample[i] = Math.min(1, sample[i] + 0.25);
+    }
+    return sample;
   }
   paint(
     ctx: CanvasRenderingContext2D,
@@ -129,6 +193,15 @@ export class Flock implements Simulation {
       ctx.restore();
     });
     if (this.params.predator) {
+      const presence =
+        variationOf(this.params) > 0
+          ? Math.pow(
+              0.5 +
+                0.5 * Math.sin((this.tick / 60) * 0.083 + this.seed * 0.001),
+              2,
+            )
+          : 1;
+      ctx.globalAlpha = presence;
       ctx.fillStyle = "#ef8e68";
       ctx.beginPath();
       ctx.arc(
@@ -139,6 +212,7 @@ export class Flock implements Simulation {
         Math.PI * 2,
       );
       ctx.fill();
+      ctx.globalAlpha = 1;
     }
   }
   dispose() {}

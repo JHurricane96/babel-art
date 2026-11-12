@@ -36,6 +36,10 @@ jobs:
         run: npm run test:chemical
         env:
           CHROME_BIN: google-chrome
+      - name: Evolution regressions
+        run: npm run test:evolution
+        env:
+          CHROME_BIN: google-chrome
       - name: Package frontend
         run: npm run build:pages
       - name: Upload Pages artifact

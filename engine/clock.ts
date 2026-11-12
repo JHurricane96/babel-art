@@ -15,11 +15,15 @@ export class PresentationClock {
     }
     this.rate = rate;
   }
-  advance(seconds: number, rate: number) {
+  advance(seconds: number, rate: number, simulationSeconds = seconds) {
     this.wallMs += seconds * 1000;
-    this.sceneMs += seconds * 1000 * rate;
-    this.rate = rate;
-    this.points.push({ wall: this.wallMs, scene: this.sceneMs, rate });
+    this.sceneMs += simulationSeconds * 1000 * rate;
+    this.rate = seconds > 0 ? (rate * simulationSeconds) / seconds : rate;
+    this.points.push({
+      wall: this.wallMs,
+      scene: this.sceneMs,
+      rate: this.rate,
+    });
     while (this.points.length > 2 && this.points[1].wall < this.wallMs - 2000)
       this.points.shift();
   }

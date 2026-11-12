@@ -1,3 +1,4 @@
+import { validateSchedule, validateAction } from "../engine/evolution.ts";
 import { PERFECT } from "./timing.js";
 
 import { registry, defaults, parameters } from "../scenes/registry.ts";
@@ -154,6 +155,14 @@ export function validateProject(input) {
   });
   if (typeof input.timingEnabled !== "boolean")
     throw new Error("Invalid timing toggle.");
+  const replayFloor = input.replayFloor ?? 0;
+  if (
+    !Number.isInteger(replayFloor) ||
+    replayFloor < 0 ||
+    replayFloor > 18921600000 ||
+    (replayFloor > 0 && input.baseCheckpoint?.tick !== replayFloor)
+  )
+    throw new Error("Invalid replay anchor");
   return {
     schemaVersion: 2,
     scene: {
@@ -172,6 +181,10 @@ export function validateProject(input) {
     time:
       number(input.time, 0, 315360000, "time") *
       (input.schemaVersion === 1 ? scene.speed : 1),
+    ...(input.replayFloor ? { replayFloor } : {}),
+    ...(input.baseCheckpoint
+      ? { baseCheckpoint: validateCheckpoint(input.baseCheckpoint, scene) }
+      : {}),
     ...(input.checkpoint
       ? { checkpoint: validateCheckpoint(input.checkpoint, scene) }
       : {}),
@@ -234,8 +247,20 @@ function validateCheckpoint(c, scene) {
   return {
     tick: c.tick,
     data: c.data,
-    ...(c.extra?.params
-      ? { extra: { params: parameters(scene.id, c.extra.params) } }
+    ...(c.extra
+      ? {
+          extra: {
+            ...(c.extra.params
+              ? { params: parameters(scene.id, c.extra.params) }
+              : {}),
+            ...(c.extra.schedule
+              ? { schedule: validateSchedule(c.extra.schedule) }
+              : {}),
+            ...(c.extra.pending
+              ? { pending: validateAction(c.extra.pending) }
+              : {}),
+          },
+        }
       : {}),
   };
 }
@@ -260,6 +285,13 @@ function validateEvents(events, id) {
   return events.map((e) => {
     if (!Number.isInteger(e.tick) || e.tick < 0 || e.tick > 18921600000)
       throw new Error("Invalid event");
-    return { tick: e.tick, params: parameters(id, e.params) };
+    if (!e.params && !e.intervention) throw new Error("Invalid timeline event");
+    return {
+      tick: e.tick,
+      ...(e.params ? { params: parameters(id, e.params) } : {}),
+      ...(e.intervention
+        ? { intervention: validateAction(e.intervention) }
+        : {}),
+    };
   });
 }

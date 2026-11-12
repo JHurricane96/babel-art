@@ -1,3 +1,5 @@
+import { fragment as interference } from "./interference";
+import { fragment as contours } from "./contours";
 import { CHEMICAL_PRESETS, DEFAULT_CHEMICAL_PRESET } from "../engine/chemical";
 import { Grid } from "../engine/grid";
 import { Flock, Platformer } from "../engine/entities";
@@ -186,3 +188,22 @@ export function parameters(id: string, value: Params = {}): Params {
   }
   return result;
 }
+
+for (const id of ["tapestry", "chemical", "murmuration"])
+  Object.assign(registry[id].parameters, {
+    variation: { label: "Variation", value: 0.65, min: 0, max: 1, step: 0.05 },
+    autoRecovery: { label: "Automatic recovery", value: true },
+  });
+
+registry.interference = procedural(
+  "Interference bloom",
+  "Waves that never settle",
+  "Interacting fields continuously form, fold and dissolve luminous structures.",
+  interference,
+);
+registry.contours = procedural(
+  "Living contours",
+  "An evolving landscape",
+  "Contour lines reveal a landscape that continuously reshapes itself.",
+  contours,
+);

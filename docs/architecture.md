@@ -37,3 +37,20 @@ The gallery includes named snapshots and favorites. Each new gallery entry inclu
 ## Future deployment
 
 The renderer does not assume HDMI topology or hardware frame lock. A coordinator can later distribute versioned recipes, scheduled changes and authoritative snapshots, while renderer nodes retain caches. Stateful GPU simulations need a state-authority/checkpoint strategy; matching seeds and network clocks alone is insufficient. Voice, other autonomous game genres, player controls, and multi-Pi networking remain outside this release.
+
+
+## Continuous evolution and recovery
+
+Chemical Garden now has a changing divergence-free transport field and seeded moving reagent emissions. Living Tapestry emits gliders or cyclic waves on deadlines checked every engine tick, so a generation rate such as 9 Hz cannot skip the event schedule. Murmuration continuously blends gathering, split-stream and vortex influences, changes predator presence, and gently redirects selected agents. `Variation` controls these influences independently from playback speed; `Automatic recovery` controls the stagnation policy. For an unforced experiment, use Variation 0 and disable recovery and autonomous events.
+
+The shared evolution module owns deterministic deadlines and activity policy. GPU grids expose a 32×20 activity sample rather than reading the full-resolution display. Entity scenes expose compact occupancy samples. The monitor samples at staggered intervals, keeps eight observations, and detects low spatial contrast or low temporal change. Empty fields receive a first intervention after two sampled seconds; otherwise quiet states receive help after ten seconds. Actions escalate no faster than once per eight seconds, from local nudges through regional renewal to strong regeneration. Pause and hidden tabs freeze monitoring. Numerical failure requests strong regeneration. The renderer has an independently evolving world-space layer that gradually becomes more prominent during recovery, and hides invalid colors. This is a product fallback, not a promise that every arbitrary simulation parameter will remain physically self-sustaining.
+
+Schedules and pending actions are included in checkpoints. Health-driven interventions are recorded with their simulation tick and validated on import. After 2,048 recorded edits/interventions, the runtime summarizes the preceding history in an exact checkpoint. Replay is then limited to that anchor and later times; the time controls reflect this limit. GPU/image/state history retains the existing fixed budgets. Background project persistence is once per minute, with immediate debounced saves for edits.
+
+Interference Bloom and Living Contours are analytic shader scenes with continuously changing geometry. They have no population or concentration state that can become extinct. All presentation still uses common wall coordinates and per-panel timing. Physical presentation time continues advancing in real milliseconds even when simulation catch-up is capped on a slow host.
+
+## Validation for long runs
+
+`npm run test:evolution` checks forced extinction recovery on the GPU, intervention replay, compaction round trips, and visible change in both analytic scenes. Unit checks also advance the controller through eight simulated hours; that is not a wall-clock soak.
+
+For an actual real-time run: `npm run test:soak -- --hours 8 --scene chemical`. The command builds an isolated instrumented production bundle under ignored `artifacts/soak-site/`, launches its own browser, and writes `artifacts/soak-chemical.json`. Supported scenes also include tapestry, murmuration, interference, contours, and platformer. The runner samples visible frame changes, JS heap, FPS, activity and recovery counts, and every bounded history container. A failed invariant stops the run and records the failure. Reports explicitly say running, failed or passed; only a completed run establishes the corresponding duration. Normal production builds omit the test instrumentation.

@@ -39,7 +39,7 @@ The hosted app uses browser storage at its hosting origin. Localhost saves do no
 - Type simple commands such as “show chemical garden”, “show flocking”, “show platformer”, “geometric”, or the existing commands: calmer/slower, faster, fireflies/particles, ribbons/waves, fractal/Julia, warmer, cooler. Commands are rule-based; Undo restores the previous project edit.
 - Save named artworks, mark favorites, and restore them from Gallery. Export/import JSON for portable backups.
 
-Browser storage holds the last working project and saved collection. It is local to the browser/origin and is not cloud synchronized. Storage is best-effort; export important work. Imports are validated before replacing current work. A loaded or imported artwork opens paused at its saved time; the last working session resumes playback on startup. Session persistence occurs after edits and every ten seconds. Stateful scenes save a portable checkpoint; larger saves use IndexedDB. Browser shutdown may interrupt an in-flight save.
+Browser storage holds the last working project and saved collection. It is local to the browser/origin and is not cloud synchronized. Storage is best-effort; export important work. Imports are validated before replacing current work. A loaded or imported artwork opens paused at its saved time; the last working session resumes playback on startup. Session persistence occurs after edits and every minute. Stateful scenes save a portable checkpoint; larger saves use IndexedDB. Browser shutdown may interrupt an in-flight save.
 
 WebGL is required. Preview quality controls rendering resolution; the FPS counter measures this browser, not eventual Pi or monitor performance. Browser animation can be throttled in background tabs.
 
@@ -58,3 +58,14 @@ Stateful scenes have fixed-step simulation, bounded recent history, saved checkp
 Use `ENDURANCE=1 npm run test:browser` for accelerated 30-minute simulation checks per new scene. These are simulation-time checks, not a 30-minute wall-clock hardware soak test. Screenshots and performance are captured in the test browser; Pi performance is unverified.
 
 Chemical-specific regression checks: `npm run test:chemical` tests the actual GPU simulation for ongoing activity, spatial contrast, preset selection and restart behavior.
+
+
+## Continuous evolution
+
+- **Variation** adds changing chemical currents, timed cellular emitters, and evolving flock formations.
+- **Automatic recovery** detects low activity and renews exhausted regions. It is independent of the optional autonomous-event controls.
+- A continuously evolving visual layer supports the scene while it recovers. The simulation stays shared across all screens.
+- **Interference Bloom** and **Living Contours** add two continuously morphing procedural artworks.
+- Save/load retains evolution schedules and recovery events. Very long event histories are compacted into a checkpoint, which becomes the earliest replayable time.
+
+Run `npm run test:evolution` for the recovery and visual regressions. Run `npm run test:soak -- --hours 8 --scene chemical` for a real eight-hour browser soak. Its JSON report is written under `artifacts/`; simulated-time tests do not replace this validation.

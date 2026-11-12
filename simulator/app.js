@@ -55,6 +55,8 @@ function portable() {
     world: runtime.world,
     events: runtime.events,
     initialParams: runtime.initialParams,
+    replayFloor: runtime.replayFloor,
+    baseCheckpoint: runtime.baseCheckpoint,
   };
 }
 async function persist() {
@@ -83,6 +85,8 @@ function update(fn) {
     delete project.checkpoint;
     delete project.events;
     delete project.initialParams;
+    delete project.replayFloor;
+    delete project.baseCheckpoint;
     if (previousId !== project.scene.id) delete project.world;
   }
   sync();
@@ -190,6 +194,8 @@ for (const [id, s] of Object.entries(SCENES)) {
       delete p.checkpoint;
       delete p.events;
       delete p.initialParams;
+      delete p.replayFloor;
+      delete p.baseCheckpoint;
     });
   $("scenes").append(b);
 }
@@ -272,6 +278,8 @@ function sync() {
       project.world,
       project.events,
       project.initialParams,
+      project.replayFloor,
+      project.baseCheckpoint,
     );
   } catch (e) {
     toast(e.message);
@@ -504,17 +512,19 @@ $("import").onchange = async (e) => {
   e.target.value = "";
 };
 window.addEventListener("pagehide", persist);
-setInterval(persist, 10000);
+setInterval(persist, 60000);
 const clock = new PresentationClock();
 let fpsAt = performance.now(),
   frames = 0,
   diagnosticAt = 0;
 function draw(now) {
-  const dt = Math.min(0.1, (now - last) / 1000);
+  const elapsed = Math.max(0, (now - last) / 1000),
+    dt = Math.min(0.1, elapsed);
   last = now;
+  project.time = Math.max(project.time, runtime.replayFloor / 60);
   clock.align(project.time, project.scene.speed);
   if (playing && !runtime.pending && !document.hidden) {
-    clock.advance(dt, project.scene.speed);
+    clock.advance(elapsed, project.scene.speed, dt);
     project.time = clock.sceneMs / 1000;
   }
   const samples = project.layout.map((p, i) =>
@@ -536,10 +546,13 @@ function draw(now) {
       .seek(project.time, project.checkpoint)
       .catch((e) => toast(e.message));
   }
+  if (playing && !runtime.pending && !document.hidden)
+    runtime.observeHealth(clock.wallMs / 1000);
   const quality = Number($("quality").value);
   runtime.begin(
     $("wall").clientWidth * quality,
     $("wall").clientHeight * quality,
+    clock.wallMs / 1000,
   );
   const colors = PALETTES[project.scene.palette].colors.map((hex) =>
     [1, 3, 5].map((n) => parseInt(hex.slice(n, n + 2), 16) / 255),
@@ -568,6 +581,8 @@ function draw(now) {
     $("time").value = project.time.toFixed(3);
   $("scrub").max = Math.max(120, Math.ceil(project.time / 60) * 60);
   $("scrub").value = project.time;
+  $("scrub").min = runtime.replayFloor / 60;
+  $("time").min = runtime.replayFloor / 60;
   frames++;
   if (now - fpsAt > 750) {
     $("fps").textContent =
@@ -600,6 +615,11 @@ function draw(now) {
   $("replay-status").textContent = runtime.pending
     ? `Replaying · ${((runtime.sim?.tick || 0) / 60).toFixed(1)} s · click to cancel`
     : "";
+  const activity = $("evolution-status");
+  if (activity)
+    activity.textContent = runtime.sim?.activitySample
+      ? `Evolution · ${runtime.health.state.quietSeconds > 3 ? "renewing" : "active"} · ${runtime.health.state.interventions} recoveries`
+      : "";
   requestAnimationFrame(draw);
 }
 function syncParameters() {
@@ -625,6 +645,8 @@ function syncParameters() {
         delete p.checkpoint;
         delete p.events;
         delete p.initialParams;
+        delete p.replayFloor;
+        delete p.baseCheckpoint;
         // Presets reset the simulation even if the seed and resolution are unchanged.
         runtime.key = "";
       });
@@ -679,11 +701,20 @@ function syncParameters() {
           delete p.checkpoint;
           delete p.events;
           delete p.initialParams;
+          delete p.replayFloor;
+          delete p.baseCheckpoint;
         }
       });
     };
     label.append(field);
     box.append(label);
+  }
+  if (def.kind !== "procedural" && project.scene.id !== "platformer") {
+    const note = document.createElement("p");
+    note.className = "note";
+    note.textContent =
+      "Variation drives changes over time. For an unforced simulation, set it to zero and turn off automatic recovery and autonomous events.";
+    box.append(note);
   }
   const label = document.createElement("label");
   label.textContent = "Visual style";
@@ -705,5 +736,5 @@ document.addEventListener("visibilitychange", () => {
 });
 sync();
 requestAnimationFrame(draw);
-if (import.meta.env.DEV)
-  window.babelDebug = { runtime, project: () => project };
+if (import.meta.env.DEV || import.meta.env.MODE === "soak")
+  window.babelDebug = { runtime, project: () => project, clock };
