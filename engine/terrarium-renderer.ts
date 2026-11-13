@@ -194,7 +194,12 @@ export class WorldRenderer implements SceneRenderer {
       }
       for (let i = 0; i < 3; i++) {
         const site = c.structures[i],
-          state = d[offset + 80 + i * 3] > 0.6 ? 2 : 0;
+          state =
+            d[offset + 80 + i * 3] > 0.6
+              ? d[offset + 80 + i * 3 + 2] > 0
+                ? 2
+                : 1
+              : 0;
         this.sprite(
           STRUCTURE_BASE + site.kind * 3 + state,
           site.x - cam - 24,

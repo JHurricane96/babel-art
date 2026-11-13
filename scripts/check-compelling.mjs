@@ -91,6 +91,26 @@ try {
     );
     console.log(id, result.stats);
   }
+  // A discovery must visibly change a repaired landmark, independently of motion.
+  await evaluate(
+    `(()=>{const r=babelDebug.runtime;window.landmarkCheckpoint=r.sim.snapshot();for(const s of r.sim.chunkStates.values())for(let i=0;i<3;i++){s.structures[i*3]=1;s.structures[i*3+2]=0;}r.renderStates.clear();r.capture();r.clearImages();})()`,
+  );
+  await frame();
+  const unlit = await evaluate(
+    "document.getElementById('compositor').toDataURL()",
+  );
+  await evaluate(
+    `(()=>{const r=babelDebug.runtime;for(const s of r.sim.chunkStates.values())for(let i=0;i<3;i++)s.structures[i*3+2]=1;r.renderStates.clear();r.capture();r.clearImages();})()`,
+  );
+  await frame();
+  assert.ok(
+    (await evaluate("document.getElementById('compositor').toDataURL()")) !==
+      unlit,
+    "Discoveries must illuminate repaired landmarks",
+  );
+  await evaluate(
+    `(()=>{const r=babelDebug.runtime;r.sim.restore(window.landmarkCheckpoint);r.renderStates.clear();r.capture();r.clearImages();delete window.landmarkCheckpoint;})()`,
+  );
   assert.equal(identities.size, 4);
   await evaluate(
     `document.getElementById('quality').value='auto';document.getElementById('play').click()`,
