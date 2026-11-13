@@ -1,0 +1,1267 @@
+PROJECT HANDOFF: BABEL ART
+Context through November 13, 2026
+
+This document summarizes an ongoing project, the user’s preferences, the architecture, completed work, validation, and remaining limitations. It is context for continuing the conversation, not a request to immediately implement additional features.
+
+======================================================================
+1. PROJECT, REPOSITORY, AND CURRENT DEPLOYMENT
+======================================================================
+
+Project: Babel Art / generative art wall.
+
+Repository:
+https://github.com/JHurricane96/babel-art
+
+Live application:
+https://jhurricane96.github.io/babel-art/
+
+Default branch: main
+
+Latest published application commit:
+eb69ae8039ab3ebce9992a4cf631225a6ffcd980
+
+Latest successful application GitHub Actions run:
+https://github.com/JHurricane96/babel-art/actions/runs/43525257860
+
+The latest application release was implemented in two commits:
+
+1. 1b3160e182cdca0797359e563859e10aab19b463
+   Main implementation:
+   - Directed Life ecology.
+   - Native GPU rendering and compact entity history.
+   - New procedural pixel-art Terrarium Worlds scene.
+
+2. eb69ae8039ab3ebce9992a4cf631225a6ffcd980
+   Follow-up:
+   - Discovered, repaired landmarks visibly illuminate.
+   - Browser regression verifies that lighting changes independently of motion.
+
+At final application verification:
+- GitHub Actions build and deployment both succeeded.
+- The public page and JavaScript asset returned HTTP 200.
+- The served JavaScript exactly matched the locally built production asset by SHA-256.
+- The served asset was:
+  /babel-art/assets/index-DILP4RRN.js
+- New scene/preset identifiers were present.
+- The development debug bridge was absent from production.
+
+Local workspace during this conversation:
+  /workspace/babel-art
+
+A different provider should inspect or clone the repository rather than assume it has this workspace.
+
+Historical Git situation:
+The original local workspace did not have a useful tracked Git baseline; files appeared untracked despite matching the remote project. Changes were published through GitHub Git-data tools using base trees, commits, and expected-head leases. The final remote source tree was checked against local files. A fresh normal clone is preferable for future work.
+
+======================================================================
+2. USER’S CENTRAL GOALS AND PREFERENCES
+======================================================================
+
+The project is an autonomous generative-art installation viewed across four physical monitors, including the spaces between monitors.
+
+The user wants:
+- Artworks that remain engaging for hours.
+- Continuous temporal variation.
+- Visually striking individual frames.
+- Rich textures, colors, detail, and compositions.
+- More sophisticated behavior, rather than merely adding decorative objects.
+- Good performance on a laptop browser with integrated graphics.
+- Autonomous gameplay only; no player-controlled gameplay for now.
+- Procedural variation in actors, items, structures, terrain, and backgrounds.
+- Frontend-only deployment where practical.
+- GitHub Pages hosting through GitHub Actions.
+- Simulation of monitor delay, refresh differences, jitter, and scanout effects, because professional frame-synchronized GPU hardware may not be used.
+
+Important reactions and corrections:
+- The user found Chemical Garden initially broken: it collapsed quickly and preset selection did not work properly. Those problems were addressed in earlier releases.
+- The user repeatedly emphasized that simulations must not degenerate into static or visually dull states.
+- The user criticized an actual eight-hour wall-clock test being used as if it should be required for every artwork.
+- The agreed testing approach is fast regressions and accelerated runs of the actual simulations, with occasional multi-hour qualification for shared runtime or installation hardware changes.
+- Do not start an overnight soak for every new artwork.
+- The user explicitly prioritized improving the artworks over building exhibition/installation-management features.
+- A proposal for curated shows, transitions, kiosk presentation, etc. was deferred in favor of artwork quality.
+- They considered the original platformer and murmuration too simplistic.
+- For the new terrarium they chose:
+  - A living world with interacting inhabitants.
+  - Detailed pixel art.
+  - A slowly roaming panorama.
+- For Life they chose:
+  - Directed ecology while retaining Conway’s cell rules.
+  - An unassisted option.
+- They asked to preserve the original terrarium and add a new variant.
+
+Working relationship:
+- The user commonly asks for a plan, approves it, then asks for implementation or says “Continue.”
+- Carry approved implementation through testing and deployment instead of stopping after a partial implementation.
+- Give truthful status updates and distinguish completed validation from intended targets.
+- Do not claim that motion metrics prove artistic quality.
+- Do not claim hardware performance that has not actually been measured.
+
+======================================================================
+3. ORIGINAL CONTEXT AND CONVERSATION HISTORY
+======================================================================
+
+The project originated in an earlier ChatGPT conversation:
+https://chatgpt.com/share/6af2cf65-d7ac-83e8-a77e-a705fbec9bc5?ogimg=blue
+
+An original brief was uploaded:
+  generative_art_wall_codex_brief.txt
+
+That attachment may not transfer to another provider. The repository and these notes reflect substantial later work and are more current than the initial brief.
+
+Broad chronology:
+1. Imported/discussed the art-installation concept.
+2. Built a frontend prototype in the Babel Art repository.
+3. Added physical-space layout and monitor timing experiments.
+4. Added GitHub Actions / GitHub Pages deployment.
+5. Explained shader concepts and proposed a broader scene architecture.
+6. Added cellular automata, chemical simulation, flocking, autonomous platforming, and other artworks.
+7. Fixed Chemical Garden initialization/preset behavior.
+8. Added continuous evolution, deterministic interventions, activity monitoring, and recovery.
+9. Added richer materials, palettes, surface detail, and additional analytic artworks.
+10. Added Particle Rivers.
+11. Added Slime Mold Networks and adaptive presentation quality.
+12. Upgraded the original platformer’s scenery/biomes and flock choreography.
+13. The user redirected priorities toward compelling artwork:
+    - Life still had lulls.
+    - Rivers, Slime, and Murmuration lagged.
+    - The terrarium needed many more meaningful actors/items/environments.
+14. A detailed plan was approved and implemented:
+    - Shared renderer optimization.
+    - Directed Life ecology.
+    - Separate procedural pixel-art Terrarium Worlds.
+15. All changes were published and verified.
+
+The latest user request is to save and push this handoff document. It is not a request for another application feature.
+
+======================================================================
+4. TECHNOLOGY AND OVERALL ARCHITECTURE
+======================================================================
+
+The deployed app is entirely frontend-only:
+- Vite.
+- TypeScript for engine and scene modules.
+- JavaScript for the existing DOM application.
+- WebGL/WebGL2.
+- CPU simulations where appropriate.
+- IndexedDB for browser-local persistence.
+- Static hosting on GitHub Pages.
+- No backend or hosted model inference.
+
+Node requirement:
+  Node.js 22 or newer.
+
+Dependencies are primarily development tooling:
+- Vite.
+- TypeScript.
+- tsx.
+- Prettier.
+
+The app uses one shared WebGL context to render the wall preview.
+
+Three broad scene foundations:
+1. Procedural shaders:
+   Analytic functions of position/time, without an evolving population/grid.
+2. GPU grids:
+   Ping-pong state textures for cellular automata and reaction-diffusion.
+3. CPU entities:
+   Deterministic simulation, with separate presentation/rendering.
+
+Important files:
+- scenes/registry.ts
+  Scene definitions, factories, parameters, styles, presets, renderer factories.
+- scenes/release.ts
+  Historical staged availability. RELEASE is still 4; newer scenes without a stage restriction are available.
+- engine/types.ts
+  Scene, Parameter, Simulation, Snapshot, EntitySimulation contracts.
+- engine/runtime.ts
+  Simulation lifecycle, checkpoints, history, seeking, rendering, monitor sampling.
+- engine/render-frame.ts
+  Compact render-frame and native renderer interfaces.
+- engine/grid.ts
+  GPU grid engine and GLSL compilation compatibility.
+- engine/evolution.ts
+  Shared deterministic schedules and activity/recovery watchdog.
+- engine/quality.ts
+  Adaptive presentation resolution.
+- simulator/app.js
+  DOM UI, application loop, project state, controls, persistence integration.
+- shared/model.js
+  Project normalization, migration, validation, checkpoint validation.
+- shared/timing.js
+  Refresh/readiness/scanout timing model.
+- engine/storage.ts
+  Browser persistence.
+- engine/commands.ts
+  Validated structured commands and a rule-based text adapter.
+
+The architecture does not execute arbitrary generated code or use a model to run the simulation.
+
+======================================================================
+5. PHYSICAL SPACE AND DISPLAY TIMING
+======================================================================
+
+The app models four panels as windows into one shared world.
+
+Panel properties include:
+- Position in millimeters.
+- Active image width and height.
+- Bezel.
+- Rotation.
+- Timing settings.
+
+Default active panel dimensions are approximately:
+  531 × 299 mm
+with 6 mm bezels and configurable gaps/layouts.
+
+Layouts include:
+- Grid.
+- Staggered.
+- Cascade.
+
+Important invariant:
+Objects continue through physical gaps. Each panel must not run its own independent simulation or camera.
+
+For stateful scenes:
+- World bounds are captured from the layout when starting the scene.
+- Moving panels changes the windows into the world.
+- It does not resize/reseed the simulation.
+
+Timing experiments include:
+- Delay.
+- Refresh frequency.
+- Refresh phase.
+- Jitter.
+- Drift for procedural scenes.
+- No scanout, top-down scanout, or bottom-up scanout.
+
+Current validation permits roughly:
+- Delay: 0–500 ms.
+- Refresh: 24–144 Hz.
+- Phase: 0–50 ms.
+- Jitter: 0–30 ms.
+- Drift: ±200 ppm.
+
+Timing presets include aligned, independent, mixed, and exaggerated configurations.
+
+The timing model selects historical states/images and can choose current versus previous samples by scanout row.
+
+It is a simulation of display synchronization issues. It does not provide actual HDMI frame lock or professional GPU synchronization.
+
+There are separate notions of:
+- Fixed simulation ticks.
+- Scene/playback time.
+- Physical presentation time.
+
+Simulation:
+- 60 Hz fixed tick.
+- Per-frame catch-up is capped.
+- Playback speed changes future clock advancement, not the interpretation of all past time.
+- Physical presentation time remains based on real elapsed milliseconds while slow-host simulation catch-up is bounded.
+- Hidden tabs and paused playback freeze advancement/monitoring.
+- Stateful-scene clock drift is disabled.
+
+======================================================================
+6. PERSISTENCE, REPLAY, AND COMPATIBILITY
+======================================================================
+
+Current project schema version:
+  2
+
+Current registered scene version:
+  1
+
+Version-1 projects are migrated through existing normalization logic.
+
+Persistence:
+- Last project and gallery in IndexedDB.
+- Legacy localStorage records are migrated without deleting the old keys.
+- JSON import/export.
+- Gallery entries include local thumbnails.
+- Background persistence approximately once per minute.
+- Edits trigger debounced persistence.
+- JSON import limit: 16 MB.
+- Browser storage is local, not cross-device synchronization.
+
+Replay:
+- Simulation parameter edits are recorded by tick.
+- Health-driven interventions are recorded.
+- Checkpoints include the active parameters.
+- Seeking restores a checkpoint or initial recipe and replays events.
+- Replays run asynchronously in yielding batches and can be cancelled.
+- The clock pauses during pending seeks.
+
+Bounded event history:
+- After 2,048 recorded edits/interventions, prior history is summarized in an exact base checkpoint.
+- replayFloor records the earliest remaining replay time.
+- UI controls reflect that floor.
+
+Determinism:
+- Exact CPU replay is tested within the same runtime.
+- GPU replay is tested within the same browser/device.
+- Do not promise cross-device bitwise identity, especially for floating-point reaction-diffusion.
+
+Canonical portable checkpoint:
+  Snapshot {
+    tick: number,
+    data: number[],
+    extra?: object
+  }
+
+Do not export compact display history as if it were an authoritative checkpoint.
+
+======================================================================
+7. NEW RENDERING ARCHITECTURE AND PERFORMANCE WORK
+======================================================================
+
+The old entity path had substantial avoidable work:
+- Full simulation snapshots during each panel draw.
+- Live-state restoration to paint historical frames.
+- Repeated Canvas2D-to-WebGL image transfer.
+- Texture allocation churn.
+- Preparing previous frames even when scanout did not use them.
+
+The initial short software-renderer profile showed:
+- About 775–930 snapshot calls per five-second sample.
+- Canvas uploads occupying about 2–3.7 seconds of those samples.
+- Slime spending about a second creating full snapshots.
+
+The new architecture separates:
+1. Authoritative simulation state.
+2. Compact display history.
+3. Portable save/replay checkpoints.
+
+Key interfaces:
+- Simulation.captureFrame(previous?)
+- Scene.createRenderer(gl)
+- SceneRenderer.render(frame, appearance, width, height)
+- SceneRenderer.dispose()
+
+RenderFrame contains:
+- tick.
+- Float32Array data.
+- Parameters.
+- Optional visual metadata.
+
+Important:
+- Simulation precision remains unchanged.
+- Float32 conversion is for presentation history only.
+- Native rendering consumes read-only frames.
+- It does not restore or mutate the live simulation.
+- Render buffers are reused.
+
+The runtime prepares all requested panel source times before drawing:
+- Each distinct source image is rendered once and reused.
+- Previous images are requested only when scanout needs them.
+- Aligned views normally use two reusable image textures.
+- Delayed/mixed views expand the working cache as needed.
+- Textures are reused after the cache fills.
+- Cached images are invalidated when presentation scale or appearance changes.
+
+Budgets:
+- At most 192 entity render frames.
+- Default numeric entity history budget: 24 MiB.
+- Slime numeric history budget: 32 MiB.
+- Eight authoritative checkpoints.
+- GPU grid history: 96 MiB budget, at most 192 samples.
+- Entity image cache: at most 64 images and 64 MiB pixel payload.
+- Atlas resources, working vertex buffers, JavaScript object overhead, and driver memory are additional.
+
+Runtime.states remains available as a compatibility/diagnostic view:
+- Native scenes expose renderStates.
+- Legacy Canvas scenes expose entityStates.
+
+Native artwork renderer:
+  engine/gpu-art.ts
+
+It includes:
+- Reusable GPU batches for geometry/sprites.
+- Instanced particle ribbons on accelerated drivers.
+- Expanded triangle fallback on CPU/software rasterizers.
+- Direct Slime field shading.
+- Batched flock geometry.
+
+Software-driver selection:
+- Detects renderer strings such as SwiftShader, llvmpipe, or software.
+- Small-instance dispatch was slower on the CPU rasterizer, so Rivers uses the expanded batch there.
+- Both accelerated instancing APIs are explicitly exercised by tests.
+
+Important GL implementation lessons:
+- Renderers share a context and must restore/rebind relevant GL state.
+- Grid and renderers own their own quad buffers.
+- Rebind compositor program, framebuffer, viewport, textures, and attributes after offscreen rendering.
+- Reset instancing divisors and disable extra vertex attributes.
+- Bind a safe white texture for untextured batches; a declared sampler can cause framebuffer feedback even when a shader branch does not sample it.
+- Appearance richness uses current appearance parameters rather than stale historical simulation parameters.
+
+Original Platformer Terrarium retains its Canvas renderer.
+
+======================================================================
+8. ADAPTIVE PRESENTATION QUALITY
+======================================================================
+
+Preview quality affects presentation, not simulation rules or population.
+
+Modes:
+- Auto.
+- Economy: 0.75.
+- Balanced: 1.
+- High: 2.
+
+Auto:
+- Initial scale: 1.
+- Warmup: two seconds.
+- Evaluates active frame intervals in one-second windows.
+- After two windows below 50 FPS, lowers scale by 0.125.
+- After twelve windows above 58 FPS, raises scale by 0.125.
+- Auto range: 0.5–1.5.
+- Pauses, hidden tabs, replay, and long observation gaps reset observation windows while retaining scale.
+
+This release changed the thresholds from the older 28/52 FPS policy to favor smoother motion sooner.
+
+It does not change:
+- Population.
+- Simulation resolution.
+- Physics.
+- Playback speed.
+- Physical display timing.
+
+Terrarium Worlds keeps its 960×600 logical pixel-art source resolution. The compositor still follows preview quality.
+
+Quality is a view setting, not part of the saved artwork recipe.
+
+======================================================================
+9. CURRENT ARTWORK CATALOG
+======================================================================
+
+Scene IDs and display names:
+
+- ribbons
+  Tidal ribbons.
+  Analytic flowing shader.
+
+- julia
+  Julia garden.
+  Continuously varying fractal.
+  The user cited this as a good example of sustained temporal interest.
+
+- fireflies
+  Gap travelers.
+  Original procedural firefly artwork across shared world coordinates.
+
+- test
+  Sync study.
+  Bars/lines that make timing differences visible.
+
+- tapestry
+  Living tapestry.
+  Conway Life or cyclic cellular automata.
+
+- chemical
+  Chemical garden.
+  Gray–Scott reaction-diffusion.
+
+- murmuration
+  Murmuration.
+  Autonomous flocking.
+
+- platformer
+  Platformer terrarium.
+  Original autonomous expedition artwork.
+
+- rivers
+  Particle rivers.
+  Stateful flow-field particle trails.
+
+- slime
+  Slime mold networks.
+  Sensor/deposit trail feedback.
+
+- interference
+  Interference bloom.
+  Analytic continuously changing wave structures.
+
+- contours
+  Living contours.
+  Analytic evolving contours/strata.
+
+- terrarium-worlds
+  Terrarium worlds.
+  New autonomous procedural pixel-art world.
+
+Shared palette IDs:
+- aurora
+- ember
+- iris
+- moss
+- cobalt
+- lagoon
+- orchid
+- mineral
+
+Common visual direction:
+- Broad composition and color masses at a distance.
+- Mid-scale structures.
+- Fine texture, material, and highlights up close.
+- Preserve meaningful quiet space.
+- Avoid uniform noise, muddy color, and every particle being equally bright.
+- World-space texture should remain continuous through panel gaps.
+
+======================================================================
+10. LIVING TAPESTRY / GAME OF LIFE
+======================================================================
+
+Main implementation:
+- engine/grid.ts
+- engine/life.ts
+- engine/display.ts
+- scenes/registry.ts
+
+GPU grid:
+- Width 128 or 256.
+- Height approximately width × 0.625.
+- Conway B3/S23 or 16-state cyclic automata.
+- Toroidal neighbor sampling.
+- Generation-rate and trail controls.
+
+New directed Life ecology:
+- Conway’s local cell rule remains unchanged.
+- A deterministic external director introduces/renews colonies.
+- Directed mode is intended for sustained artwork.
+- Unassisted mode disables ecological interventions and automatic recovery.
+
+Pattern library:
+1. Glider.
+2. Lightweight spaceship.
+3. Middleweight spaceship.
+4. Heavyweight spaceship.
+5. R-pentomino.
+6. Acorn.
+7. Diehard.
+8. Pi-heptomino.
+9. B-heptomino.
+10. Gosper glider gun.
+11. Pulsar.
+12. Pentadecathlon.
+
+Patterns use seeded:
+- Placement.
+- Rotation.
+- Reflection.
+- Selection/composition.
+
+New presets:
+- Crosscurrents.
+- Bloom fields.
+- Constellations.
+
+Monitoring:
+- Samples actual cellular state twice per simulation second.
+- Divides the field into twelve regions.
+- Tracks density/change and recurring regional hashes.
+- Keeps up to 32 recent hash observations.
+- Distinguishes broad evolving activity from sparse survivors or repetitive local oscillation.
+- Cosmetic shader animation is not counted as cellular activity.
+
+Renewal:
+- Approximately every four to eight simulation seconds at default variation.
+- Earlier intervention for quiet fields.
+- Up to four patches per event.
+- Combined renewed footprint at most ten percent of the field.
+- Locations rotate rather than repeatedly targeting one spot.
+- Existing structures outside patches survive.
+
+Presentation:
+- Birth highlights.
+- Cell-age differentiation.
+- Fading generation trails.
+- Mosaic/material detail.
+- Appearance does not feed back into Conway physics.
+
+Compatibility:
+- Hidden ecologyVersion is 2 for new recipes.
+- Imported older recipes receive ecologyVersion 1, including initial/checkpoint/event parameter normalization.
+- Old recipes retain their prior evolution behavior until an explicit restart or preset selection.
+- Selecting a new Life preset or clicking “Restart artwork” enables the new ecology.
+- This instruction is important for an existing user opening an old saved Life project.
+
+Director checkpoint state includes:
+- Version.
+- Next deadline.
+- Event serial.
+- Quiet budget.
+- Previous binary field.
+- Recent regional hashes.
+- Seeded/changed regional timestamps.
+
+Validation:
+- CPU reference generation agrees with the GPU.
+- Standard pattern counts/periods/displacement are tested.
+- Blank, still-life, and oscillator fields receive distributed renewal.
+- Unassisted mode stays untouched.
+- Save/replay includes all director decision memory.
+
+Latest long GPU checks:
+- All three presets completed thirty simulated minutes.
+- Their reported regional coverage remained distributed throughout the checked runs.
+- The reported maximum quiet budget was zero in those cases.
+- This is evidence for the tested presets/seed, not a mathematical guarantee for arbitrary settings.
+- The browser stress script currently uses the app’s seed and does not record it in its result, so improve seed recording if reproducibility across dates becomes important.
+
+======================================================================
+11. CHEMICAL GARDEN
+======================================================================
+
+Implementation:
+- engine/chemical.ts
+- engine/grid.ts
+- engine/display.ts
+
+Gray–Scott reaction-diffusion on floating-point GPU targets.
+
+Presets:
+- Coral.
+- Dividing cells.
+- Labyrinth.
+
+Earlier fixes addressed:
+- Bad initial behavior / rapid collapse.
+- Preset selection not sticking.
+- Clean preset restarts.
+
+Continuous evolution:
+- Changing transport/advection.
+- Seeded reagent disturbances.
+- Activity monitoring.
+- Logged recovery interventions.
+
+Presentation:
+- Smooth concentration shading.
+- Pigment/material detail.
+- Membrane accents.
+- Relief/lighting.
+- Flat examination style.
+- Manual bilinear interpolation avoids relying on float-linear texture extensions.
+
+Requires WebGL2 floating-point render-target support:
+  EXT_color_buffer_float
+
+Unsupported hardware gets an explanation and falls back to a procedural scene.
+
+Do not claim cross-device floating-point replay identity.
+
+======================================================================
+12. PARTICLE RIVERS
+======================================================================
+
+Implementation:
+  engine/particles.ts
+
+Defaults:
+- Population 960.
+- Range 240–1,800.
+- Current speed and flow-complexity controls.
+- Style: silk.
+
+Simulation:
+- Fixed population.
+- Deterministic drifting analytic flow and moving vortices.
+- Shared seeded gather/split/vortex choreography.
+- Six stored trail points plus head per particle.
+- PARTICLE_STRIDE = 14 numbers.
+- Trail samples shift every six ticks.
+- Deterministic recirculation avoids permanent concentration on a few orbits.
+- All trail points are checkpointed.
+
+Presentation:
+- Broad colored underpainting.
+- Fine filament layer.
+- Bright heads.
+- Native GPU ribbons on accelerated drivers.
+- Expanded batched geometry on software drivers.
+- No accumulating paint canvas or hidden trail history.
+
+======================================================================
+13. SLIME MOLD NETWORKS
+======================================================================
+
+Implementation:
+  engine/slime.ts
+
+Field:
+- 192 × 120 scalar trail.
+- 600–4,000 agents.
+- Default population 2,400.
+
+Presets:
+- Mycelium.
+- Copper delta.
+- Night bloom.
+
+Simulation:
+- Three forward sensors per agent.
+- Compare front, left, and right trail/nutrient strength.
+- Move, deposit, diffuse, and decay.
+- Preserve heading when front is stronger; an earlier steering bug was fixed.
+- Five moving renewable Gaussian nutrient pools.
+- Deterministic agent recirculation.
+- 120-step warm start, then displayed tick resets to zero.
+
+Checkpoint:
+- Complete trail field.
+- Three values per agent: position and heading.
+- Nutrients are derived from seed/tick/variation.
+- Scratch buffers are not causal hidden state.
+
+Presentation:
+- Upload compact concentration data directly.
+- Packed 16-bit precision in RG channels.
+- GPU tone mapping, pigment, grain, and fine field detail.
+- Batched directional marks and agent tips.
+- Styles: luminous and etched.
+
+Strong recovery:
+- Replaces all agents.
+- Clears/rebuilds field as appropriate.
+- Logged through shared intervention history.
+
+History budget:
+  32 MiB of typed numeric display data.
+
+======================================================================
+14. MURMURATION
+======================================================================
+
+Implementation:
+- engine/entities.ts
+- engine/choreography.ts
+- engine/gpu-art.ts
+- Older Canvas presentation remains in engine/world-art.ts.
+
+Defaults:
+- 480 birds.
+- Maximum 900.
+- Cohesion, velocity, predator, variation, and appearance controls.
+- Styles: luminous / silhouette.
+
+Behavior:
+- Alignment.
+- Cohesion.
+- Close-range separation.
+- Three cohorts.
+- Gathering, split streams, and vortex chapters.
+- Slowly changing wind.
+- Moving predator.
+- Breathing formations.
+- Bounded turning.
+
+Spatial search:
+- 10×10 numeric spatial bins.
+- Stable neighbor order.
+- At most twelve sampled agents per neighboring cell.
+- Nine neighboring cells, with wrapping.
+- Avoids quadratic dense-flock behavior.
+
+Turning:
+  At most 0.075 radians per tick.
+
+The simulation is two-dimensional.
+Depth cues are visual, not a 3D simulation.
+
+Performance changes:
+- Reusable numeric bins.
+- Shared per-tick choreography calculations.
+- Reused next-agent storage.
+- Compact Float32 render frames.
+- Batched bird geometry.
+
+The simulation still exposes nested numerical agent arrays for compatibility; do not assume its entire authoritative state was converted to one flat typed array.
+
+Checkpoint:
+- Four values per bird.
+- Schedule metadata.
+- Exact same-runtime future replay tested.
+
+======================================================================
+15. ORIGINAL PLATFORMER TERRARIUM
+======================================================================
+
+Scene ID:
+  platformer
+
+This scene remains available alongside the new variant.
+
+Implementation:
+- Platformer in engine/entities.ts.
+- Presentation in engine/world-art.ts.
+
+Behavior:
+- One autonomous explorer follows a generated route.
+- Twenty-two platforms per expedition.
+- Estimates jump flight/landing velocity.
+- Surveys landmarks once.
+- Recovers from falls.
+- Starts a new seeded expedition after completion.
+- Rotates through Glasswood, Amber Ruins, and Tidal Observatory scenery.
+
+Scenery includes:
+- Layered backgrounds.
+- Vegetation.
+- Ruins.
+- Wildlife.
+- Weather.
+- Animated explorer.
+
+Important limitation:
+The extra ambient walkers are scenery, not independent collision actors. This limitation motivated the new variant.
+
+It is a bounded route-following controller, not a general game-solving AI.
+
+Checkpoint compatibility:
+- Original nine-value checkpoints accepted.
+- Ten- and eleven-value checkpoints also accepted.
+- Current eleven values:
+  x, y, vx, vy, ground, stage, deaths, coins, cooldown,
+  visited-landmark mask, terrain generation version.
+
+Old saves retain their original generated geometry until the next expedition.
+Do not accidentally replace or reinterpret old platformer saves as Terrarium Worlds saves.
+
+======================================================================
+16. NEW TERRARIUM WORLDS
+======================================================================
+
+Scene ID:
+  terrarium-worlds
+
+Core files:
+- engine/terrarium-gen.ts
+- engine/terrarium.ts
+- engine/terrarium-atlas.ts
+- engine/terrarium-renderer.ts
+
+It is a separate artwork, not a replacement for platformer.
+
+Visual direction:
+- Detailed procedural pixel art.
+- Original pixel templates.
+- Rich scenery and many simultaneous inhabitants.
+- One slowly roaming panoramic camera.
+
+Logical source:
+  960 × 600 pixels
+
+Sampling:
+  Nearest-neighbor, pixel-aligned presentation.
+
+World generation:
+- Nine active chunks.
+- Each chunk is 320 pixels wide.
+- Three traversable levels.
+- Nine navigation nodes per chunk.
+- Six placement/height motifs combined with four biome grammars.
+- Generated reachable skeleton first, decoration second.
+- Chunks ahead are prepared.
+- Distant chunks behind the camera are retired.
+- Modified retired chunks are not revisited; the camera progresses forward.
+
+Four starting biome presets:
+1. Canopy settlements.
+   Narrow boughs, hanging routes, villages, fruit and pollination.
+
+2. Fungal caverns.
+   Broader stone shelves, tunnels, luminous growth, cave architecture.
+
+3. Rusted aqueducts.
+   Arches, cargo lifts, machinery, salvage, waterwheels.
+
+4. Tidal ruins.
+   Islands, ferries, water, terraces, wetland structures.
+
+Biomes change geometry, traversal, architecture, vegetation, resources, and background shapes, not only colors.
+
+Population presets:
+  48 / 72 / 128
+
+Default 72-actor role distribution:
+- 6 explorers.
+- 8 haulers.
+- 8 builders.
+- 22 grazers.
+- 24 pollinators.
+- 4 hunters/scavengers.
+
+Behavior:
+- Explorers visit and activate landmarks.
+- Haulers collect renewable materials and deliver stock.
+- Builders consume stock to repair structures/routes.
+- Grazers forage and distribute seeds.
+- Pollinators travel between flowers and boost growth.
+- Hunters create pursuits and grazer flight.
+- Hunger can send humanoid inhabitants to food.
+- Low energy introduces rest.
+- Actors age and are replaced outside the view.
+- Obsolete routes are replanned.
+- Renewable resources and bounded arrivals prevent extinction.
+
+Important interaction chains:
+- Pollination → fruit/growth → feeding → seed dispersal → growth.
+- Material gathering → transport → stock → repair → usable routes.
+- Weather/blooms → resource changes → movement/migration.
+- Exploration → remembered discovery → illuminated repaired landmark.
+
+The last published fix connected discovery state to visible landmark lighting.
+
+Navigation:
+- Bounded graph routes.
+- Walking/jumping/climbing/lifts/ferries.
+- Damaged bridges can affect route availability.
+- Maximum route length is bounded.
+- At most four actor goal-planning operations per simulation tick.
+- Work is staggered rather than replanning all actors continuously.
+
+Movement is authored autonomous traversal over a generated navigation graph, including interpolated jump arcs. It is not arbitrary-terrain game AI, reinforcement learning, or a full general collision/physics engine.
+
+Resources/environment:
+- Resource growth updates at one-second intervals.
+- Structures can degrade.
+- Delivered stock is consumed by repairs.
+- An event director introduces local maintenance, blooms, migrations, and rediscoveries approximately every 18–30 seconds.
+- Weather/day lighting vary over time.
+
+Camera:
+- Initially dwells about twenty seconds.
+- Typical subsequent dwell: 15–30 seconds.
+- Travel: 12–20 seconds.
+- Smooth movement.
+- Selects forward compositions using activity/exploration/repair interest.
+- Small local variation while continuing forward.
+- Shared across every panel.
+- Entire travel/dwell state is checkpointed.
+
+Assets:
+- Twelve actor archetypes.
+- Ten action states.
+- Four animation frames per state.
+- Twenty plant/resource families.
+- Four growth/condition stages per biome.
+- Twelve structure families.
+- Three structure conditions.
+- Terrain materials and props.
+- Atlas capacity is 980 cells of 32×48 pixels.
+- Atlas is approximately 1024×1488 pixels.
+
+Atlas is generated from templates, seed, and palette at startup/appearance change.
+Normal playback does not regenerate/upload a canvas every frame.
+
+Rendering:
+- Background shader.
+- Shared sprite/terrain atlas.
+- Batched geometry.
+- Layered scenery, plants, structures, actors, effects.
+- Current Surface/World detail controls remain presentation-only.
+
+World checkpoints:
+- Snapshot.data contains camera.x.
+- Snapshot.extra.world contains:
+  - Version.
+  - Active chunk resource and structure arrays.
+  - Actors.
+  - Routes and action/progress state.
+  - Per-segment movement origins.
+  - Hunger/energy.
+  - Camera.
+  - Weather.
+  - Event deadline.
+  - Counters.
+
+Immutable terrain geometry and atlas data regenerate from seed/index.
+Validation bounds active chunks, population, paths, values, camera state, and counters.
+
+This is a deliberately bounded living-world artwork, not an unbounded persistent sandbox.
+
+======================================================================
+17. SHARED EVOLUTION AND RECOVERY
+======================================================================
+
+engine/evolution.ts supplies:
+- Deterministic scheduled actions.
+- Compact activity monitoring.
+- Escalating recovery.
+- Validation for schedule/action metadata.
+
+Shared watchdog:
+- Samples compact simulation activity.
+- Keeps a small recent observation window.
+- Detects low contrast/change or invalid state.
+- Empty states receive early help.
+- Other quiet states escalate more slowly.
+- Numerical failure can request immediate strong recovery.
+- Pause/hidden/replay do not drive recovery.
+- Health interventions are recorded for replay.
+
+There is also a presentation fallback layer during recovery.
+
+Important:
+Do not confuse cosmetic fallback animation with a healthy simulation.
+Life now has its own state-based regional director in addition to the general watchdog.
+
+Analytic scenes such as Julia, Interference, and Contours do not have populations that can become extinct.
+
+======================================================================
+18. TESTS, COMMANDS, AND VALIDATION
+======================================================================
+
+Normal commands:
+
+  npm ci
+  npm start
+  npm run typecheck
+  npm test
+  npm run build:pages
+
+Browser suites:
+
+  npm run test:browser
+  npm run test:chemical
+  npm run test:evolution
+  npm run test:visuals
+  npm run test:networks
+  npm run test:worlds
+  npm run test:compelling
+  npm run test:performance
+  npm run test:webgl1
+
+Longer accelerated checks:
+
+  npm run test:artwork-stress
+  npm run test:life-stress
+
+Duration control:
+
+  BABEL_STRESS_MINUTES=30 npm run test:artwork-stress
+  BABEL_STRESS_MINUTES=30 npm run test:life-stress
+
+Targeted CPU stress:
+
+  BABEL_STRESS_SCENE=terrarium-worlds npm run test:artwork-stress
+
+Longer performance sampling:
+
+  BABEL_PROFILE_SECONDS=30 npm run test:performance
+
+Browser executable override:
+
+  CHROME_BIN=google-chrome
+
+Browser harness:
+- scripts/browser-session.mjs.
+- Chromium/CDP.
+- Headless software graphics for the automated environment.
+- Local Vite server.
+- Temporary profile.
+- WebGL1 forcing option.
+- Runtime evaluation timeout is two minutes.
+
+Useful test instrumentation:
+- Development/soak builds expose window.babelDebug.
+- It includes runtime, project getter, clock, and quality controller.
+- Production omits it.
+
+Important test-harness lessons:
+- Wait for rendered animation frames when asserting visual changes.
+- Do not edit imported application/engine files while a browser suite is running; Vite HMR can invalidate test state.
+- For long GPU stress, use bounded CDP batches rather than one evaluation exceeding the two-minute timeout.
+- A paused timing sample can legitimately select a preceding tick. The landmark lighting fixture isolates the render history so it tests the intended state.
+- Some Node 24 test output reported file-level totals. Direct execution or --test-isolation=none showed individual cases. Do not infer that the bodies were skipped.
+
+Current validation includes:
+- Reference CPU/GPU Conway agreement.
+- Pattern correctness.
+- Directed and unassisted Life behavior.
+- Legacy recipe migration.
+- Exact replay.
+- Terrain connectivity across 100 seeds and every biome.
+- Resource/behavior progression.
+- Chunk retirement.
+- Save/load validation.
+- Appearance changes preserving physics.
+- Native GL rendering.
+- Both instancing paths.
+- WebGL1 compatibility.
+- Bounded CPU/GPU history.
+- Paused image reuse.
+- Default/max population timing scenarios.
+- Visible discovery lighting.
+- Production build.
+
+Latest completed accelerated runs:
+- Rivers: 30 simulated minutes.
+- Slime: 30 simulated minutes.
+- Murmuration: 30 simulated minutes.
+- Each of four Terrarium Worlds starts: 30 simulated minutes.
+- Each of three Life presets on the actual GPU simulation: 30 simulated minutes.
+- Updated terrarium camera/movement code received a targeted repeat of its four cases.
+
+Representative wall-clock durations in the local environment:
+- Rivers CPU stress: about 22 seconds for 30 simulated minutes.
+- Slime: about 109 seconds.
+- Murmuration: about 100 seconds.
+- Terrarium cases: a few seconds each.
+- Final batched Life GPU checks: about 23–27 seconds per preset.
+
+These are accelerated simulation checks, not thirty-minute real-time installation runs.
+
+Reports/screenshots are ignored artifacts, including:
+- artifacts/performance.json
+- artifacts/life-stress.json
+- artifacts/artwork-stress.json
+- artifacts/artwork-stress-terrarium-worlds.json
+- artifacts/life-*.png
+- artifacts/terrarium-worlds-*.png
+
+Historical eight-hour soak:
+- An actual eight-wall-clock-hour Chemical Garden soak was started much earlier.
+- It used an older isolated build.
+- Its final completion was not established in this conversation.
+- Do not claim it passed.
+- Do not use it as certification of the current release.
+
+======================================================================
+19. PERFORMANCE RESULTS AND LIMITATIONS
+======================================================================
+
+The laptop target is:
+- About 60 FPS.
+- Sustained average above 55 FPS.
+- p95 intervals below 25 ms.
+- Default artwork settings in a 1080p four-panel preview.
+
+That hardware target has NOT been verified on the user’s actual laptop.
+
+Available profiling used SwiftShader/software graphics.
+
+Verified structural improvements:
+- Native scenes perform no steady per-frame Canvas2D-to-WebGL upload.
+- Full snapshot serialization is limited to checkpoint/save boundaries.
+- Compact typed render history.
+- Two aligned-view image buffers instead of filling 64-image history.
+- Zero texture allocations during steady aligned samples after warmup.
+- Bounded resources with larger populations and timing offsets.
+- Simulation behavior/density is retained.
+
+Software-renderer FPS remained limited:
+- Roughly 25–34 FPS for the three optimized artworks in one short default matrix.
+- Roughly 17 FPS for the new world.
+- Maximum populations with multiple delayed historical views were substantially slower.
+- Exact numbers varied between short runs.
+
+Do not present those software results as proof of laptop 60 FPS, and do not claim all lag is conclusively solved on every machine.
+
+The final user-facing summary explicitly said actual laptop FPS remains unverified.
+
+Production verification:
+- Native GitHub CI browser/build/deploy passed.
+- Public HTML/asset HTTP checks passed.
+- Served JS byte-matched the local production build.
+- A separate ad hoc local production-browser smoke attempt did not complete because its local harness/server startup failed before app testing. Do not claim that particular attempt passed or treat it as an established app failure.
+
+Artistic quality:
+- Representative stills were reviewed.
+- Behavioral counters and motion checks help detect failure.
+- They do not establish that every arbitrary parameter combination remains beautiful or engaging indefinitely.
+
+======================================================================
+20. DEPLOYMENT AND PRACTICAL REPOSITORY NOTES
+======================================================================
+
+GitHub Pages uses a custom GitHub Actions workflow:
+  .github/workflows/pages.yml
+
+It runs:
+- Dependency installation.
+- Type checking.
+- Unit tests.
+- Existing browser regressions.
+- New ecology/terrarium regressions.
+- Performance invariants.
+- WebGL1 compatibility.
+- Production build.
+- Pages artifact upload.
+- Deployment.
+
+Production base path:
+  /babel-art/
+
+Build:
+  npm run build:pages
+
+Deployment uses main, not a separate manually maintained gh-pages branch.
+
+Do not announce a release as live just because a commit was pushed.
+Wait for native build AND deploy success, then verify the public page/asset.
+
+If using GitHub Git-data APIs:
+- Preserve the expected branch head when updating refs.
+- A roughly 297 KB / 35-file inline tree request timed out.
+- Uploading incremental trees in batches of five files succeeded.
+- Then create a commit referencing the final tree and update main with an expected-head lease.
+- No credentials belong in this handoff.
+
+Important documentation:
+- README.md
+- docs/architecture.md
+- docs/art-direction.md
+- docs/timing.md
+- docs/worlds.md
+- docs/compelling-artworks.md
+- docs/performance.md
+
+Some earlier architecture paragraphs describe the historical Canvas entity path. Read the newer native-renderer sections and current code rather than assuming all entity scenes still use Canvas.
+
+======================================================================
+21. WHAT IS NOT IMPLEMENTED / WHAT TO DO NEXT IF ASKED
+======================================================================
+
+Not currently implemented:
+- Player-controlled gameplay.
+- A backend.
+- Real multi-computer state authority.
+- Real professional GPU frame synchronization.
+- Curated exhibition playlists and scene-aware transitions.
+- Dedicated kiosk/installation management.
+- A general arbitrary-platform game-solving AI.
+- A separate new ecosystem artwork beyond the ecology in Terrarium Worlds.
+- Verified performance on the actual installation/laptop hardware.
+- Current-release multi-hour installation certification.
+
+The user explicitly deferred installation mode to prioritize artwork quality.
+
+If the user asks for the next round:
+1. Profile the actual laptop/browser/display configuration.
+2. Review motion and stills with the user.
+3. Refine the new world’s visual/behavioral sophistication based on that feedback.
+4. Maintain continuous activity and bounded memory.
+5. Preserve old saved recipes and the original terrarium.
+6. Use short regressions and accelerated actual-simulation tests routinely.
+7. Reserve real multi-hour qualification for meaningful runtime/hardware changes.
+
+Do not assume the earlier installation-mode proposal is the next approved task.
+
+======================================================================
+22. LAST APPLICATION SUMMARY AND CURRENT REQUEST
+======================================================================
+
+The implementation was reported as live, with:
+- Life presets, diverse colonies, activity monitoring, and local renewal.
+- Native GPU rendering and compact history for Rivers, Slime, and Murmuration.
+- Separate Terrarium Worlds with four procedural biomes and 72 interacting inhabitants.
+- Original terrarium still available.
+- Instructions to choose a Life preset or Restart artwork for older saves.
+- Successful CI/browser/WebGL1 and thirty-simulated-minute checks.
+- Explicit caveat that actual laptop FPS remains unverified.
+
+The user requested comprehensive copy/paste notes to transfer the conversation/project context to another model provider. They then asked to save the notes as a temporary file in the repository and explicitly clarified that the file must be pushed.
+
+This file is the requested handoff. Its addition is documentation-only; the application release references above describe the last application-code release.
+
