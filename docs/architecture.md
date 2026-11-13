@@ -38,7 +38,6 @@ The gallery includes named snapshots and favorites. Each new gallery entry inclu
 
 The renderer does not assume HDMI topology or hardware frame lock. A coordinator can later distribute versioned recipes, scheduled changes and authoritative snapshots, while renderer nodes retain caches. Stateful GPU simulations need a state-authority/checkpoint strategy; matching seeds and network clocks alone is insufficient. Voice, other autonomous game genres, player controls, and multi-Pi networking remain outside this release.
 
-
 ## Continuous evolution and recovery
 
 Chemical Garden now has a changing divergence-free transport field and seeded moving reagent emissions. Living Tapestry emits gliders or cyclic waves on deadlines checked every engine tick, so a generation rate such as 9 Hz cannot skip the event schedule. Murmuration continuously blends gathering, split-stream and vortex influences, changes predator presence, and gently redirects selected agents. `Variation` controls these influences independently from playback speed; `Automatic recovery` controls the stagnation policy. For an unforced experiment, use Variation 0 and disable recovery and autonomous events.
@@ -73,6 +72,21 @@ Trail values are clamped to [0,1], positions wrap in the shared world, and every
 
 The network requests a 32 MiB numeric history budget to retain enough recent state for the timing simulator at high playback speeds. Other entities retain their 24 MiB budget; the runtime caps any requested budget at 48 MiB and 192 frames. Cached entity images now also have a 64 MiB pixel payload budget, in addition to the 64-image cap. Object overhead and driver allocations are additional. Presentation-scale changes delete cached image textures while preserving simulation history, checkpoints and events.
 
-`AdaptiveQuality` evaluates active frame intervals in one-second windows. After a two-second warmup, two slow windows below 28 FPS lower resolution by 12.5 percentage points; twelve fast windows above 52 FPS raise it. Auto is bounded between 50% and 150%. Pauses, hidden tabs, pending replay and long stalls reset observation windows without changing scale. The compositor and entity image generation share the scale; automatic quality never changes agent populations, simulation resolution, rules, speed or physical display timing. Manual Economy/Balanced/High bypass adaptation. The controller has constant-size state and is independent of project persistence.
+`AdaptiveQuality` evaluates active frame intervals in one-second windows. After a two-second warmup, two slow windows below 50 FPS lower resolution by 12.5 percentage points; twelve fast windows above 58 FPS raise it. Auto is bounded between 50% and 150%. Pauses, hidden tabs, pending replay and long stalls reset observation windows without changing scale. The compositor and entity image generation share the scale; automatic quality never changes agent populations, simulation resolution, rules, speed or physical display timing. Manual Economy/Balanced/High bypass adaptation. The controller has constant-size state and is independent of project persistence.
 
 `tests/slime.test.js` exercises actual feedback evolution across presets/seeds, exact diffusion-tick checkpoint replay, invalid-state recovery, nutrient renewal and quality hysteresis. `npm run test:networks` checks the rendered presets, their UI, exact recovery replay, saves, adaptive/manual resolution changes and bounded live playback in Chromium. Accelerated simulation checks and still-frame review complement short live browser tests; they do not establish installation hardware performance or an hours-long soak result.
+
+## Native entity renderers and living worlds
+
+Scenes may provide `createRenderer(gl)`, and their simulations implement
+`captureFrame(previous)` to reuse a compact typed display buffer. These render
+frames are separate from portable checkpoints. The runtime gathers panel
+source times before rendering, pools output textures, and never restores live
+simulation state to paint a native frame. See [performance](performance.md) for
+budgets, renderer paths, and hardware qualification.
+
+Life's versioned director and the independent `terrarium-worlds` scene are
+described in [continuous ecology and living worlds](compelling-artworks.md).
+The latter separates generated geometry/navigation, ecology/actor state,
+procedural pixel assets, and native presentation. Extra checkpoint state is
+validated before replacing an imported project.

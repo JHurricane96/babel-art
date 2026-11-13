@@ -1,3 +1,7 @@
+import { TerrariumWorld, WORLD_PRESETS } from "../engine/terrarium";
+import { WorldRenderer } from "../engine/terrarium-renderer";
+import { LIFE_PRESETS } from "../engine/life";
+import { EntityGPU } from "../engine/gpu-art";
 import { fragment as interference } from "./interference";
 import { fragment as contours } from "./contours";
 import { CHEMICAL_PRESETS, DEFAULT_CHEMICAL_PRESET } from "../engine/chemical";
@@ -52,13 +56,33 @@ export const registry: Record<string, Scene> = {
   ),
   tapestry: {
     name: "Living tapestry",
-    subtitle: "Tiny rules, endless life",
+    subtitle: "Colonies, collisions, and constellations",
+    presets: LIFE_PRESETS,
     description: "Living cells and cyclic waves weave a changing tapestry.",
     version: 1,
     kind: "grid",
     create: (gl, seed, params) => new Grid(gl, seed, params),
     styles: ["luminous", "flat"],
     parameters: {
+      ecologyVersion: {
+        label: "Ecology revision",
+        value: 2,
+        options: ["1", "2"],
+        restart: true,
+        hidden: true,
+      },
+      ecology: {
+        label: "Ecology",
+        value: "directed",
+        options: ["directed", "unassisted"],
+      },
+      recipe: {
+        label: "Colony composition",
+        value: "crosscurrents",
+        options: ["crosscurrents", "blooms", "constellations"],
+        restart: true,
+        hidden: true,
+      },
       rule: {
         label: "Rule",
         value: "life",
@@ -123,6 +147,7 @@ registry.chemical = {
   },
 };
 registry.murmuration = {
+  createRenderer: (gl) => new EntityGPU(gl, "murmuration"),
   name: "Murmuration",
   subtitle: "A thousand small decisions",
   description:
@@ -165,6 +190,7 @@ registry.platformer = {
   },
 };
 registry.rivers = {
+  createRenderer: (gl) => new EntityGPU(gl, "rivers"),
   name: "Particle rivers",
   subtitle: "Currents drawn in light",
   description:
@@ -199,6 +225,7 @@ registry.rivers = {
   },
 };
 registry.slime = {
+  createRenderer: (gl) => new EntityGPU(gl, "slime"),
   name: "Slime mold networks",
   subtitle: "A living map of connections",
   description:
@@ -305,3 +332,32 @@ for (const id of [
     max: 1,
     step: 0.05,
   };
+
+registry["terrarium-worlds"] = {
+  name: "Terrarium worlds",
+  subtitle: "A world with lives of its own",
+  description:
+    "Explorers, builders, haulers, grazers, pollinators, and hunters share an endlessly generated pixel-art landscape. Pollination grows food; gathered supplies repair routes; weather changes the rhythm of each settlement.",
+  version: 1,
+  kind: "entities",
+  styles: ["pixel"],
+  presets: WORLD_PRESETS,
+  create: (gl, seed, params) => new TerrariumWorld(seed, params),
+  createRenderer: (gl) => new WorldRenderer(gl),
+  parameters: {
+    biome: {
+      label: "Starting biome · restart",
+      value: 0,
+      options: ["0", "1", "2", "3"],
+      restart: true,
+      hidden: true,
+    },
+    population: {
+      label: "Inhabitants · restart",
+      value: 72,
+      options: ["48", "72", "128"],
+      restart: true,
+    },
+    richness: { label: "World detail", value: 0.9, min: 0, max: 1, step: 0.05 },
+  },
+};

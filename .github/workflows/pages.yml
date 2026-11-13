@@ -21,7 +21,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: "22"
       - name: Install dependencies
         run: npm ci
       - name: Type check
@@ -50,6 +50,18 @@ jobs:
           CHROME_BIN: google-chrome
       - name: Autonomous world regressions
         run: npm run test:worlds
+        env:
+          CHROME_BIN: google-chrome
+      - name: Cellular ecology and terrarium regressions
+        run: npm run test:compelling
+        env:
+          CHROME_BIN: google-chrome
+      - name: Entity performance invariants
+        run: npm run test:performance
+        env:
+          CHROME_BIN: google-chrome
+      - name: WebGL1 artwork compatibility
+        run: npm run test:webgl1
         env:
           CHROME_BIN: google-chrome
       - name: Package frontend

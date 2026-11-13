@@ -1,3 +1,5 @@
+import { validateWorldSave } from "../engine/terrarium.ts";
+import { validateLifeDirector } from "../engine/life.ts";
 import { validateSchedule, validateAction } from "../engine/evolution.ts";
 import { PARTICLE_STRIDE } from "../engine/particles.ts";
 import { SLIME_CELLS } from "../engine/slime.ts";
@@ -5,6 +7,13 @@ import { PERFECT } from "./timing.js";
 
 import { registry, defaults, parameters } from "../scenes/registry.ts";
 export const SCENES = registry;
+const importParameters = (id, value = {}) =>
+  parameters(
+    id,
+    id === "tapestry" && value.ecologyVersion === undefined
+      ? { ...value, ecologyVersion: 1 }
+      : value,
+  );
 export { PALETTES } from "../engine/palettes.ts";
 import { PALETTES } from "../engine/palettes.ts";
 
@@ -169,7 +178,7 @@ export function validateProject(input) {
       seed: number(scene.seed, 0, 4294967295, "seed"),
       palette: scene.palette,
       speed: number(scene.speed, 0.05, 3, "speed"),
-      params: parameters(scene.id, scene.params),
+      params: importParameters(scene.id, scene.params),
       style: SCENES[scene.id].styles.includes(scene.style)
         ? scene.style
         : SCENES[scene.id].styles[0],
@@ -189,7 +198,7 @@ export function validateProject(input) {
     ...(input.world ? { world: validateWorld(input.world) } : {}),
     ...(input.events ? { events: validateEvents(input.events, scene.id) } : {}),
     ...(input.initialParams
-      ? { initialParams: parameters(scene.id, input.initialParams) }
+      ? { initialParams: importParameters(scene.id, input.initialParams) }
       : {}),
   };
 }
@@ -204,7 +213,7 @@ function validateCheckpoint(c, scene) {
     !c.data.every((v) => typeof v === "number" && Number.isFinite(v))
   )
     throw new Error("Invalid checkpoint");
-  const params = parameters(scene.id, scene.params),
+  const params = importParameters(scene.id, scene.params),
     kind = SCENES[scene.id].kind;
   if (kind === "procedural")
     throw new Error("Procedural scenes do not use checkpoints");
@@ -263,17 +272,42 @@ function validateCheckpoint(c, scene) {
       c.data.some((v) => Math.abs(v) > 1e9))
   )
     throw new Error("Invalid platformer checkpoint");
+  if (
+    scene.id === "terrarium-worlds" &&
+    (!c.extra?.world ||
+      c.data.length !== 1 ||
+      c.data[0] !== c.extra?.world?.camera?.x)
+  )
+    throw new Error("Invalid terrarium camera checkpoint");
   return {
     tick: c.tick,
     data: c.data,
     ...(c.extra
       ? {
           extra: {
+            ...(scene.id === "terrarium-worlds"
+              ? {
+                  world: validateWorldSave(
+                    c.extra.world,
+                    c.tick,
+                    Number(params.population),
+                  ),
+                }
+              : {}),
             ...(c.extra.params
-              ? { params: parameters(scene.id, c.extra.params) }
+              ? { params: importParameters(scene.id, c.extra.params) }
               : {}),
             ...(c.extra.schedule
               ? { schedule: validateSchedule(c.extra.schedule) }
+              : {}),
+            ...(c.extra.lifeDirector
+              ? {
+                  lifeDirector: validateLifeDirector(
+                    c.extra.lifeDirector,
+                    Number(params.resolution),
+                    Math.round(Number(params.resolution) * 0.625),
+                  ),
+                }
               : {}),
             ...(c.extra.pending
               ? { pending: validateAction(c.extra.pending) }
@@ -307,7 +341,7 @@ function validateEvents(events, id) {
     if (!e.params && !e.intervention) throw new Error("Invalid timeline event");
     return {
       tick: e.tick,
-      ...(e.params ? { params: parameters(id, e.params) } : {}),
+      ...(e.params ? { params: importParameters(id, e.params) } : {}),
       ...(e.intervention
         ? { intervention: validateAction(e.intervention) }
         : {}),

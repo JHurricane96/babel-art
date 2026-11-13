@@ -574,6 +574,7 @@ function draw(now) {
     [1, 3, 5].map((n) => parseInt(hex.slice(n, n + 2), 16) / 255),
   );
   try {
+    runtime.prepareFrames(samples, project.scene, colors);
     project.layout.forEach((panel, i) =>
       runtime.draw(
         panel,
@@ -644,7 +645,7 @@ function syncParameters() {
   const def = SCENES[project.scene.id];
   if (def.presets) {
     const label = document.createElement("label");
-    label.textContent = "Network preset";
+    label.textContent = "Artwork preset";
     label.htmlFor = "scene-preset";
     const select = document.createElement("select");
     select.id = "scene-preset";
@@ -666,6 +667,7 @@ function syncParameters() {
           if (preset.palette) p.scene.palette = preset.palette;
           if (preset.style) p.scene.style = preset.style;
         }
+        if (p.scene.id === "tapestry") p.scene.params.ecologyVersion = 2;
         p.time = 0;
         for (const key of [
           "checkpoint",
@@ -689,13 +691,13 @@ function syncParameters() {
     const button = document.createElement("button");
     button.id = "scene-restart";
     button.type = "button";
-    button.textContent = "Restart network ↻";
+    button.textContent = "Restart artwork ↻";
     button.onclick = () => restart();
     const note = document.createElement("p");
     note.className = "note";
     note.textContent = select.value
       ? def.presets[select.value].description
-      : "Adjusted network settings. Choosing a preset starts a fresh network.";
+      : "Adjusted settings. Choosing a preset starts a fresh artwork.";
     box.append(label, button, note);
   }
   if (project.scene.id === "chemical") {
@@ -782,7 +784,10 @@ function syncParameters() {
     label.append(field);
     box.append(label);
   }
-  if (def.kind !== "procedural" && project.scene.id !== "platformer") {
+  if (
+    def.kind !== "procedural" &&
+    !["platformer", "terrarium-worlds"].includes(project.scene.id)
+  ) {
     const note = document.createElement("p");
     note.className = "note";
     note.textContent = ["rivers", "slime"].includes(project.scene.id)

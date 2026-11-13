@@ -16,7 +16,12 @@
     "test:networks": "node scripts/check-networks.mjs",
     "test:worlds": "node scripts/check-worlds.mjs",
     "build:soak": "vite build --mode soak --base=/ --outDir artifacts/soak-site",
-    "test:soak": "npm run build:soak && node scripts/soak.mjs"
+    "test:soak": "npm run build:soak && node scripts/soak.mjs",
+    "test:compelling": "node scripts/check-compelling.mjs",
+    "test:performance": "node scripts/check-performance.mjs",
+    "test:artwork-stress": "node --import tsx scripts/artwork-stress.mjs",
+    "test:life-stress": "node scripts/life-stress.mjs",
+    "test:webgl1": "node scripts/check-webgl1.mjs"
   },
   "engines": {
     "node": ">=22"

@@ -7,6 +7,7 @@ export async function openBrowser({
   port = 4176,
   debugPort = 9225,
   directory,
+  webgl1 = false,
 } = {}) {
   const profile = await mkdtemp(path.join(os.tmpdir(), "babel-evolution-"));
   const server = spawn(
@@ -117,6 +118,10 @@ export async function openBrowser({
       deviceScaleFactor: 1,
       mobile: false,
     });
+    if (webgl1)
+      await call("Page.addScriptToEvaluateOnNewDocument", {
+        source: `const originalGetContext = HTMLCanvasElement.prototype.getContext;HTMLCanvasElement.prototype.getContext=function(type,...args){return type==='webgl2'?null:originalGetContext.call(this,type,...args);};`,
+      });
     await call("Page.navigate", { url: `http://127.0.0.1:${port}` });
     for (let i = 0; i < 100 && !(await evaluate("!!window.babelDebug")); i++)
       await sleep(100);

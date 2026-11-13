@@ -1,3 +1,4 @@
+import type { RenderFrame, SceneRenderer } from "./render-frame";
 import { display, entityDisplay } from "./display";
 import { ActivityMonitor, actionFor, variationOf } from "./evolution";
 import type { EvolutionAction } from "./evolution";
@@ -22,6 +23,24 @@ export class Runtime {
   canvas: HTMLCanvasElement;
   programs = new Map<string, WebGLProgram>();
   sim?: Simulation;
+  renderer?: SceneRenderer;
+  renderStates = new Map<number, RenderFrame>();
+  framePool: RenderFrame[] = [];
+  imageCapacity = 2;
+  framebuffer: WebGLFramebuffer;
+  quad: WebGLBuffer;
+  locations = new Map<WebGLProgram, Map<string, WebGLUniformLocation | null>>();
+  metrics = { captures: 0, renders: 0, canvasUploads: 0, allocations: 0 };
+  uniform(p: WebGLProgram, name: string) {
+    let map = this.locations.get(p);
+    if (!map) this.locations.set(p, (map = new Map()));
+    if (!map.has(name)) map.set(name, this.gl.getUniformLocation(p, name));
+    return map.get(name)!;
+  }
+  clearImages() {
+    this.entityTextures.forEach((t) => this.gl.deleteTexture(t));
+    this.entityTextures.clear();
+  }
   entityCanvas = document.createElement("canvas");
   entityScale = 1;
   id = "";
@@ -36,7 +55,10 @@ export class Runtime {
   replayFloor = 0;
   baseCheckpoint?: Snapshot;
   history = new Map<number, WebGLTexture>();
-  states = new Map<number, Snapshot>();
+  entityStates = new Map<number, Snapshot>();
+  get states(): Map<number, Snapshot | RenderFrame> {
+    return this.renderer ? this.renderStates : this.entityStates;
+  }
   entityTextures = new Map<string, WebGLTexture>();
   checkpoints = new Map<number, Snapshot>();
   pending = false;
@@ -67,6 +89,8 @@ export class Runtime {
     if (!this.gl) throw new Error("WebGL is required");
     const gl = this.gl,
       b = gl.createBuffer();
+    this.quad = b!;
+    this.framebuffer = gl.createFramebuffer()!;
     gl.bindBuffer(gl.ARRAY_BUFFER, b);
     gl.bufferData(
       gl.ARRAY_BUFFER,
@@ -124,6 +148,11 @@ export class Runtime {
     this.generation++;
     this.pending = false;
     this.sim?.dispose();
+    this.renderer?.dispose();
+    this.renderer = undefined;
+    this.renderStates.clear();
+    this.framePool = [];
+    this.clearImages();
     this.history.forEach((t) => this.gl.deleteTexture(t));
     this.history.clear();
     this.states.clear();
@@ -145,10 +174,40 @@ export class Runtime {
       scene.seed,
       this.initialParams,
     );
+    this.renderer = registry[scene.id].createRenderer?.(this.gl);
+    if (this.renderer && !this.sim?.captureFrame)
+      throw new Error("Scene renderer requires captureFrame");
     if (this.sim) this.capture();
   }
   capture() {
     if (!this.sim) return;
+    this.metrics.captures++;
+    if (this.renderer && this.sim.captureFrame) {
+      const frame = this.sim.captureFrame(this.framePool.pop());
+      this.renderStates.set(frame.tick, frame);
+      const limit = Math.max(
+        2,
+        Math.min(
+          192,
+          Math.floor(
+            (this.sim.historyBudgetBytes ?? 24 * 1024 * 1024) /
+              Math.max(1, frame.data.byteLength),
+          ),
+        ),
+      );
+      while (this.renderStates.size > limit) {
+        const key = this.renderStates.keys().next().value!;
+        const old = this.renderStates.get(key)!;
+        this.renderStates.delete(key);
+        this.framePool.push(old);
+      }
+      if (frame.tick % 300 === 0) {
+        this.checkpoints.set(frame.tick, this.snapshotWithParams());
+        while (this.checkpoints.size > 8)
+          this.checkpoints.delete(this.checkpoints.keys().next().value!);
+      }
+      return;
+    }
     if (!(this.sim instanceof Grid)) {
       const snap = this.snapshotWithParams();
       this.states.set(snap.tick, snap);
@@ -272,6 +331,9 @@ export class Runtime {
         this.history.forEach((t) => this.gl.deleteTexture(t));
         this.history.clear();
         this.states.clear();
+        this.renderStates.clear();
+        this.framePool = [];
+        this.clearImages();
         this.capture();
       }
       while (this.sim.tick < target && generation === this.generation) {
@@ -309,7 +371,9 @@ export class Runtime {
     if (!this.sim?.activitySample || !this.health.due(seconds) || this.pending)
       return;
     const sample = this.sim.activitySample(),
-      enabled = this.sim.params.autoRecovery !== false;
+      enabled =
+        this.sim.params.autoRecovery !== false &&
+        this.sim.params.ecology !== "unassisted";
     const stage = this.health.observe(seconds, sample, enabled);
     this.fallbackTarget = this.health.fallback(
       variationOf(this.sim.params),
@@ -361,8 +425,132 @@ export class Runtime {
     const next = Math.max(0.5, Math.min(2, scale));
     if (this.entityScale === next) return;
     this.entityScale = next;
-    this.entityTextures.forEach((texture) => this.gl.deleteTexture(texture));
-    this.entityTextures.clear();
+    this.clearImages();
+  }
+  prepareFrames(frames: any[], scene: any, colors: number[][]) {
+    if (!this.renderer && !isEntity(this.sim)) return;
+    const times = frames.flatMap((f) =>
+      f.scan === "none" ? [f.current] : [f.current, f.previous],
+    );
+    const spread = Math.max(...times) - Math.min(...times);
+    this.imageCapacity =
+      spread < 0.001
+        ? 2
+        : Math.min(64, Math.max(8, Math.ceil(spread * 0.06) + 8));
+    // Pin all sources needed for this presentation before issuing panel draws.
+    for (const time of new Set(times)) this.entityTexture(time, scene, colors);
+    this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+    this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+  }
+  entityTexture(time: number, scene: any, colors: number[][]): WebGLTexture {
+    const wanted = Math.max(0, Math.floor(time * 0.06));
+    const source = this.renderer ? this.renderStates : this.states;
+    let selected = source.keys().next().value!;
+    for (const tick of source.keys()) {
+      if (tick > wanted) break;
+      selected = tick;
+    }
+    const key = selected + ":" + scene.style + ":" + scene.palette;
+    const cached = this.entityTextures.get(key);
+    if (cached) {
+      this.entityTextures.delete(key);
+      this.entityTextures.set(key, cached);
+      return cached;
+    }
+    const gl = this.gl;
+    const width = Math.round(
+      (this.renderer?.width ?? 640) *
+        (this.renderer?.pixelated ? 1 : this.entityScale),
+    );
+    const height = Math.round(
+      (this.renderer?.height ?? 400) *
+        (this.renderer?.pixelated ? 1 : this.entityScale),
+    );
+    // Expose dimensions for the existing diagnostics without a canvas upload on native paths.
+    if (this.entityCanvas.width !== width) this.entityCanvas.width = width;
+    if (this.entityCanvas.height !== height) this.entityCanvas.height = height;
+    const limit = Math.max(
+      2,
+      Math.min(
+        this.imageCapacity,
+        Math.floor((64 * 1024 * 1024) / (width * height * 4)),
+      ),
+    );
+    while (this.entityTextures.size > limit) {
+      const oldest = this.entityTextures.keys().next().value!;
+      gl.deleteTexture(this.entityTextures.get(oldest)!);
+      this.entityTextures.delete(oldest);
+    }
+    let texture: WebGLTexture | undefined;
+    if (!texture && this.entityTextures.size >= limit) {
+      const oldest = this.entityTextures.keys().next().value!;
+      texture = this.entityTextures.get(oldest)!;
+      this.entityTextures.delete(oldest);
+    }
+    gl.activeTexture(gl.TEXTURE0);
+    if (!texture) {
+      texture = gl.createTexture()!;
+      this.metrics.allocations++;
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA,
+        width,
+        height,
+        0,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        null,
+      );
+      const filter = this.renderer?.pixelated ? gl.NEAREST : gl.LINEAR;
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    }
+    if (this.renderer) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+      gl.framebufferTexture2D(
+        gl.FRAMEBUFFER,
+        gl.COLOR_ATTACHMENT0,
+        gl.TEXTURE_2D,
+        texture,
+        0,
+      );
+      gl.viewport(0, 0, width, height);
+      this.renderer.render(
+        this.renderStates.get(selected)!,
+        { style: scene.style, colors, seed: scene.seed, params: scene.params },
+        width,
+        height,
+      );
+    } else {
+      const sim = this.sim as EntitySimulation,
+        live = sim.snapshot();
+      const snap = this.states.get(selected);
+      if (snap) sim.restore(snap as Snapshot);
+      const context = this.entityCanvas.getContext("2d", {
+        willReadFrequently: true,
+      })!;
+      context.setTransform(this.entityScale, 0, 0, this.entityScale, 0, 0);
+      sim.paint(context, 640, 400, scene.style, colors);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texSubImage2D(
+        gl.TEXTURE_2D,
+        0,
+        0,
+        0,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        this.entityCanvas,
+      );
+      this.metrics.canvasUploads++;
+      sim.restore(live);
+    }
+    this.metrics.renders++;
+    this.entityTextures.set(key, texture);
+    return texture;
   }
   draw(
     panel: any,
@@ -372,13 +560,18 @@ export class Runtime {
     colors: number[][],
   ) {
     const gl = this.gl,
-      key = isEntity(this.sim) ? "entity" : this.sim ? "grid" : scene.id;
+      key =
+        isEntity(this.sim) || this.renderer
+          ? "entity"
+          : this.sim
+            ? "grid"
+            : scene.id;
     let p = this.programs.get(key);
     if (!p) {
       p = program(
         gl,
         positioned,
-        isEntity(this.sim)
+        isEntity(this.sim) || this.renderer
           ? entityDisplay
           : this.sim
             ? display
@@ -387,10 +580,11 @@ export class Runtime {
       this.programs.set(key, p);
     }
     gl.useProgram(p);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
     const at = gl.getAttribLocation(p, "p");
     gl.enableVertexAttribArray(at);
     gl.vertexAttribPointer(at, 2, gl.FLOAT, false, 0, 0);
-    const u = (n: string) => gl.getUniformLocation(p!, n);
+    const u = (n: string) => this.uniform(p!, n);
     gl.uniform4fv(u("outputRect"), output);
     gl.uniform2f(u("view"), this.canvas.width, this.canvas.height);
     gl.uniform4f(u("rect"), panel.x, panel.y, panel.width, panel.height);
@@ -410,73 +604,25 @@ export class Runtime {
     gl.uniform1f(u("recoveryMix"), this.fallbackLevel);
     gl.uniform1f(u("richness"), Number(scene.params?.richness ?? 0.8));
     colors.forEach((c, i) => gl.uniform3fv(u("c" + i), c));
-    if (isEntity(this.sim)) {
-      const live = this.sim.snapshot();
-      const makeTexture = (time: number) => {
-        const wanted = Math.max(0, Math.floor((time / 1000) * 60)),
-          available = [...this.states.keys()].filter((t) => t <= wanted);
-        const snap = this.states.get(
-          available.length
-            ? Math.max(...available)
-            : Math.min(...this.states.keys()),
-        );
-        const cacheKey =
-          String(snap?.tick || 0) + ":" + scene.style + ":" + scene.palette;
-        const cached = this.entityTextures.get(cacheKey);
-        if (cached) {
-          this.entityTextures.delete(cacheKey);
-          this.entityTextures.set(cacheKey, cached);
-          gl.bindTexture(gl.TEXTURE_2D, cached);
-          return cached;
-        }
-        if (snap) this.sim!.restore(snap);
-        this.entityCanvas.width = Math.round(640 * this.entityScale);
-        this.entityCanvas.height = Math.round(400 * this.entityScale);
-        const context = this.entityCanvas.getContext("2d", {
-          willReadFrequently: true,
-        })!;
-        context.setTransform(this.entityScale, 0, 0, this.entityScale, 0, 0);
-        (this.sim as EntitySimulation).paint(
-          context,
-          640,
-          400,
-          scene.style,
-          colors,
-        );
-        const texture = gl.createTexture()!;
-        gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        gl.texImage2D(
-          gl.TEXTURE_2D,
-          0,
-          gl.RGBA,
-          gl.RGBA,
-          gl.UNSIGNED_BYTE,
-          this.entityCanvas,
-        );
-        this.entityTextures.set(cacheKey, texture);
-        const textureLimit = Math.min(
-          64,
-          Math.floor(
-            (64 * 1024 * 1024) /
-              (this.entityCanvas.width * this.entityCanvas.height * 4),
-          ),
-        );
-        while (this.entityTextures.size > textureLimit) {
-          const key = this.entityTextures.keys().next().value!;
-          gl.deleteTexture(this.entityTextures.get(key)!);
-          this.entityTextures.delete(key);
-        }
-        return texture;
-      };
+    if (isEntity(this.sim) || this.renderer) {
+      const texture = this.entityTexture(frame.current, scene, colors);
+      const old =
+        frame.scan === "none"
+          ? texture
+          : this.entityTexture(frame.previous, scene, colors);
+      // A renderer may change all GL bindings. Rebind the compositor explicitly.
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+      gl.useProgram(p);
+      gl.disable(gl.BLEND);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
+      gl.enableVertexAttribArray(at);
+      gl.vertexAttribPointer(at, 2, gl.FLOAT, false, 0, 0);
       gl.activeTexture(gl.TEXTURE0);
-      const texture = makeTexture(frame.current);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
       gl.uniform1i(u("state"), 0);
       gl.activeTexture(gl.TEXTURE1);
-      const old = makeTexture(frame.previous);
+      gl.bindTexture(gl.TEXTURE_2D, old);
       gl.uniform1i(u("previous"), 1);
       gl.activeTexture(gl.TEXTURE0);
       gl.uniform4f(
@@ -487,7 +633,6 @@ export class Runtime {
         this.world.height,
       );
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-      this.sim.restore(live);
       return;
     }
 
@@ -501,7 +646,13 @@ export class Runtime {
         1 / (this.sim as Grid).width,
         1 / (this.sim as Grid).height,
       );
-      const oldTick = Math.max(0, Math.floor((frame.previous / 1000) * 60));
+      const oldTick = Math.max(
+        0,
+        Math.floor(
+          ((frame.scan === "none" ? frame.current : frame.previous) / 1000) *
+            60,
+        ),
+      );
       const oldIds = [...this.history.keys()].filter((t) => t <= oldTick);
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(

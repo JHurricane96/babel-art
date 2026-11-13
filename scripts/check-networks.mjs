@@ -102,7 +102,7 @@ try {
   );
   await sleep(6000);
   const playback = await evaluate(
-    `(()=>{document.getElementById('play').click();const r=window.babelDebug.runtime;return {tick:r.sim.tick,fps:document.getElementById('fps').textContent,scale:r.entityScale,states:r.states.size,bytes:[...r.states.values()].reduce((a,s)=>a+s.data.length*8,0),textureBytes:r.entityTextures.size*r.entityCanvas.width*r.entityCanvas.height*4,checkpoints:r.checkpoints.size,gl:r.gl.getError()};})()`,
+    `(()=>{document.getElementById('play').click();const r=window.babelDebug.runtime;return {tick:r.sim.tick,fps:document.getElementById('fps').textContent,scale:r.entityScale,states:r.states.size,bytes:[...r.states.values()].reduce((a,s)=>a+(s.data.byteLength??s.data.length*8),0),textureBytes:r.entityTextures.size*r.entityCanvas.width*r.entityCanvas.height*4,checkpoints:r.checkpoints.size,gl:r.gl.getError()};})()`,
   );
   assert.ok(
     playback.tick >= 1320,

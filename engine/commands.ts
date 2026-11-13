@@ -81,6 +81,7 @@ export function parseText(text: string, project: any): Command | undefined {
   for (const style of registry[project.scene.id].styles)
     if (t.includes(style)) return { type: "style", value: style };
   const aliases: Record<string, string[]> = {
+    "terrarium-worlds": ["terrarium worlds", "living world", "settlement"],
     slime: ["slime", "mycelium", "network"],
     rivers: ["particle", "river", "flow field"],
     interference: ["interference", "bloom"],

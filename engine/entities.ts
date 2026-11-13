@@ -1,3 +1,5 @@
+import { frameBuffer } from "./render-frame";
+import type { RenderFrame } from "./render-frame";
 import { paintTerrarium, paintMurmuration } from "./world-art";
 import { EvolutionSchedule, variationOf } from "./evolution";
 import { choreography } from "./choreography";
@@ -8,12 +10,21 @@ export class Flock implements Simulation {
   tick = 0;
   agents: number[][] = [];
   schedule: EvolutionSchedule;
+  binCounts = new Int32Array(100);
+  binOffsets = new Int32Array(101);
+  binCursor = new Int32Array(100);
+  binAgents: Int32Array;
+  nextAgents: number[][];
   constructor(
     public seed: number,
     public params: Params,
   ) {
     this.schedule = new EvolutionSchedule(seed);
     const r = rng(seed);
+    this.binAgents = new Int32Array(Number(params.population));
+    this.nextAgents = Array.from({ length: Number(params.population) }, () => [
+      0, 0, 0, 0,
+    ]);
     this.agents = Array.from({ length: Number(params.population) }, () => [
       r(),
       r(),
@@ -25,13 +36,24 @@ export class Flock implements Simulation {
     this.tick++;
     const action = this.schedule.advance(this.tick, variationOf(this.params));
     if (action) this.intervene(action);
-    const grid = new Map<string, number[]>();
-    this.agents.forEach((a, i) => {
-      const k = `${Math.floor(a[0] * 10)},${Math.floor(a[1] * 10)}`;
-      if (!grid.has(k)) grid.set(k, []);
-      grid.get(k)!.push(i);
-    });
-    const next = this.agents.map((a, i) => {
+    this.binCounts.fill(0);
+    for (const a of this.agents)
+      this.binCounts[Math.floor(a[1] * 10) * 10 + Math.floor(a[0] * 10)]++;
+    this.binOffsets[0] = 0;
+    for (let i = 0; i < 100; i++)
+      this.binOffsets[i + 1] = this.binOffsets[i] + this.binCounts[i];
+    this.binCursor.set(this.binOffsets.subarray(0, 100));
+    for (let i = 0; i < this.agents.length; i++) {
+      const a = this.agents[i],
+        cell = Math.floor(a[1] * 10) * 10 + Math.floor(a[0] * 10);
+      this.binAgents[this.binCursor[cell]++] = i;
+    }
+    const t = this.tick / 60,
+      variation = variationOf(this.params),
+      chapter = choreography(t, this.seed);
+    const next = this.nextAgents;
+    for (let i = 0; i < this.agents.length; i++) {
+      const a = this.agents[i];
       let sx = 0,
         sy = 0,
         ax = 0,
@@ -45,14 +67,17 @@ export class Flock implements Simulation {
         for (let x = -1; x <= 1; x++)
           for (
             let k = 0,
-              group =
-                grid.get(`${(gx + x + 10) % 10},${(gy + y + 10) % 10}`) || [],
-              limit = Math.min(12, group.length);
+              cell = ((gy + y + 10) % 10) * 10 + ((gx + x + 10) % 10),
+              length = this.binCounts[cell],
+              limit = Math.min(12, length);
             k < limit;
             k++
           ) {
             const j =
-              group[(k + i * 7 + Math.floor(this.tick / 12)) % group.length];
+              this.binAgents[
+                this.binOffsets[cell] +
+                  ((k + i * 7 + Math.floor(this.tick / 12)) % length)
+              ];
             if (i === j) continue;
             const b = this.agents[j],
               dx = ((a[0] - b[0] + 1.5) % 1) - 0.5,
@@ -81,10 +106,9 @@ export class Flock implements Simulation {
           (ay / count - a[3]) * 0.07 +
           (cy / count - a[1]) * Number(this.params.cohesion) * 0.12;
       }
-      const t = this.tick / 60,
-        variation = variationOf(this.params);
+
       // Slowly exchange gathering, split-stream and vortex influences.
-      const chapter = choreography(t, this.seed);
+
       const split = variation * chapter.split;
       const vortex = variation * chapter.vortex;
       const phase = t * 0.057 + this.seed * 0.001;
@@ -141,9 +165,25 @@ export class Flock implements Simulation {
         (1 - Math.min(0.18, count * 0.003));
       vx = Math.cos(heading) * speed;
       vy = Math.sin(heading) * speed;
-      return [(a[0] + vx / 60 + 1) % 1, (a[1] + vy / 60 + 1) % 1, vx, vy];
-    });
+      const n = next[i];
+      n[0] = (a[0] + vx / 60 + 1) % 1;
+      n[1] = (a[1] + vy / 60 + 1) % 1;
+      n[2] = vx;
+      n[3] = vy;
+    }
+    this.nextAgents = this.agents;
     this.agents = next;
+  }
+  captureFrame(previous?: RenderFrame) {
+    const frame = frameBuffer(
+      previous,
+      this.agents.length * 4,
+      this.tick,
+      this.params,
+    );
+    for (let i = 0; i < this.agents.length; i++)
+      frame.data.set(this.agents[i], i * 4);
+    return frame;
   }
   snapshot(): Snapshot {
     return {
@@ -156,6 +196,12 @@ export class Flock implements Simulation {
     if (s.data.length % 4) throw new Error("Invalid flock checkpoint");
     this.tick = s.tick;
     this.schedule.restore(s.extra?.schedule as any, this.tick);
+    if (this.nextAgents.length !== s.data.length / 4) {
+      this.nextAgents = Array.from({ length: s.data.length / 4 }, () => [
+        0, 0, 0, 0,
+      ]);
+      this.binAgents = new Int32Array(s.data.length / 4);
+    }
     this.agents = Array.from({ length: s.data.length / 4 }, (_, i) =>
       s.data.slice(i * 4, i * 4 + 4),
     );

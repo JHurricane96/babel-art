@@ -45,7 +45,6 @@ WebGL is required. Preview quality controls rendering resolution; the FPS counte
 
 See [Architecture](docs/architecture.md) and [Timing experiments and hardware validation](docs/timing.md).
 
-
 ## Autonomous worlds
 
 - **Living Tapestry:** Conway’s Life and cyclic automata, with generation trails, configurable rate/resolution, and seeded colony injections.
@@ -60,7 +59,6 @@ Stateful scenes have fixed-step simulation, bounded recent history, saved checkp
 Use `ENDURANCE=1 npm run test:browser` for accelerated 30-minute simulation checks per new scene. These are simulation-time checks, not a 30-minute wall-clock hardware soak test. Screenshots and performance are captured in the test browser; Pi performance is unverified.
 
 Chemical-specific regression checks: `npm run test:chemical` tests the actual GPU simulation for ongoing activity, spatial contrast, preset selection and restart behavior.
-
 
 ## Continuous evolution
 
@@ -93,3 +91,11 @@ Preview resolution defaults to **Auto**. It reduces resolution after sustained s
 Quality changes preserve every agent, trail, simulation rule, playhead and timing setting. They adjust the displayed image resolution; they cannot eliminate a CPU simulation bottleneck. Preview quality is a local session setting, independent of saved artwork recipes.
 
 `npm run test:networks` reviews all three network presets, their visual range and evolution, invalid-state recovery, exact replay, project validation, non-destructive quality changes and bounded live playback. Review screenshots are saved under `artifacts/slime-*.png`.
+
+Living Tapestry now offers directed Conway ecology with composed colonies and
+an unassisted mode. **Terrarium Worlds** adds an autonomous pixel-art world with
+six interacting inhabitant roles, procedural terrain, renewable resources,
+construction, weather, and a roaming camera; the original terrarium is still
+available. Particle Rivers, Slime Mold, and Murmuration use native WebGL
+renderers and compact display history. See [artwork behavior and validation](docs/compelling-artworks.md)
+and [performance qualification](docs/performance.md).

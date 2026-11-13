@@ -1,3 +1,5 @@
+import { frameBuffer } from "./render-frame";
+import type { RenderFrame } from "./render-frame";
 import type { EntitySimulation, Params, Snapshot } from "./types";
 import type { EvolutionAction } from "./evolution";
 import { rng } from "./types";
@@ -82,6 +84,16 @@ export class ParticleRivers implements EntitySimulation {
         random(),
         random(),
       );
+  }
+  captureFrame(previous?: RenderFrame) {
+    const frame = frameBuffer(
+      previous,
+      this.points.length,
+      this.tick,
+      this.params,
+    );
+    frame.data.set(this.points);
+    return frame;
   }
   snapshot(): Snapshot {
     return { tick: this.tick, data: Array.from(this.points) };

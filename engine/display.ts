@@ -80,7 +80,7 @@ void main(){
     float trail=clamp(v.g,0.,1.);
     vec3 pigment=mix(c1,c2,clamp(region*.65+v.r*.35,0.,1.));
     vec3 rich=c0*.09+pigment*trail*(.25+.75*tile);
-    rich+=c2*v.r*pow(max(0.,1.-length(cell+vec2(.12)) * 2.),4.)*.5;
+    rich+=mix(c1,c2,1.-v.b)*v.r*pow(max(0.,1.-length(cell+vec2(.12)) * 2.),4.)*.5;
     color=mix(color,rich,richness);
   }
   if(style>0)color*=1.+(grain(floor(p*2.))-0.5)*.09*richness;

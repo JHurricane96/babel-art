@@ -12,10 +12,14 @@ import { AdaptiveQuality } from "../engine/quality.ts";
 
 test("agents keep following a stronger forward trail instead of turning toward a weaker side", () => {
   const s = new SlimeNetworks(42, { ...defaults("slime"), population: 600 });
-  s.trail.fill(0); s.nutrients.fill(0);
-  s.nutrientTick = 0; s.nutrientVariation = 0.65;
+  s.trail.fill(0);
+  s.nutrients.fill(0);
+  s.nutrientTick = 0;
+  s.nutrientVariation = 0.65;
   for (let i = 0; i < s.agents.length; i += 3) {
-    s.agents[i] = 0.5; s.agents[i + 1] = 0.5; s.agents[i + 2] = 0;
+    s.agents[i] = 0.5;
+    s.agents[i + 1] = 0.5;
+    s.agents[i + 2] = 0;
   }
   s.trail[60 * 192 + 102] = 1;
   s.trail[55 * 192 + 99] = 0.7;
@@ -126,4 +130,17 @@ test("pauses, hidden tabs, and replay gaps do not drive adaptive quality", () =>
   assert.equal(q.scale, 1);
   q.observe(0.016, true);
   assert.equal(q.scale, 1);
+});
+
+test("adaptive presentation favors smooth motion before rendering becomes visibly slow", () => {
+  const q = new AdaptiveQuality();
+  for (let i = 0; i < 45 * 8; i++) q.observe(1 / 45, true);
+  assert.ok(
+    q.scale < 1,
+    "sustained 45 FPS should lower presentation resolution",
+  );
+  const low = q.scale;
+  q.observe(0, false); // Start a fresh observation window after the rate change.
+  for (let i = 0; i < 55 * 20; i++) q.observe(1 / 55, true);
+  assert.equal(q.scale, low, "headroom is required before raising resolution");
 });

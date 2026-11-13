@@ -1,3 +1,4 @@
+import { LifeDirector, directedLife, initialLifeState } from "./life";
 import { EvolutionSchedule, variationOf } from "./evolution";
 import type { EvolutionAction } from "./evolution";
 import { initialChemicalState } from "./chemical";
@@ -54,7 +55,7 @@ void main(){vec4 c=cell(vec2(0.));float n=0.;float next=mod(floor(c.r*15.+.5)+1.
 float alive=step(.5,c.r);float v=cyclic==1?(near>=2.?next/15.:c.r):((n>2.5&&n<3.5)||(alive>.5&&n>1.5&&n<2.5)?1.:0.);
 if(inject>0){vec2 d=(uv-event.xy)*size;float radius=inject==1?5.:inject==2?12.:22.;if(length(d)<radius){float pattern=mod(floor(d.x)+2.*floor(d.y)+floor(event.z),7.);vec2 q=inject==1?floor(d)+vec2(1.):mod(floor(d)+vec2(radius),7.);float glider=((q.y==0.&&q.x==1.)||(q.y==1.&&q.x==2.)||(q.y==2.&&q.x>=0.&&q.x<=2.))?1.:0.;v=cyclic==1?mod(pattern+event.z,16.)/15.:glider;}}
 
-gl_FragColor=vec4(v,max(v,c.g*trail),0.,1.);}`;
+gl_FragColor=vec4(v,max(v,c.g*trail),v>.5?min(1.,c.b+.045):0.,1.);}`;
 export class Grid implements Simulation {
   tick = 0;
   width: number;
@@ -62,9 +63,12 @@ export class Grid implements Simulation {
   textures: WebGLTexture[] = [];
   fb: WebGLFramebuffer;
   prog: WebGLProgram;
+  quad: WebGLBuffer;
   index = 0;
   schedule: EvolutionSchedule;
   pending?: EvolutionAction;
+  life?: LifeDirector;
+  lifeBytes?: Uint8Array;
   metrics?: {
     program: WebGLProgram;
     fb: WebGLFramebuffer;
@@ -76,6 +80,13 @@ export class Grid implements Simulation {
     public params: Params,
     public chemical = false,
   ) {
+    this.quad = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]),
+      gl.STATIC_DRAW,
+    );
     this.schedule = new EvolutionSchedule(seed);
     this.width = Number(params.resolution);
     this.height = Math.round(this.width * 0.625);
@@ -88,8 +99,14 @@ export class Grid implements Simulation {
     const random = rng(seed);
     const data = chemical
       ? initialChemicalState(this.width, this.height, seed)
-      : new Uint8Array(this.width * this.height * 4);
-    if (!chemical)
+      : directedLife(params)
+        ? initialLifeState(this.width, this.height, seed, params)
+        : new Uint8Array(this.width * this.height * 4);
+    if (directedLife(params)) {
+      this.life = new LifeDirector(seed);
+      this.lifeBytes = new Uint8Array(this.width * this.height * 4);
+    }
+    if (!chemical && !this.life)
       for (let i = 0; i < data.length; i += 4) {
         data[i] =
           params.rule === "cyclic"
@@ -125,10 +142,53 @@ export class Grid implements Simulation {
   }
   step() {
     this.tick++;
+    // Sampling and ecological deadlines are tied to engine ticks, including during replay.
+    if (this.life && this.tick % 30 === 0) {
+      const gl = this.gl;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.fb);
+      gl.framebufferTexture2D(
+        gl.FRAMEBUFFER,
+        gl.COLOR_ATTACHMENT0,
+        gl.TEXTURE_2D,
+        this.textures[this.index],
+        0,
+      );
+      gl.readPixels(
+        0,
+        0,
+        this.width,
+        this.height,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        this.lifeBytes!,
+      );
+      const patches = this.life.observe(
+        this.lifeBytes!,
+        this.width,
+        this.height,
+        this.tick,
+        this.params,
+      );
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.textures[this.index]);
+      for (const p of patches)
+        gl.texSubImage2D(
+          gl.TEXTURE_2D,
+          0,
+          p.x,
+          p.y,
+          p.width,
+          p.height,
+          gl.RGBA,
+          gl.UNSIGNED_BYTE,
+          p.data,
+        );
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
     const scheduled = this.schedule.advance(
       this.tick,
       variationOf(this.params),
-      !!this.params.autonomous,
+      !!this.params.autonomous && !this.life,
     );
     if (scheduled && (!this.pending || scheduled.kind >= this.pending.kind))
       this.pending = scheduled;
@@ -189,6 +249,7 @@ export class Grid implements Simulation {
       variationOf(this.params),
     );
     const p = gl.getAttribLocation(this.prog, "p");
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
     gl.enableVertexAttribArray(p);
     gl.vertexAttribPointer(p, 2, gl.FLOAT, false, 0, 0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -224,6 +285,7 @@ export class Grid implements Simulation {
       data: Array.from(data),
       extra: {
         schedule: this.schedule.snapshot(),
+        ...(this.life ? { lifeDirector: this.life.snapshot() } : {}),
         ...(this.pending ? { pending: this.pending } : {}),
       },
     };
@@ -234,6 +296,7 @@ export class Grid implements Simulation {
     this.tick = s.tick;
     this.schedule.restore(s.extra?.schedule as any, this.tick);
     this.pending = s.extra?.pending as EvolutionAction | undefined;
+    this.life?.restore(s.extra?.lifeDirector as any);
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.textures[this.index]);
     gl.texSubImage2D(
@@ -249,6 +312,49 @@ export class Grid implements Simulation {
     );
   }
   intervene(action: EvolutionAction) {
+    if (this.life) {
+      const gl = this.gl;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.fb);
+      gl.framebufferTexture2D(
+        gl.FRAMEBUFFER,
+        gl.COLOR_ATTACHMENT0,
+        gl.TEXTURE_2D,
+        this.textures[this.index],
+        0,
+      );
+      gl.readPixels(
+        0,
+        0,
+        this.width,
+        this.height,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        this.lifeBytes!,
+      );
+      const patches = this.life.renew(
+        this.lifeBytes!,
+        this.width,
+        this.height,
+        this.tick,
+        this.params,
+      );
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.textures[this.index]);
+      for (const p of patches)
+        gl.texSubImage2D(
+          gl.TEXTURE_2D,
+          0,
+          p.x,
+          p.y,
+          p.width,
+          p.height,
+          gl.RGBA,
+          gl.UNSIGNED_BYTE,
+          p.data,
+        );
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      return;
+    }
     if (action.kind === 3) {
       const data = this.chemical
         ? initialChemicalState(
@@ -328,6 +434,7 @@ export class Grid implements Simulation {
       this.chemical ? 1 : 0,
     );
     const p = gl.getAttribLocation(m.program, "p");
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
     gl.enableVertexAttribArray(p);
     gl.vertexAttribPointer(p, 2, gl.FLOAT, false, 0, 0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -347,6 +454,7 @@ export class Grid implements Simulation {
     this.textures.forEach((t) => this.gl.deleteTexture(t));
     this.gl.deleteFramebuffer(this.fb);
     this.gl.deleteProgram(this.prog);
+    this.gl.deleteBuffer(this.quad);
   }
 }
 

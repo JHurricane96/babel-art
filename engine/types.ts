@@ -23,6 +23,9 @@ export interface Scene {
   version: number;
   kind: "procedural" | "grid" | "entities";
   fragment?: string;
+  createRenderer?: (
+    gl: WebGLRenderingContext,
+  ) => import("./render-frame").SceneRenderer;
   parameters: Record<string, Parameter>;
   styles: string[];
   presets?: Record<string, ScenePreset>;
@@ -48,6 +51,9 @@ export interface Simulation {
   params: Params;
   tick: number;
   historyBudgetBytes?: number;
+  captureFrame?(
+    previous?: import("./render-frame").RenderFrame,
+  ): import("./render-frame").RenderFrame;
   step(): void;
   snapshot(): Snapshot;
   restore(s: Snapshot): void;

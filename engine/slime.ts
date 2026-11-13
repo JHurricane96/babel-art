@@ -1,3 +1,5 @@
+import { frameBuffer } from "./render-frame";
+import type { RenderFrame } from "./render-frame";
 import { rng } from "./types";
 import type { EntitySimulation, Params, Snapshot, ScenePreset } from "./types";
 import type { EvolutionAction } from "./evolution";
@@ -185,6 +187,17 @@ export class SlimeNetworks implements EntitySimulation {
       emission / (this.agents.length / 3),
       this.tick * emission,
     );
+  }
+  captureFrame(previous?: RenderFrame) {
+    const frame = frameBuffer(
+      previous,
+      SLIME_CELLS + this.agents.length,
+      this.tick,
+      this.params,
+    );
+    frame.data.set(this.trail);
+    frame.data.set(this.agents, SLIME_CELLS);
+    return frame;
   }
   snapshot(): Snapshot {
     return { tick: this.tick, data: [...this.trail, ...this.agents] };
