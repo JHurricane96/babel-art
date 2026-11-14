@@ -4,10 +4,12 @@ Review of the artworks at commit e228189, November 14, 2026
 STATUS (November 14, 2026): Phase 1 is implemented on branch
 claude/artwork-review-improvements-bkx0ia. It is not merged or deployed.
 - Done: S1 finish (highlight shoulder and dither), S2 perceptual palette
-  roles, Julia coloring, Contours as cartography, Rivers taper and age fade,
+  roles, Julia coloring, Contours as cartography,
   Slime vein shading, Chemical ring removal and softer relief, Life role
   colors and hidden lattice, Murmuration ink-on-dusk (now the default style),
   Terrarium sub-pixel panning and depth haze.
+- Rivers: tapered trails were tried and reverted at the user's request;
+  the original Rivers look is kept.
 - Moved to Phase 2: the Rivers aspect-ratio fix. It changes particle motion,
   so it needs a versioned simulation change like the other Phase 2 items.
 - Every Phase 1 change is presentation only. Checkpoints, replay and saved

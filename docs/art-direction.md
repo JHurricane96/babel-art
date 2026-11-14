@@ -60,8 +60,6 @@ Applied so far:
   textured interior.
 - Contours draws constant-width isolines with index contours, hillshade and
   a hypsometric tint.
-- Rivers taper from head to tail and fade in and out with each particle's age.
-  The age is derived from the deterministic emission schedule, not stored.
 - Slime veins are thresholded from the field with a tube profile instead of a
   blurred plateau. Chemical relief is softer and has no concentration rings.
 - Life colors cells by role: newborn cells take the accent, active cells the

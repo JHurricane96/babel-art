@@ -1,37 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ParticleRivers } from "../engine/particles.ts";
-import { riverLife } from "../engine/gpu-art.ts";
 import { paletteRoles, okMix, toOklab, ROLE_NAMES } from "../engine/finish.ts";
 import { PALETTES } from "../shared/model.js";
-import { defaults } from "../scenes/registry.ts";
 
 const hex = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
 const chroma = (c) => Math.hypot(...toOklab(c).slice(1));
-
-test("river visibility follows the deterministic emission schedule", () => {
-  for (const population of [240, 960, 1800]) {
-    const sim = new ParticleRivers(7, { ...defaults("rivers"), population }),
-      life = new Float32Array(population),
-      emission = Math.ceil(population / 720);
-    let visible = 0,
-      samples = 0;
-    for (let t = 0; t < 1200; t++) {
-      sim.step();
-      riverLife(sim.tick, population, life);
-      // Exactly the particles step() just re-emitted start invisible.
-      for (let i = 0; i < emission; i++)
-        assert.ok(life[(sim.tick * emission + i) % population] < 0.02);
-      for (const v of life) {
-        assert.ok(v >= 0 && v <= 1);
-        visible += v;
-        samples++;
-      }
-    }
-    // Fading is a transition, not a disappearance.
-    assert.ok(visible / samples > 0.45, "population " + population);
-  }
-});
 
 test("palette roles keep saturation where sRGB mixing turns gray", () => {
   for (const [id, palette] of Object.entries(PALETTES)) {

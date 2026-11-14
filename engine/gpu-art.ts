@@ -90,30 +90,6 @@ export class Batch {
     this.point(x1 + dx, y1 + dy, c);
     this.point(x1 - dx, y1 - dy, c);
   }
-  ribbon(
-    x: number,
-    y: number,
-    x1: number,
-    y1: number,
-    w0: number,
-    w1: number,
-    c0: Color,
-    c1: Color,
-  ) {
-    const len = Math.hypot(x1 - x, y1 - y) || 1,
-      nx = (y1 - y) / len,
-      ny = -(x1 - x) / len,
-      ax = nx * w0 * 0.5,
-      ay = ny * w0 * 0.5,
-      bx = nx * w1 * 0.5,
-      by = ny * w1 * 0.5;
-    this.point(x + ax, y + ay, c0);
-    this.point(x1 + bx, y1 + by, c1);
-    this.point(x - ax, y - ay, c0);
-    this.point(x - ax, y - ay, c0);
-    this.point(x1 + bx, y1 + by, c1);
-    this.point(x1 - bx, y1 - by, c1);
-  }
   draw(w: number, h: number, texture?: WebGLTexture) {
     if (!this.count) return;
     const gl = this.gl,
@@ -149,41 +125,9 @@ export class Batch {
     this.gl.deleteProgram(this.prog);
   }
 }
-/**
- * Visibility of each river particle, derived from the deterministic emission
- * schedule in ParticleRivers.step: particle k is re-emitted whenever the
- * emission slot (tick * emission + i) reaches k modulo the population. Fading
- * in after emission and out before the next one keeps recycled particles from
- * popping in at full strength. Presentation only: nothing is stored.
- */
-export function riverLife(tick: number, count: number, out: Float32Array) {
-  const emission = Math.ceil(count / 720),
-    life = count / emission,
-    latest = tick * emission + emission - 1;
-  for (let k = 0; k < count; k++) {
-    const slot = latest - ((((latest - k) % count) + count) % count);
-    const age = tick - (slot >= emission ? Math.floor(slot / emission) : 0);
-    const fadeIn = Math.min(1, age / 45),
-      fadeOut = Math.min(1, Math.max(0, (life - age) / 75)),
-      hash = (Math.sin(k * 12.9898 + 4.1) * 43758.5453) % 1;
-    out[k] =
-      fadeIn *
-      fadeIn *
-      (3 - 2 * fadeIn) *
-      fadeOut *
-      fadeOut *
-      (3 - 2 * fadeOut) *
-      (0.4 + 0.6 * Math.abs(hash));
-  }
-  return out;
-}
-/** Head-to-tail taper for trail point j (0 = head). */
-export const riverTaper = (j: number) =>
-  Math.pow(1 - j / (PARTICLE_STRIDE / 2), 0.9);
 /** Endpoint instances avoid expanding every trail segment into colored vertices. */
 class RibbonGPU {
-  instances = new Float32Array(1800 * 6 * 7);
-  life = new Float32Array(1800);
+  instances = new Float32Array(1800 * 6 * 5);
   quad: WebGLBuffer;
   buffer: WebGLBuffer;
   prog: WebGLProgram;
@@ -210,45 +154,41 @@ class RibbonGPU {
     gl.bufferData(gl.ARRAY_BUFFER, this.instances.byteLength, gl.DYNAMIC_DRAW);
     this.prog = program(
       gl,
-      `attribute vec2 p;attribute vec4 endpoints;attribute vec3 shade;uniform float width;varying float warm;varying float edge;varying float strength;void main(){vec2 delta=endpoints.zw-endpoints.xy;vec2 n=vec2(-delta.y,delta.x)/max(.001,length(delta));strength=mix(shade.y,shade.z,p.x);vec2 q=mix(endpoints.xy,endpoints.zw,p.x)+n*p.y*width*(.35+.65*strength)*.5;warm=shade.x;edge=p.y;gl_Position=vec4(q/vec2(640.,400.)*2.-1.,0.,1.);}`,
-      `precision highp float;varying float warm,edge,strength;uniform vec3 c1,c2;uniform float opacity;void main(){gl_FragColor=vec4(mix(c1,c2,warm),opacity*strength*(1.-smoothstep(.55,1.,abs(edge))));}`,
+      `attribute vec2 p;attribute vec4 endpoints;attribute float warmth;uniform float width;varying float warm;varying float edge;void main(){vec2 delta=endpoints.zw-endpoints.xy;vec2 n=vec2(-delta.y,delta.x)/max(.001,length(delta));vec2 q=mix(endpoints.xy,endpoints.zw,p.x)+n*p.y*width*.5;warm=warmth;edge=p.y;gl_Position=vec4(q/vec2(640.,400.)*2.-1.,0.,1.);}`,
+      `precision highp float;varying float warm,edge;uniform vec3 c1,c2;uniform float opacity;void main(){gl_FragColor=vec4(mix(c1,c2,warm),opacity*(1.-smoothstep(.65,1.,abs(edge))));}`,
     );
   }
   divisor(at: number, n: number) {
     if (this.gl2) this.gl2.vertexAttribDivisor(at, n);
     else this.extension!.vertexAttribDivisorANGLE(at, n);
   }
-  draw(d: Float32Array, tick: number, colors: number[][], detail: number) {
+  draw(d: Float32Array, colors: number[][], detail: number) {
     const gl = this.gl,
-      p = this.prog,
-      count = d.length / PARTICLE_STRIDE,
-      life = riverLife(tick, count, this.life);
+      p = this.prog;
     let n = 0;
-    for (let i = 0, k = 0; i < d.length; i += PARTICLE_STRIDE, k++)
+    for (let i = 0; i < d.length; i += PARTICLE_STRIDE)
       for (let j = 0; j < PARTICLE_STRIDE - 2; j += 2) {
         this.instances[n++] = d[i + j] * 640;
         this.instances[n++] = d[i + j + 1] * 400;
         this.instances[n++] = d[i + j + 2] * 640;
         this.instances[n++] = d[i + j + 3] * 400;
-        this.instances[n++] = (k % 6) / 5;
-        this.instances[n++] = life[k] * riverTaper(j / 2);
-        this.instances[n++] = life[k] * riverTaper(j / 2 + 1);
+        this.instances[n++] = ((i / PARTICLE_STRIDE) % 6) / 5;
       }
     gl.useProgram(p);
     const pos = gl.getAttribLocation(p, "p"),
       ends = gl.getAttribLocation(p, "endpoints"),
-      shade = gl.getAttribLocation(p, "shade");
+      warm = gl.getAttribLocation(p, "warmth");
     gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
     gl.enableVertexAttribArray(pos);
     gl.vertexAttribPointer(pos, 2, gl.FLOAT, false, 0, 0);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.instances.subarray(0, n));
     gl.enableVertexAttribArray(ends);
-    gl.vertexAttribPointer(ends, 4, gl.FLOAT, false, 28, 0);
+    gl.vertexAttribPointer(ends, 4, gl.FLOAT, false, 20, 0);
     this.divisor(ends, 1);
-    gl.enableVertexAttribArray(shade);
-    gl.vertexAttribPointer(shade, 3, gl.FLOAT, false, 28, 16);
-    this.divisor(shade, 1);
+    gl.enableVertexAttribArray(warm);
+    gl.vertexAttribPointer(warm, 1, gl.FLOAT, false, 20, 16);
+    this.divisor(warm, 1);
     gl.uniform3fv(gl.getUniformLocation(p, "c1"), colors[1]);
     gl.uniform3fv(gl.getUniformLocation(p, "c2"), colors[2]);
     gl.enable(gl.BLEND);
@@ -256,19 +196,19 @@ class RibbonGPU {
     for (let pass = 0; pass < 2; pass++) {
       gl.uniform1f(
         gl.getUniformLocation(p, "width"),
-        pass === 0 ? 3.5 + detail * 3 : 1.5,
+        pass === 0 ? 3.5 + detail * 3 : 1.35,
       );
       gl.uniform1f(
         gl.getUniformLocation(p, "opacity"),
-        pass === 0 ? 0.08 + detail * 0.08 : 0.45 + detail * 0.4,
+        pass === 0 ? 0.08 + detail * 0.08 : 0.36 + detail * 0.36,
       );
-      if (this.gl2) this.gl2.drawArraysInstanced(gl.TRIANGLES, 0, 6, n / 7);
-      else this.extension!.drawArraysInstancedANGLE(gl.TRIANGLES, 0, 6, n / 7);
+      if (this.gl2) this.gl2.drawArraysInstanced(gl.TRIANGLES, 0, 6, n / 5);
+      else this.extension!.drawArraysInstancedANGLE(gl.TRIANGLES, 0, 6, n / 5);
     }
     this.divisor(ends, 0);
-    this.divisor(shade, 0);
+    this.divisor(warm, 0);
     gl.disableVertexAttribArray(ends);
-    gl.disableVertexAttribArray(shade);
+    gl.disableVertexAttribArray(warm);
     gl.disableVertexAttribArray(pos);
     gl.disable(gl.BLEND);
   }
@@ -331,13 +271,10 @@ export class EntityGPU implements SceneRenderer {
   field?: WebGLTexture;
   packed = new Uint8Array(SLIME_CELLS * 4);
   ribbons?: RibbonGPU;
-  riverLife = new Float32Array(1800);
   flockBins = new Uint16Array(40 * 25);
   sky?: WebGLTexture;
   skyBuffer?: WebGLFramebuffer;
   skyKey = "";
-  scratchA = [0, 0, 0, 0];
-  scratchB = [0, 0, 0, 0];
   constructor(
     public gl: WebGLRenderingContext,
     public kind: "rivers" | "slime" | "murmuration",
@@ -521,44 +458,29 @@ export class EntityGPU implements SceneRenderer {
     } else gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     const [c0, c1, c2] = a.colors;
     if (this.kind === "rivers") {
-      const count = d.length / PARTICLE_STRIDE,
-        life = riverLife(f.tick, count, this.riverLife);
-      if (this.ribbons) this.ribbons.draw(d, f.tick, a.colors, detail);
+      if (this.ribbons) this.ribbons.draw(d, a.colors, detail);
       else
         for (let pass = 0; pass < 2; pass++)
-          for (let i = 0, k = 0; i < d.length; i += PARTICLE_STRIDE, k++) {
-            if (life[k] < 0.01) continue;
-            const warm = (k % 6) / 5,
-              opacity = pass === 0 ? 0.08 + detail * 0.08 : 0.45 + detail * 0.4,
-              width = pass === 0 ? 3.5 + detail * 3 : 0.6 + warm * 0.7;
-            const ca = this.scratchA,
-              cb = this.scratchB;
-            for (let ch = 0; ch < 3; ch++)
-              ca[ch] = cb[ch] = c1[ch] + (c2[ch] - c1[ch]) * warm;
-            for (let j = 0; j < PARTICLE_STRIDE - 2; j += 2) {
-              const s0 = life[k] * riverTaper(j / 2),
-                s1 = life[k] * riverTaper(j / 2 + 1);
-              ca[3] = opacity * s0;
-              cb[3] = opacity * s1;
-              b.ribbon(
+          for (let i = 0; i < d.length; i += PARTICLE_STRIDE) {
+            const warm = ((i / PARTICLE_STRIDE) % 6) / 5,
+              c = mixColor(
+                c1,
+                c2,
+                warm,
+                pass === 0 ? 0.08 + detail * 0.08 : 0.36 + detail * 0.36,
+              );
+            for (let j = 0; j < PARTICLE_STRIDE - 2; j += 2)
+              b.line(
                 d[i + j] * 640,
                 d[i + j + 1] * 400,
                 d[i + j + 2] * 640,
                 d[i + j + 3] * 400,
-                width * (0.35 + 0.65 * s0),
-                width * (0.35 + 0.65 * s1),
-                ca,
-                cb,
+                pass === 0 ? 3.5 + detail * 3 : 0.55 + warm * 0.7,
+                c,
               );
-            }
           }
-      // A few bright heads mark the leading edge without speckling the field.
-      for (let i = 0, k = 0; i < d.length; i += PARTICLE_STRIDE * 11, k += 11)
-        if (life[k] > 0.5)
-          b.rect(d[i] * 640 - 0.8, d[i + 1] * 400 - 0.8, 1.6, 1.6, [
-            ...c2,
-            0.85 * life[k],
-          ]);
+      for (let i = 0; i < d.length; i += PARTICLE_STRIDE * 7)
+        b.rect(d[i] * 640 - 0.7, d[i + 1] * 400 - 0.7, 1.4, 1.4, [...c2, 0.8]);
     } else if (this.kind === "slime") {
       const slimeRoles = paletteRoles(a.colors);
       for (let i = SLIME_CELLS; i < d.length; i += 3) {
