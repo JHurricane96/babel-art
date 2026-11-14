@@ -88,7 +88,7 @@ Run `npm run test:worlds` for biome review images, exact replay and bounded live
 
 ## Adaptive preview quality
 
-Preview resolution defaults to **Auto**. It reduces resolution after sustained slow frames and cautiously restores it after a longer period of fast frames. The same scale applies to all four panels and to entity image textures. Pauses, hidden tabs and replay work do not drive adaptation. Economy, Balanced and High remain available for a fixed resolution.
+Preview resolution defaults to **High** (twice the displayed size). **Auto** reduces resolution after sustained slow frames and cautiously restores it after a longer period of fast frames; choose it on hardware that cannot sustain High. The same scale applies to all four panels and to entity image textures. Pauses, hidden tabs and replay work do not drive adaptation. Economy and Balanced remain available for a fixed lower resolution.
 
 Quality changes preserve every agent, trail, simulation rule, playhead and timing setting. They adjust the displayed image resolution; they cannot eliminate a CPU simulation bottleneck. Preview quality is a local session setting, independent of saved artwork recipes.
 
