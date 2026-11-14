@@ -359,12 +359,17 @@ void main(){vec2 p=uv;vec3 c;if(kind==0){float f=.5+.5*sin(p.x*7.+sin(p.y*8.+tim
 else{float sky=smoothstep(0.,1.,p.y);c=mix(silhouette==1?mix(c0,c2,.45):c0*.3,mix(c0,c2,.28),sky);float sun=length((p-vec2(.72,.34))*vec2(1.6,1.));c+=c2*.16*exp(-sun*4.);c=mix(c,mix(c2,c1,.3),1.-smoothstep(.071,.078,sun));for(int i=0;i<3;i++){float n=float(i);float hill=.88+n*.035-sin(p.x*6.+n+seed*.01)*.035;c=mix(c,c0*(.8-n*.2),smoothstep(hill,hill+.004,p.y));}}
 gl_FragColor=vec4(c,1.);}`;
 /**
- * Murmuration scenery, rendered once per size and appearance: an overcast
- * evening sky over flat fields, with a far wood line, rows of bare poplars,
- * round bare trees and the odd farmhouse along the horizon. Kept low and small
- * so the flock above reads at its true scale. X and Y are in 640×400 image
- * units, Y measured up from the horizon. Edges are antialiased over one
- * output pixel. Silhouette is the dusk style, luminous a darker night sky.
+ * Murmuration scenery, rendered once per size and appearance: a winter
+ * evening over flat farmland, after the look of dusk photographs rather than
+ * icons. Woodland bands at several distances pale into the sky (aerial
+ * perspective); their tops are lacy with bare twigs and thicken into solid
+ * trunks and undergrowth near the ground. A row of poplars, a low hedge, a few
+ * large branching trees close by and a hazy barn give scale. Fields recede in
+ * strips, with wetter patches and a sheen near the horizon. A soft stratus layer
+ * and a glow above the horizon texture the sky, and a fixed grain keeps large
+ * gradients from looking flat. X and Y are in 640×400 image units, Y measured
+ * up from the horizon; `pixel` is the size of one output pixel in those units.
+ * Silhouette is the dusk style, luminous a darker night sky.
  */
 const scenery = `#define HORIZON ${CAMERA.horizon.toFixed(1)}
 precision highp float;varying vec2 uv;uniform float seed,pixel;uniform int silhouette;
@@ -375,87 +380,122 @@ float vnoise(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);
 float fbm(vec2 p){float v=0.,a=.5;for(int i=0;i<4;i++){v+=a*vnoise(p);p=p*2.03+17.1;a*=.5;}return v;}
 float edge(float d){return clamp(.5+d/pixel,0.,1.);}
 float seg(vec2 p,vec2 a,vec2 b,out float h){vec2 pa=p-a,ba=b-a;h=clamp(dot(pa,ba)/dot(ba,ba),0.,1.);return length(pa-ba*h);}
-float bareTree(vec2 q,float cx,float H,float W,float id){
+// Bare twigs seen from afar: a fine, even grain with clumps, no strokes.
+float twigs(vec2 q,float id){
+ float a=vnoise(q*3.1+id*7.);
+ float b=vnoise(mat2(.8,.6,-.6,.8)*q*6.7+id);
+ float c=vnoise(q*.9+id*3.);
+ return a*.4+b*.3+c*.3;}
+// A band of trees along the horizon: overlapping crowns of width w and height
+// between lo and hi. shape > 1 makes pointed crowns (poplars). Stretches of
+// the band are missing where low-frequency noise falls under gap. Returns
+// opacity: lacy at the top, solid toward the base.
+float wood(float X,float Y,float id,float w,float lo,float hi,float shape,float gap){
+ if(Y>hi*1.3+1.||Y<-1.)return 0.;
+ float top=0.,cell=floor(X/w);
+ for(int j=-2;j<=2;j++){float i=cell+float(j);
+  float a=h21(vec2(i,id)),b=h21(vec2(id+.5,i));
+  if(h21(vec2(i,id+9.))<.12)continue;
+  float cx=(i+.5+.8*(a-.5))*w;
+  if(vnoise(vec2(cx*.012+id*3.1,id))<gap)continue;
+  float r=w*(.75+.6*b);
+  float t=1.-(X-cx)*(X-cx)/(r*r);
+  if(t>0.)top=max(top,mix(lo,hi,b*.7+a*.3)*pow(t,.55*shape));
+ }
+ if(top<=0.)return 0.;
+ top*=.55+.6*vnoise(vec2(X*.015+id*5.,id+2.));
+ float d=top-Y+(fbm(vec2(X,Y)*.45+id)-.5)*top*.35;
+ float lace=smoothstep(-.4,top*.4,d)*(.3+.5*smoothstep(.25,.75,twigs(vec2(X,Y),id)));
+ float solid=smoothstep(top*.45,top*.9,d);
+ return clamp(max(lace,solid),0.,1.);}
+// A large bare tree: trunk, five limbs that bend upward, three branches on
+// each, inside a lacy dome of twigs.
+float specimen(vec2 q,float cx,float H,float id){
  vec2 r=q-vec2(cx,0.);
- if(abs(r.x)>W+1.||r.y>H+1.)return 0.;
- float k=H/18.,h;
- float o=edge(.45*k+.25*pixel-seg(r,vec2(0.,-1.),vec2(0.,H*.4),h))*edge(r.y+1.);
- for(int j=0;j<9;j++){float fj=float(j);
-  float u=h21(vec2(id,fj)),w=h21(vec2(fj,id+.5));
-  float side=(fj-4.)/4.;
-  vec2 a=vec2(0.,H*(.18+.28*u));
-  vec2 b=vec2(W*side*(.55+.45*w),H*(.62+.38*(1.-side*side)*(.6+.4*u)));
-  float d=seg(r,a,b,h);
-  o=max(o,edge(mix(.32,.07,h)*k+.2*pixel-d)*mix(1.,.75,h));
+ float W=H*.72;
+ if(abs(r.x)>W*1.15||r.y>H*1.15||r.y<-1.)return 0.;
+ float k=H/24.,h;
+ vec2 fork=vec2((h21(vec2(id,1.))-.5)*H*.1,H*(.26+.1*h21(vec2(id,2.))));
+ float d=seg(r,vec2(0.,-1.),fork,h);
+ float o=edge((1.-.3*h)*k+.25*pixel-d),near=1e3;
+ for(int j=0;j<5;j++){float fj=float(j);
+  float u=h21(vec2(id,fj+3.)),v=h21(vec2(fj,id+7.));
+  float ang=(fj-2.)*.42+(u-.5)*.35;
+  float len=H*(.5+.2*v)*(1.-.1*abs(fj-2.));
+  vec2 dir=vec2(sin(ang),cos(ang));
+  vec2 mid=fork+dir*len*.5+vec2(0.,len*.07);
+  vec2 tip=fork+dir*len+vec2(0.,len*.12);
+  d=seg(r,fork,mid,h);o=max(o,edge((.55-.15*h)*k+.2*pixel-d));
+  d=seg(r,mid,tip,h);o=max(o,edge((.4-.28*h)*k+.15*pixel-d));
+  near=min(near,d);
+  for(int m=0;m<4;m++){float fm=float(m);
+   float s=h21(vec2(id+fj*3.,fm+11.));
+   vec2 base=mix(fork,tip,.3+.18*fm);
+   float a2=ang+(mod(fm,2.)*2.-1.)*(.45+.3*s);
+   vec2 end2=base+vec2(sin(a2),cos(a2))*len*(.42+.25*s);
+   d=seg(r,base,end2,h);o=max(o,edge((.24-.17*h)*k+.12*pixel-d)*(.95-.25*h));
+   near=min(near,d);
+  }
  }
- vec2 e=vec2(r.x/W,(r.y-H*.64)/(H*.4));
- float m=1.-dot(e,e);
- float twig=vnoise(r*vec2(1.3,.9)+id*7.)*.6+vnoise(r*3.1+id)*.4;
- float haze=smoothstep(0.,.7,m)*(.18+.42*smoothstep(.25,.75,twig));
- return max(o,haze);}
-float trees(float X,float Y){
- if(Y>34.)return 0.;
- vec2 q=vec2(X,Y);float o=0.;
- float cell=floor(X/5.);
+ // Twigs gather around the branches and thin out toward the crown's edge.
+ vec2 e=vec2(r.x/W,(r.y-H*.62)/(H*.48));
+ float m=1.-dot(e,e)+(fbm(r*.25+id)-.5)*.8;
+ float fuzz=exp(-near/(H*.06));
+ float crown=smoothstep(-.1,.4,m)*fuzz*(.2+.6*smoothstep(.25,.75,twigs(r,id)));
+ return max(o,crown);}
+float specimens(float X,float Y){
+ if(Y>40.)return 0.;
+ float o=0.,cell=floor(X/110.);
  for(int j=-1;j<=1;j++){float i=cell+float(j);
-  float a=h21(vec2(i,3.)),b=h21(vec2(i,5.));
-  float cx=(i+.5+.6*(a-.5))*5.;
-  float row=smoothstep(.5,.6,vnoise(vec2(cx*.008+3.,1.)));
-  if(row<=0.||b<.12)continue;
-  float H=(13.+9.*b)*(.55+.45*row);
-  o=max(o,bareTree(q,cx,H,H*(.13+.06*a),i));
- }
- cell=floor(X/11.);
- for(int j=-1;j<=1;j++){float i=cell+float(j);
-  float a=h21(vec2(i,7.)),b=h21(vec2(i,9.));
-  float cx=(i+.5+.7*(a-.5))*11.;
-  float stand=smoothstep(.45,.55,vnoise(vec2(cx*.012+11.,2.)));
-  if(stand<=0.||a<.2)continue;
-  float H=(9.+11.*b)*(.6+.4*stand);
-  o=max(o,bareTree(q,cx,H,H*(.45+.25*b),i+100.));
+  if(h21(vec2(i,41.))<.35)continue;
+  float cx=(i+.2+.6*h21(vec2(i,43.)))*110.;
+  o=max(o,specimen(vec2(X,Y),cx,22.+12.*h21(vec2(i,47.)),i));
  }
  return o;}
-float farm(float X,float Y){
- float o=0.;
- for(int k=0;k<2;k++){float fk=float(k);
-  float fx=640.*(.18+.6*h21(vec2(fk,21.)))+fk*90.;
-  float w=5.+3.*h21(vec2(fk,23.)),wall=3.2+1.4*h21(vec2(fk,25.));
-  float dx=abs(X-fx);
-  float house=edge(w-dx)*edge(wall+2.6*(1.-dx/w)-Y)*edge(Y+1.);
-  float bush=0.;
-  for(int m=0;m<3;m++){float fm=float(m);
-   vec2 bc=vec2(fx+(fm-1.)*(w+3.)+4.*h21(vec2(fk,fm)),2.);
-   float r=3.5+3.*h21(vec2(fm,fk+30.));
-   float d=r-length((vec2(X,Y)-bc)*vec2(1.,1.3))+.9*(vnoise(vec2(X,Y)*.7)-.5);
-   bush=max(bush,edge(d)*edge(Y+1.));}
-  o=max(o,max(house,bush));
- }
- return o;}
+// A long low barn and a shed, hazy in the middle distance.
+float barn(float X,float Y){
+ float fx=640.*(.2+.6*h21(vec2(5.,21.)));
+ float dx=X-fx;
+ float body=edge(7.-abs(dx))*edge(2.6+1.1*(1.-abs(dx)/7.)-Y);
+ float shed=edge(2.4-abs(dx-10.))*edge(1.7+.4*(1.-abs(dx-10.)/2.4)-Y);
+ return max(body,shed)*edge(Y+1.);}
 void main(){
  float X=uv.x*640.,Y=(HORIZON/400.-uv.y)*400.;
  float lum=silhouette==1?1.:.42;
- vec3 high=mix(toneShadow,toneBody,.55);
- vec3 low=mix(toneHighlight,toneDusk,.3);
+ vec3 high=mix(toneShadow,toneBody,.55),low=mix(toneHighlight,toneDusk,.3);
+ high=mix(vec3(dot(high,vec3(.2126,.7152,.0722))),high,.4);
+ low=mix(vec3(dot(low,vec3(.2126,.7152,.0722))),low,.4);
  float k=clamp(Y/HORIZON,0.,1.);
- vec3 sky=mix(low,high,pow(k,.75));
- float grey=dot(sky,vec3(.2126,.7152,.0722));
- sky=mix(vec3(grey),sky,.4);
- float streak=fbm(vec2(X*.0045,Y*.04)+seed*.001);
- sky*=1.+.07*(streak-.5)*smoothstep(5.,60.,Y);
- sky*=1.+.05*exp(-length(vec2(X-430.,Y*1.6))/220.);
- sky*=lum;
+ vec3 sky=mix(low,high,pow(k,.7));
+ // Stratus: long soft bands, darker bodies, none close to the horizon.
+ float cl=fbm(vec2(X*.0035+seed*.01,Y*.03))*.7+fbm(vec2(X*.009,Y*.07)+5.)*.3;
+ float cloud=smoothstep(.45,.72,cl)*smoothstep(25.,120.,Y);
+ sky*=1.-.08*cloud;
+ sky*=1.+.05*(fbm(vec2(X*.002,Y*.006)+9.)-.5);
+ // A pale glow just above the horizon.
+ sky=mix(sky,low*1.07,.55*exp(-max(Y,0.)/16.));
+ sky*=lum;low*=lum;
  vec3 ink=toneGround*.45;
- vec3 far=mix(ink,sky,.55);
- float fh=2.+3.*fbm(vec2(X*.018,4.))+2.5*pow(vnoise(vec2(X*.06,6.)),3.)+.7*vnoise(vec2(X*.9,8.));
- vec3 c=mix(sky,far,edge(fh-Y)*edge(Y+1.));
- float near=max(trees(X,Y),farm(X,Y));
- c=mix(c,mix(ink,sky,.14),near);
+ vec3 c=sky;
+ c=mix(c,mix(ink,low,.74),wood(X,Y,1.,9.,1.5,4.5,1.,.3));
+ c=mix(c,mix(ink,low,.55),wood(X+300.,Y,2.,7.,3.,9.,1.,.42));
+ c=mix(c,mix(ink,low,.5),barn(X,Y));
+ c=mix(c,mix(ink,low,.34),wood(X,Y,3.,2.6,9.,20.,1.4,.55));
+ c=mix(c,mix(ink,low,.4),wood(X+150.,Y,6.,6.,5.,13.,1.,.5));
+ c=mix(c,mix(ink,low,.2),wood(X+70.,Y,4.,3.2,1.6,3.8,1.,.38));
+ c=mix(c,mix(ink,low,.12),specimens(X,Y));
  if(Y<0.){
-  float depth=clamp(-Y/(400.-HORIZON),0.,1.);
-  vec3 field=mix(mix(ink,sky,.3),mix(ink,sky,.1),pow(depth,.6));
-  field*=1.+.05*(vnoise(vec2(X*.05,-Y*.9))-.5);
-  c=mix(c,field,edge(-Y));
+  float g=-Y,depth=clamp(g/(400.-HORIZON),0.,1.);
+  vec3 field=mix(mix(ink,low,.4),mix(ink,low,.14),pow(depth,.55));
+  // Field strips, wider toward the viewer, and broad wetter patches.
+  float band=log(g+1.)*3.6+1.4*fbm(vec2(X*.005,g*.04));
+  field*=1.+.022*sin(band*6.2832)+.02*(vnoise(vec2(X*.04,g*1.5/(1.+g*.12)))-.5);
+  field=mix(field,low*.7,.12*smoothstep(.55,.8,fbm(vec2(X*.008,g*.08/(1.+g*.05))+3.)));
+  // Wet ground near the horizon catches the sky.
+  field=mix(field,low*.92,.3*exp(-g/3.5));
+  c=mix(c,field,edge(g));
  }
+ c+=(h21(floor(gl_FragCoord.xy))-.5)*.016;
  gl_FragColor=vec4(c,1.);
 }`;
 // Slime field: a soft halo plus a vein band thresholded from the bilinear

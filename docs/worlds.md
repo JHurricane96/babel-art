@@ -69,9 +69,13 @@ it, each a soft mark whose darkness and thickness follow the wing area facing
 the camera. Every fourth bird also contributes a faint wide disc, so deep parts
 of the flock gain a smooth body. The image is drawn at the displayed size of
 the wall (`wallResolution` on the renderer), not 640×400 times preview quality,
-so birds stay sharp on large panels. The scenery is an overcast evening over
-fields with bare trees, poplar rows and farmhouses along a low horizon. It is
-rendered once per appearance and size and reused. Silhouette is the default
+so birds stay sharp on large panels. The scenery is a winter evening over
+farmland: woodland bands at several distances pale into the sky, with lacy
+tops of bare twigs over solid trunks; a poplar row, a hazy barn and a few
+large branching trees close by give scale; fields recede in soft strips with
+a wet sheen near the horizon; stratus, a horizon glow and a fixed grain keep
+the sky from looking flat. It is rendered once per appearance and size and
+reused. Silhouette is the default
 style; luminous shows light birds against a night sky.
 
 Checkpoints hold eight values per bird (position, velocity, bank and escape
