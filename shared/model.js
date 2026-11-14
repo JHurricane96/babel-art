@@ -3,6 +3,7 @@ import { validateLifeDirector } from "../engine/life.ts";
 import { validateSchedule, validateAction } from "../engine/evolution.ts";
 import { PARTICLE_STRIDE } from "../engine/particles.ts";
 import { SLIME_CELLS } from "../engine/slime.ts";
+import { BIRD_STRIDE } from "../engine/murmuration.ts";
 import { PERFECT } from "./timing.js";
 
 import { registry, defaults, parameters } from "../scenes/registry.ts";
@@ -12,7 +13,9 @@ const importParameters = (id, value = {}) =>
     id,
     id === "tapestry" && value.ecologyVersion === undefined
       ? { ...value, ecologyVersion: 1 }
-      : value,
+      : id === "murmuration" && value.flockVersion === undefined
+        ? { ...value, flockVersion: 1 }
+        : value,
   );
 export { PALETTES } from "../engine/palettes.ts";
 import { PALETTES } from "../engine/palettes.ts";
@@ -233,6 +236,16 @@ function validateCheckpoint(c, scene) {
   }
   if (
     scene.id === "murmuration" &&
+    Number(params.flockVersion) >= 2 &&
+    (c.data.length !== Number(params.population) * BIRD_STRIDE ||
+      !c.data.every((v, i) =>
+        i % BIRD_STRIDE < 3 ? Math.abs(v) <= 3 : Math.abs(v) <= 1,
+      ))
+  )
+    throw new Error("Invalid flock checkpoint");
+  if (
+    scene.id === "murmuration" &&
+    Number(params.flockVersion) < 2 &&
     (c.data.length !== Number(params.population) * 4 ||
       !c.data.every((v, i) =>
         i % 4 < 2 ? v >= 0 && v <= 1 : Math.abs(v) <= 1,

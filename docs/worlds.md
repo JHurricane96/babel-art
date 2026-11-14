@@ -44,6 +44,29 @@ palette variation above a layered sky and landscape. Depth cues are visual;
 the simulation remains two-dimensional. Four-value agent checkpoints and the
 existing schedule metadata remain unchanged.
 
+## Murmuration, revision 2
+
+New Murmuration projects use a three-dimensional flock (`engine/murmuration.ts`),
+3,000 birds by default and up to 4,000. Each bird reacts to at most eight
+neighbors within its radius, much as starlings track a handful of nearby birds,
+so behavior and cost stay independent of local density. Alignment, cohesion and
+short-range separation shape the flock; three cohorts follow slowly wandering
+points that drift apart in split chapters, and vortex chapters circle and roll
+the flock so its sheet turns between face-on and edge-on. Birds near the edge of
+the sky turn gradually back toward its middle: the world never wraps and the
+flock stays above the hills. A falcon circles and periodically dives through the
+flock, which parts around it.
+
+The renderer projects birds with mild perspective. Semi-transparent ink birds
+overlap, so folds and edge-on sheets darken and face-on sheets thin into a
+veil; far birds take on the sky color. The dusk sky is rendered once per
+appearance and reused.
+
+Checkpoints hold six values per bird (position and velocity) plus the evolution
+schedule. The hidden `flockVersion` parameter is 2 for new projects. Imported
+projects without it receive revision 1 and keep the original two-dimensional
+flock and its rendering until they start a new variation.
+
 ## Validation
 
 Unit tests cover route completion over 50 seeds, survey memory and replay,

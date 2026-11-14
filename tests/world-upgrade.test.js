@@ -6,6 +6,8 @@ import { makeProject, validateProject } from "../shared/model.js";
 test("a dispersed flock organizes into coherent groups", () => {
   const s = new Flock(42, {
     ...defaults("murmuration"),
+    flockVersion: 1,
+    population: 480,
     population: 120,
     predator: false,
   });
@@ -56,6 +58,8 @@ test("old platform checkpoints retain their original terrain until the next expe
 test("flock steering has inertia and remains finite across wrapped boundaries", () => {
   const s = new Flock(42, {
     ...defaults("murmuration"),
+    flockVersion: 1,
+    population: 480,
     variation: 0,
     predator: false,
     population: 20,
