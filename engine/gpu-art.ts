@@ -1,6 +1,5 @@
 import { program, vertex } from "./grid";
 import { ROLE_GLSL, paletteRoles, setRoleUniforms } from "./finish";
-import { variationOf } from "./evolution";
 import type { Appearance, RenderFrame, SceneRenderer } from "./render-frame";
 import { PARTICLE_STRIDE } from "./particles";
 import { SLIME_WIDTH, SLIME_HEIGHT, SLIME_CELLS } from "./slime";
@@ -219,25 +218,8 @@ class RibbonGPU {
   }
 }
 const background = `precision highp float;varying vec2 uv;uniform vec3 c0,c1,c2;uniform float time,seed;uniform int kind,silhouette;
-${ROLE_GLSL}
 void main(){vec2 p=uv;vec3 c;if(kind==0){float f=.5+.5*sin(p.x*7.+sin(p.y*8.+time*.04)*1.3);c=mix(c0*.15,c0*.7,f)+c1*.025;}
-else{
- vec3 zenith=silhouette==1?mix(toneShadow,toneBody,.55):toneGround*1.15;
- vec3 middle=silhouette==1?mix(toneBody,toneDusk,.6):mix(toneShadow,toneDusk,.42);
- vec3 low=silhouette==1?mix(toneDusk,toneHighlight,.58):mix(toneDusk,c2,.32);
- vec3 sky=mix(zenith,middle,smoothstep(0.,.55,p.y));
- sky=mix(sky,low,smoothstep(.42,.8,p.y));
- vec2 sp=(p-vec2(.7,.745))*vec2(1.6,1.);float sun=length(sp);
- sky+=mix(c2,toneHighlight,.5)*(exp(-sun*5.)*.3+exp(-sun*18.)*.22);
- sky=mix(sky,mix(toneHighlight,vec3(1.),.25),(1.-smoothstep(.026,.031,sun))*.85);
- float haze=.5+.5*sin(p.x*3.1+seed*.01+sin(p.x*7.3)*.6);
- sky=mix(sky,low,haze*smoothstep(.5,.8,p.y)*.22);
- c=sky;
- for(int i=0;i<3;i++){float n=float(i);
-  float ridge=.80+n*.045-(sin(p.x*5.+n*1.7+seed*.01)*.022+sin(p.x*13.+n*2.3)*.008+sin(p.x*41.+n)*.003);
-  vec3 land=mix(mix(low,toneShadow,.5),mix(toneShadow,toneGround,.55),n*.5);
-  c=mix(c,land,smoothstep(ridge,ridge+.003,p.y));}
-}
+else{float sky=smoothstep(0.,1.,p.y);c=mix(silhouette==1?mix(c0,c2,.45):c0*.3,mix(c0,c2,.28),sky);float sun=length((p-vec2(.72,.34))*vec2(1.6,1.));c+=c2*.16*exp(-sun*4.);c=mix(c,mix(c2,c1,.3),1.-smoothstep(.071,.078,sun));for(int i=0;i<3;i++){float n=float(i);float hill=.88+n*.035-sin(p.x*6.+n+seed*.01)*.035;c=mix(c,c0*(.8-n*.2),smoothstep(hill,hill+.004,p.y));}}
 gl_FragColor=vec4(c,1.);}`;
 // Slime field: a soft halo plus a vein band thresholded from the bilinear
 // field, so the low-resolution trail reads as crisp veins with bright cores
@@ -271,10 +253,6 @@ export class EntityGPU implements SceneRenderer {
   field?: WebGLTexture;
   packed = new Uint8Array(SLIME_CELLS * 4);
   ribbons?: RibbonGPU;
-  flockBins = new Uint16Array(40 * 25);
-  sky?: WebGLTexture;
-  skyBuffer?: WebGLFramebuffer;
-  skyKey = "";
   constructor(
     public gl: WebGLRenderingContext,
     public kind: "rivers" | "slime" | "murmuration",
@@ -324,62 +302,7 @@ export class EntityGPU implements SceneRenderer {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     }
   }
-  /** Murmuration's sky and hills, rendered once per appearance and image size. */
-  staticSky(a: Appearance, width: number, height: number) {
-    const gl = this.gl,
-      key = [
-        a.style,
-        a.seed % 10000,
-        JSON.stringify(a.colors),
-        width,
-        height,
-      ].join(":");
-    if (this.sky && this.skyKey === key) return this.sky;
-    const framebuffer = gl.getParameter(gl.FRAMEBUFFER_BINDING),
-      viewport = gl.getParameter(gl.VIEWPORT) as Int32Array;
-    if (!this.sky) {
-      this.sky = gl.createTexture()!;
-      this.skyBuffer = gl.createFramebuffer()!;
-    }
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.sky);
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.RGBA,
-      width,
-      height,
-      0,
-      gl.RGBA,
-      gl.UNSIGNED_BYTE,
-      null,
-    );
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this.skyBuffer!);
-    gl.framebufferTexture2D(
-      gl.FRAMEBUFFER,
-      gl.COLOR_ATTACHMENT0,
-      gl.TEXTURE_2D,
-      this.sky,
-      0,
-    );
-    gl.viewport(0, 0, width, height);
-    gl.useProgram(this.bg);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
-    const at = gl.getAttribLocation(this.bg, "p");
-    gl.enableVertexAttribArray(at);
-    gl.vertexAttribPointer(at, 2, gl.FLOAT, false, 0, 0);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    gl.disableVertexAttribArray(at);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-    gl.viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
-    this.skyKey = key;
-    return this.sky;
-  }
-  render(f: RenderFrame, a: Appearance, width = 640, height = 400) {
+  render(f: RenderFrame, a: Appearance) {
     const gl = this.gl,
       b = this.batch,
       d = f.data,
@@ -451,11 +374,7 @@ export class EntityGPU implements SceneRenderer {
         a.style === "etched" ? 1 : 0,
       );
     }
-    if (this.kind === "murmuration") {
-      gl.disableVertexAttribArray(at);
-      b.rect(0, 0, 640, 400, [1, 1, 1, 1], [0, 0, 1, 1]);
-      b.draw(640, 400, this.staticSky(a, width, height));
-    } else gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     const [c0, c1, c2] = a.colors;
     if (this.kind === "rivers") {
       if (this.ribbons) this.ribbons.draw(d, a.colors, detail);
@@ -519,141 +438,69 @@ export class EntityGPU implements SceneRenderer {
           ]);
       }
     } else {
-      this.drawFlock(f, a, t, detail);
-    }
-    b.draw(640, 400);
-  }
-  /**
-   * Murmuration: birds as ink (silhouette) or light (luminous) whose opacity
-   * follows local flock density, so the form of the flock reads as a mass
-   * with a dense core and feathered edges. Presentation only.
-   */
-  drawFlock(f: RenderFrame, a: Appearance, t: number, detail: number) {
-    const b = this.batch,
-      d = f.data,
-      roles = paletteRoles(a.colors),
-      [, c1, c2] = a.colors,
-      ink = a.style === "silhouette",
-      bins = this.flockBins.fill(0);
-    for (let i = 0; i < d.length; i += 4) {
-      const bx = Math.min(39, Math.max(0, Math.floor(d[i] * 40))),
-        by = Math.min(24, Math.max(0, Math.floor(d[i + 1] * 25)));
-      bins[by * 40 + bx]++;
-    }
-    for (let i = 0; i < d.length; i += 4) {
-      const n = i / 4,
-        x = d[i] * 640,
-        y = d[i + 1] * 400,
-        depth = 0.5 + (n % 7) / 10,
-        near = (depth - 0.5) / 0.6,
-        bx = Math.min(39, Math.max(0, Math.floor(d[i] * 40))),
-        by = Math.min(24, Math.max(0, Math.floor(d[i + 1] * 25))),
-        density = Math.min(1, bins[by * 40 + bx] / 6),
-        size = (ink ? 3.1 : 2.6) * depth;
-      const angle = Math.atan2(d[i + 3] * 400, d[i + 2] * 640),
-        ca = Math.cos(angle),
-        sa = Math.sin(angle),
-        wing = Math.sin(t * (5.5 + (n % 5) * 0.37) + n * 1.7);
-      // Far birds take on the sky color; the dense core is the darkest
-      // (ink) or warmest (luminous) part of the flock.
-      const c = ink
-        ? mixColor(
-            roles.toneGround,
-            roles.toneDusk,
-            (1 - near) * 0.4,
-            (0.38 + 0.5 * density) * (0.72 + 0.28 * near),
-          )
-        : mixColor(
-            c1,
-            mixColor(c2, roles.toneHighlight, 0.3),
-            0.15 + 0.6 * density,
-            (0.32 + 0.5 * density) * (0.7 + 0.3 * near),
-          );
-      const wingSpan = size * (0.5 + wing * 0.8),
-        lx = -size * 0.7,
-        weight = 0.6 + depth * 0.6;
-      b.line(
-        x + lx * ca + wingSpan * sa,
-        y + lx * sa - wingSpan * ca,
-        x,
-        y,
-        weight,
-        c,
-      );
-      b.line(
-        x,
-        y,
-        x + lx * ca - wingSpan * sa,
-        y + lx * sa + wingSpan * ca,
-        weight,
-        c,
-      );
-      if (detail > 0.3)
+      for (let i = 0; i < d.length; i += 4) {
+        const n = i / 4,
+          x = d[i] * 640,
+          y = d[i + 1] * 400,
+          depth = 0.5 + (n % 7) / 10,
+          size = (a.style === "silhouette" ? 3.2 : 2.5) * depth;
+        const angle = Math.atan2(d[i + 3] * 400, d[i + 2] * 640),
+          ca = Math.cos(angle),
+          sa = Math.sin(angle),
+          wing = Math.sin(t * (5.5 + (n % 5) * 0.37) + n * 1.7);
+        const c =
+          a.style === "silhouette"
+            ? mixColor(c0, [0, 0, 0], 0.6, 0.55 + depth * 0.4)
+            : mixColor(c1, c2, (n % 13) / 13, 0.4 + depth * 0.5);
+        const wingSpan = size * (0.5 + wing * 0.8),
+          lx = -size * 0.7;
         b.line(
-          x - size * ca,
-          y - size * sa,
-          x + size * 0.7 * ca,
-          y + size * 0.7 * sa,
-          ink ? 0.7 : 0.4,
-          ink ? c : mixColor(c2, c1, 0.3, 0.3 * detail),
+          x + lx * ca + wingSpan * sa,
+          y + lx * sa - wingSpan * ca,
+          x,
+          y,
+          0.6 + depth * 0.6,
+          c,
         );
-    }
-    if (f.params.predator) {
-      // The same path the simulation flees from, drawn as a falcon.
-      const presence =
-          variationOf(f.params) > 0
-            ? Math.pow(0.5 + 0.5 * Math.sin(t * 0.083 + a.seed * 0.001), 2)
-            : 1,
-        x = (0.5 + 0.3 * Math.sin(t * 0.3)) * 640,
-        y = (0.5 + 0.3 * Math.cos(t * 0.23)) * 400,
-        heading = Math.atan2(
-          -0.3 * 0.23 * Math.sin(t * 0.23) * 400,
-          0.3 * 0.3 * Math.cos(t * 0.3) * 640,
-        ),
-        hc = Math.cos(heading),
-        hs = Math.sin(heading),
-        flap = 0.7 + 0.3 * Math.sin(t * 6.3),
-        c = ink
-          ? mixColor(roles.toneGround, [0, 0, 0], 0.4, 0.92 * presence)
-          : mixColor(roles.toneGround, roles.toneShadow, 0.3, 0.9 * presence),
-        at = (u: number, v: number): [number, number] => [
-          x + u * hc - v * hs,
-          y + u * hs + v * hc,
-        ],
-        tri = (p: [number, number], q: [number, number], r: [number, number]) =>
-          b.triangle(p[0], p[1], q[0], q[1], r[0], r[1], c);
-      if (presence > 0.02) {
-        // Slim body and narrow tail; wings bend at the wrist and sweep back
-        // to sharp tips, the outline of a falcon rather than an aircraft.
-        tri(at(6, 0), at(-4, -1.3), at(-4, 1.3));
-        tri(at(-3, 0), at(-9, -1.4), at(-9, 1.4));
-        for (const side of [-1, 1]) {
-          const wrist = at(0.5, side * 6.5 * flap);
-          tri(at(2.5, side * 0.6), wrist, at(-2.5, side * 0.6));
-          tri(wrist, at(-9.5, side * 10.5 * flap), at(-2.2, side * 4.6 * flap));
-        }
+        b.line(
+          x,
+          y,
+          x + lx * ca - wingSpan * sa,
+          y + lx * sa + wingSpan * ca,
+          0.6 + depth * 0.6,
+          c,
+        );
+        if (detail > 0.3)
+          b.line(
+            x - size * ca,
+            y - size * sa,
+            x + size * 0.7 * ca,
+            y + size * 0.7 * sa,
+            0.4,
+            mixColor(c2, c1, 0.3, 0.3 * detail),
+          );
+      }
+      if (f.params.predator) {
+        const x = (0.5 + 0.3 * Math.sin(t * 0.3)) * 640,
+          y = (0.5 + 0.3 * Math.cos(t * 0.23)) * 400,
+          c = mixColor(
+            c0,
+            [0, 0, 0],
+            0.8,
+            Math.pow(0.5 + 0.5 * Math.sin(t * 0.083 + a.seed * 0.001), 2),
+          );
+        b.line(x - 8, y - 5, x + 1, y, 2, c);
+        b.line(x + 1, y, x - 8, y + 5, 2, c);
+      }
+      const reed = mixColor(c0, [0, 0, 0], 0.6, 0.8);
+      for (let i = 0; i < 45 * detail; i++) {
+        const x = (i * 640) / 45,
+          y = 400 - (12 + 17 * Math.sin(i * 2.3));
+        b.line(x, 400, x + Math.sin(t * 0.8 + i) * 4, y, 1, reed);
+        b.line(x + Math.sin(t * 0.8 + i) * 4, y, x + 6, y - 8, 1, reed);
       }
     }
-    // A reed bed along the lower edge: varied heights, gentle sway, seed heads.
-    const reed = mixColor(roles.toneGround, [0, 0, 0], 0.35, 0.9),
-      count = Math.round(150 * detail);
-    for (let i = 0; i < count; i++) {
-      const h = Math.abs(Math.sin(i * 12.9898 + 1.3) * 43758.5453) % 1,
-        x = ((i + h * 0.8) * 640) / Math.max(1, count),
-        height = 18 + 46 * h * (0.6 + 0.4 * Math.sin(i * 0.37)),
-        sway = Math.sin(t * 0.7 + i * 0.53 + x * 0.01) * (2 + 3 * h),
-        top = 400 - height;
-      b.line(x, 400, x + sway, top, 0.7 + 0.5 * h, reed);
-      if (h > 0.45)
-        b.line(
-          x + sway,
-          top,
-          x + sway * 1.15 + 0.4,
-          top - 4 - 3 * h,
-          1.6,
-          reed,
-        );
-    }
+    b.draw(640, 400);
   }
   dispose() {
     this.ribbons?.dispose();
@@ -661,8 +508,6 @@ export class EntityGPU implements SceneRenderer {
     this.gl.deleteBuffer(this.quad);
     this.gl.deleteProgram(this.bg);
     if (this.fieldProgram) this.gl.deleteProgram(this.fieldProgram);
-    if (this.sky) this.gl.deleteTexture(this.sky);
-    if (this.skyBuffer) this.gl.deleteFramebuffer(this.skyBuffer);
     if (this.field) this.gl.deleteTexture(this.field);
   }
 }

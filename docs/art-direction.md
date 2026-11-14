@@ -65,9 +65,6 @@ Applied so far:
 - Life colors cells by role: newborn cells take the accent, active cells the
   middle tones, and long-lived still lifes recede. The residue that 8-bit
   trails leave behind no longer draws a lattice over empty space.
-- Murmuration defaults to ink birds on a graded dusk sky. Opacity follows local
-  flock density, and the predator is drawn as a falcon on the same path the
-  flock flees.
 - Terrarium Worlds samples its pixel art "sharp bilinear" with the camera's
   sub-pixel offset, so slow pans glide and pixel widths stay even. Distant
   ridges dissolve toward the haze color.
