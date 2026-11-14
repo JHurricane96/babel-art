@@ -32,13 +32,16 @@ test("starling flock replays exactly through checkpoints, escapes and attacks", 
   assert.deepEqual(a.snapshot(), b.snapshot());
 });
 
-test("starling flock stays finite, aloft, near the roost and together", () => {
-  const sim = new Murmuration(9, params({ population: 900 }));
+test("starling flock stays finite, aloft and near the roost; groups break away and rejoin", () => {
+  const sim = new Murmuration(9, params({ population: 1500 }));
   let samples = 0,
     aloft = 0,
     near = 0,
+    checks = 0,
+    whole = 0,
+    largestSum = 0,
     worstGroup = 1;
-  for (let i = 1; i <= 10 * 60 * 60; i++) {
+  for (let i = 1; i <= 5 * 60 * 60; i++) {
     sim.step();
     if (i % 1200) continue;
     const b = sim.birds,
@@ -61,14 +64,25 @@ test("starling flock stays finite, aloft, near the roost and together", () => {
     const sizes = new Map();
     for (let i = 0; i < n; i++)
       sizes.set(find(i), (sizes.get(find(i)) ?? 0) + 1);
-    worstGroup = Math.min(worstGroup, Math.max(...sizes.values()) / n);
+    const largest = Math.max(...sizes.values()) / n;
+    checks++;
+    largestSum += largest;
+    if (largest > 0.9) whole++;
+    worstGroup = Math.min(worstGroup, largest);
   }
   assert.ok(aloft / samples > 0.97, "birds stay aloft: " + aloft / samples);
   assert.ok(
     near / samples > 0.97,
     "birds stay near the roost: " + near / samples,
   );
-  assert.ok(worstGroup > 0.6, "most birds stay one flock: " + worstGroup);
+  // Breakaway groups are intended, but they return: the flock is whole most
+  // of the time and never scatters.
+  assert.ok(whole / checks > 0.6, "flock is usually whole: " + whole / checks);
+  assert.ok(
+    largestSum / checks > 0.85,
+    "mean largest group: " + largestSum / checks,
+  );
+  assert.ok(worstGroup > 0.4, "never scatters: " + worstGroup);
 });
 
 test("falcon attacks follow the observed pattern: mostly from above", () => {

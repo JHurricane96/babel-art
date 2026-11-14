@@ -36,8 +36,15 @@ const MASS = 0.08,
   BANK_OUT = 1,
   BANK_ALIGN = 2, // 1/s, roll toward neighbours' mean bank
   BANK_MAX = 1.4, // rad
-  ROOST_RADIUS = 55, // m
-  ROOST_HEIGHT = 55, // m
+  ROOST_RX = 22, // m, half-width of the roost area across the view
+  ROOST_RZ = 50, // m, half-depth along the view
+  ROOST_HEIGHT = 40, // m
+  FLOOR = 14, // m, below this birds climb away from the ground
+  BREAK_EVERY = 40, // s between breakaway groups
+  BREAK_TIME = 3.5, // s a breakaway group pulls away
+  BREAK_RADIUS = 11, // m around the group's leader
+  BREAK_FORCE = 0.55, // N
+  W_JOIN = 0.25, // N, draws separated groups back toward the whole flock
   W_ROOST_H = 0.01, // N per metre outside the roost
   W_ROOST_V = 0.05, // N per metre from the preferred height (capped)
   ZIG_FORCE = 1, // N
@@ -64,12 +71,12 @@ export const TUNING = {
 /** Fixed camera, shared by the simulation (activity) and the renderer. */
 export const CAMERA = {
   x: 0,
-  y: 4,
-  z: -260,
-  /** Focal length in 640-wide image units. */
-  focal: 740,
+  y: 2,
+  z: -200,
+  /** Focal length in 640-wide image units: a long lens, so the flock fills the sky. */
+  focal: 1100,
   /** Image row of the horizon in the 640×400 image. */
-  horizon: 330,
+  horizon: 350,
 };
 export function project(x: number, y: number, z: number) {
   const depth = Math.max(1, z - CAMERA.z),
@@ -162,9 +169,9 @@ export class Murmuration implements Simulation {
         r = radius * Math.sqrt(random()),
         a = random() * Math.PI * 2,
         h = heading + (random() - 0.5) * 0.3;
-      this.birds[at] = Math.cos(heading) * 40 + r * Math.cos(a);
+      this.birds[at] = Math.cos(heading) * 25 + r * Math.cos(a);
       this.birds[at + 1] = ROOST_HEIGHT + (random() - 0.5) * 4;
-      this.birds[at + 2] = Math.sin(heading) * 40 + r * Math.sin(a) * 0.6;
+      this.birds[at + 2] = Math.sin(heading) * 30 + r * Math.sin(a) * 0.6;
       this.birds[at + 3] = Math.cos(h) * speed;
       this.birds[at + 4] = 0;
       this.birds[at + 5] = Math.sin(h) * speed;
@@ -324,6 +331,43 @@ export class Murmuration implements Simulation {
         hash(this.seed * 29 + startleEvent) - 0.5,
       );
 
+    // Breakaway: now and then the birds around one leader pull away together
+    // (sideways and up or down) for a few seconds. They may split off as a
+    // separate cluster before the roost draws them back.
+    const breakEvent = Math.floor((t - 8) / BREAK_EVERY),
+      breakStart =
+        8 + breakEvent * BREAK_EVERY + 15 * hash(this.seed * 37 + breakEvent),
+      breaking =
+        variation > 0 &&
+        breakEvent >= 0 &&
+        t >= breakStart &&
+        t < breakStart + BREAK_TIME;
+    let breakX = 0,
+      breakY = 0,
+      breakZ = 0,
+      breakFx = 0,
+      breakFy = 0,
+      breakFz = 0;
+    // Flock scale: the radius of a sheet of this many birds.
+    const reach = 0.62 * Math.sqrt(count),
+      breakRadius = BREAK_RADIUS * Math.pow(count / 3000, 0.4),
+      whole = this.centre();
+    if (breaking) {
+      const leader =
+          Math.floor(hash(this.seed * 41 + breakEvent) * count) * BIRD_STRIDE,
+        lvx = b[leader + 3],
+        lvz = b[leader + 5],
+        lv = Math.sqrt(lvx * lvx + lvz * lvz) || 1,
+        sign = hash(this.seed * 43 + breakEvent) < 0.5 ? -1 : 1,
+        lift = (hash(this.seed * 47 + breakEvent) - 0.5) * 0.9;
+      breakX = b[leader];
+      breakY = b[leader + 1];
+      breakZ = b[leader + 2];
+      breakFx = BREAK_FORCE * sign * (-lvz / lv);
+      breakFz = BREAK_FORCE * sign * (lvx / lv);
+      breakFy = BREAK_FORCE * lift;
+    }
+
     // Social, roost, escape and noise forces: computed once per reaction step.
     for (let i = 0; i < count; i++) {
       const at = i * BIRD_STRIDE,
@@ -408,17 +452,50 @@ export class Murmuration implements Simulation {
         fy += (centrality * cohesion * cy) / seen;
         fz += (centrality * cohesion * cz) / seen;
       }
-      // Roost: outside its radius, a sideways push turns the bird back home.
-      const r = Math.sqrt(x * x + z * z);
-      if (r > ROOST_RADIUS) {
-        const nx = x / r,
-          nz = z / r,
+      // Roost: outside an ellipse (deeper than it is wide, so the flock
+      // wheels toward and away from the viewer), a sideways push turns the
+      // bird back home.
+      const qx = x / ROOST_RX,
+        qz = z / ROOST_RZ,
+        r = Math.sqrt(qx * qx + qz * qz);
+      if (r > 1) {
+        const gx = qx / ROOST_RX,
+          gz = qz / ROOST_RZ,
+          gl = Math.sqrt(gx * gx + gz * gz) || 1,
+          nx = gx / gl,
+          nz = gz / gl,
           outward = 0.5 + 0.5 * (ex * nx + ez * nz),
           turnHome = sx * -nx + sz * -nz >= 0 ? 1 : -1,
-          push = W_ROOST_H * (r - ROOST_RADIUS) * outward * turnHome;
+          push = W_ROOST_H * (r - 1) * ROOST_RX * outward * turnHome;
         fx += push * sx;
         fz += push * sz;
       }
+      if (breaking) {
+        const bx = x - breakX,
+          by = y - breakY,
+          bz = z - breakZ;
+        if (bx * bx + by * by + bz * bz < breakRadius * breakRadius) {
+          fx += breakFx;
+          fy += breakFy;
+          fz += breakFz;
+        }
+      }
+      // Birds far from the whole flock (a group that broke away) are drawn
+      // gently back, so clusters part for a while and then merge again.
+      {
+        const jx = whole[0] - x,
+          jy = whole[1] - y,
+          jz = whole[2] - z,
+          jd = Math.sqrt(jx * jx + jy * jy + jz * jz) || 1;
+        if (jd > reach) {
+          const pull = (W_JOIN * Math.min(1, (jd - reach) / 20)) / jd;
+          fx += jx * pull;
+          fy += jy * pull * 0.3;
+          fz += jz * pull;
+        }
+      }
+      // The ground: birds pushed low by a dive pull up hard.
+      if (y < FLOOR) fy += Math.min(1.5, 0.15 * (FLOOR - y));
       fy -= Math.max(
         -TUNING.heightCap,
         Math.min(TUNING.heightCap, TUNING.height * (y - ROOST_HEIGHT)),

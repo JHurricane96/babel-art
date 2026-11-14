@@ -568,6 +568,7 @@ function draw(now) {
       )
     : Number($("quality").value);
   runtime.setPresentationScale(quality);
+  runtime.setOutputDensity(fit.scale * quality);
   const qualityMessage = automatic
     ? `Auto · ${Math.round(quality * 100)}% · adjusts detail to keep motion smooth`
     : "Manual resolution";
