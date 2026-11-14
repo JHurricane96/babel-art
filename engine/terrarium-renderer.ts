@@ -16,7 +16,8 @@ import {
 const bg = `precision highp float;varying vec2 uv;uniform vec3 c0,c1,c2;uniform float time,camera,seed;uniform int biome;
 float ridge(float x,float scale,float phase){return sin(x*scale+phase)*.55+sin(x*scale*2.3-phase)*.25+sin(x*scale*.47+phase*2.)*.2;}
 void main(){vec2 p=floor(uv*vec2(960.,600.));float day=.82+.18*sin(time*.018+seed*.003);vec3 sky=mix(c0*.9,c1*.5,smoothstep(0.,600.,p.y));sky+=c2*.08*exp(-length((p-vec2(720.,110.))/vec2(300.,200.)));float cloud=sin((p.x+camera*.1+time*1.8)*.012)+sin(p.y*.06+sin(p.x*.005));sky=mix(sky,c2*.3,smoothstep(1.45,1.7,cloud)*.2*(1.-p.y/600.));
-for(int i=0;i<4;i++){float n=float(i),x=p.x+camera*(.12+n*.14);float horizon=145.+n*105.+ridge(x,.004+n*.002,seed*.03+n)*55.;float band=step(horizon,p.y);vec3 tone=mix(c0,c1,.10+n*.07);sky=mix(sky,tone,band);float stem=mod(x+sin(floor(x/76.)*1.7)*15.,76.);float crown=125.+sin(floor(x/76.)*2.1)*35.;float tree=step(stem,7.+n*2.)*step(horizon-crown,p.y)*step(p.y,horizon+10.);sky=mix(sky,c0*(.6+n*.12),tree*.75);}
+vec3 haze=mix(c0*.9,c1*.5,.6)+c2*.07;
+for(int i=0;i<4;i++){float n=float(i),x=p.x+camera*(.12+n*.14);float horizon=145.+n*105.+ridge(x,.004+n*.002,seed*.03+n)*55.;float band=step(horizon,p.y);vec3 tone=mix(mix(haze,mix(c0,c1,.2),.4),mix(c0,c1,.14)*.78,n/3.);sky=mix(sky,tone,band);float stem=mod(x+sin(floor(x/76.)*1.7)*15.,76.);float crown=125.+sin(floor(x/76.)*2.1)*35.;float tree=step(stem,7.+n*2.)*step(horizon-crown,p.y)*step(p.y,horizon+10.);sky=mix(sky,mix(tone,c0*.55,.25+n*.18),tree*.75);}
 if(biome==0){float worldX=p.x+camera*.35;float trunk=mod(worldX,210.);float branch=sin(worldX*.012)*18.;sky=mix(sky,c0*.55,step(trunk,18.)*step(60.,p.y));float leaf=length(vec2(mod(worldX+70.,210.)-105.,(p.y-80.-branch)*1.9));sky=mix(sky,mix(c0,c1,.25),1.-smoothstep(62.,65.,leaf));}
 if(biome==2){float x=mod(p.x+camera*.28,180.);float arch=length(vec2((x-90.)*.8,(p.y-185.)));float stone=step(65.,arch)*step(arch,83.)*step(p.y,185.)+step(x,14.)*step(175.,p.y);sky=mix(sky,c1*.32,clamp(stone,0.,1.));}
 if(biome==3){float x=mod(p.x+camera*.2,140.);sky=mix(sky,c1*.32,step(x,12.)*step(95.+sin(floor((p.x+camera*.2)/140.)*2.)*20.,p.y));}
@@ -28,6 +29,11 @@ export class WorldRenderer implements SceneRenderer {
   width = 960;
   height = 600;
   pixelated = true;
+  /** Fraction of a source pixel the camera sits past the drawn image. */
+  sourceOffset(f: RenderFrame) {
+    const cam = f.extra!.camera as number;
+    return [cam - Math.floor(cam), 0];
+  }
   batch: Batch;
   quad: WebGLBuffer;
   background: WebGLProgram;
@@ -66,7 +72,7 @@ export class WorldRenderer implements SceneRenderer {
       b = this.batch,
       extra = f.extra!,
       chunks = extra.chunks as WorldChunk[],
-      cam = extra.camera as number,
+      cam = Math.floor(extra.camera as number),
       t = f.tick / 60,
       d = f.data,
       pop = extra.population as number;

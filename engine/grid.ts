@@ -30,7 +30,9 @@ export function program(gl: WebGLRenderingContext, vs: string, fs: string) {
           )
           .replace(/gl_FragColor/g, "fragmentColor");
     }
-    text = text.replace(/;/g, ";\n");
+    // Drop line comments first: the line split below would otherwise turn the
+    // rest of a comment that contains a semicolon into code.
+    text = text.replace(/\/\/[^\n]*/g, "").replace(/;/g, ";\n");
     gl.shaderSource(s, text);
     gl.compileShader(s);
     if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))

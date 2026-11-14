@@ -1,4 +1,5 @@
 import type { RenderFrame, SceneRenderer } from "./render-frame";
+import { paletteRoles, ROLE_NAMES } from "./finish";
 import { display, entityDisplay } from "./display";
 import { ActivityMonitor, actionFor, variationOf } from "./evolution";
 import type { EvolutionAction } from "./evolution";
@@ -31,6 +32,8 @@ export class Runtime {
   quad: WebGLBuffer;
   locations = new Map<WebGLProgram, Map<string, WebGLUniformLocation | null>>();
   metrics = { captures: 0, renders: 0, canvasUploads: 0, allocations: 0 };
+  /** Sub-pixel sampling offset for each pixel-art image, set when it is drawn. */
+  imageShift = new WeakMap<WebGLTexture, number[]>();
   uniform(p: WebGLProgram, name: string) {
     let map = this.locations.get(p);
     if (!map) this.locations.set(p, (map = new Map()));
@@ -503,7 +506,9 @@ export class Runtime {
         gl.UNSIGNED_BYTE,
         null,
       );
-      const filter = this.renderer?.pixelated ? gl.NEAREST : gl.LINEAR;
+      // Pixel art is sampled "sharp bilinear" in the compositor, which needs
+      // linear filtering to soften only the one-screen-pixel edges.
+      const filter = gl.LINEAR;
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -519,11 +524,16 @@ export class Runtime {
         0,
       );
       gl.viewport(0, 0, width, height);
+      const state = this.renderStates.get(selected)!;
       this.renderer.render(
-        this.renderStates.get(selected)!,
+        state,
         { style: scene.style, colors, seed: scene.seed, params: scene.params },
         width,
         height,
+      );
+      this.imageShift.set(
+        texture,
+        this.renderer.sourceOffset?.(state) ?? [0, 0],
       );
     } else {
       const sim = this.sim as EntitySimulation,
@@ -604,6 +614,8 @@ export class Runtime {
     gl.uniform1f(u("recoveryMix"), this.fallbackLevel);
     gl.uniform1f(u("richness"), Number(scene.params?.richness ?? 0.8));
     colors.forEach((c, i) => gl.uniform3fv(u("c" + i), c));
+    const roles = paletteRoles(colors);
+    for (const name of ROLE_NAMES) gl.uniform3fv(u(name), roles[name]);
     if (isEntity(this.sim) || this.renderer) {
       const texture = this.entityTexture(frame.current, scene, colors);
       const old =
@@ -625,6 +637,14 @@ export class Runtime {
       gl.bindTexture(gl.TEXTURE_2D, old);
       gl.uniform1i(u("previous"), 1);
       gl.activeTexture(gl.TEXTURE0);
+      const shift = this.imageShift.get(texture) ?? [0, 0];
+      gl.uniform1i(u("pixelArt"), this.renderer?.pixelated ? 1 : 0);
+      gl.uniform2f(
+        u("sourceSize"),
+        this.entityCanvas.width,
+        this.entityCanvas.height,
+      );
+      gl.uniform2f(u("sourceShift"), shift[0], shift[1]);
       gl.uniform4f(
         u("world"),
         this.world.x,

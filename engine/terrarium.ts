@@ -683,7 +683,9 @@ export class TerrariumWorld implements Simulation {
     }
     f.extra = {
       chunks: this.chunks,
-      camera: Math.round(this.camera.x),
+      // Full precision: the renderer draws at whole pixels and the compositor
+      // applies the fraction, so slow pans glide instead of stepping.
+      camera: this.camera.x,
       population: this.actors.length,
       weather: this.weather,
       stats: { ...this.stats },

@@ -39,6 +39,41 @@ topology, density, trail memory, palette and surface style. Moving nutrient pool
 redirect the network while old trails decay. Broad paths and quiet gaps provide
 structure at a distance; fine marks reward a closer view.
 
+## Finish and color roles
+
+Every artwork shader except the sync study ends in a shared finish
+(`engine/finish.ts`). Highlights above about 82% roll off softly instead of
+clipping to flat white, and a fixed sub-LSB dither breaks 8-bit banding in
+skies, halos and fractal gradients. The dither depends only on screen
+position, so a paused frame stays identical.
+
+The three palette stops are expanded once per draw into named roles: ground,
+shadow, body (deep to middle), bridge (middle to accent), highlight, and dusk
+(deep to accent). Roles are blended in OKLCh along the shorter hue arc and
+muted when the two hues are nearly opposite, so a navy-to-sand blend becomes a
+dusky mauve rather than gray. Shaders read them as `toneGround`, `toneShadow`,
+`toneBody`, `toneBridge`, `toneHighlight` and `toneDusk`. Blend between
+nearby roles; avoid mixing the deep and accent stops directly in sRGB.
+
+Applied so far:
+- Julia uses continuous escape-time coloring, a distance-estimated rim and a
+  textured interior.
+- Contours draws constant-width isolines with index contours, hillshade and
+  a hypsometric tint.
+- Rivers taper from head to tail and fade in and out with each particle's age.
+  The age is derived from the deterministic emission schedule, not stored.
+- Slime veins are thresholded from the field with a tube profile instead of a
+  blurred plateau. Chemical relief is softer and has no concentration rings.
+- Life colors cells by role: newborn cells take the accent, active cells the
+  middle tones, and long-lived still lifes recede. The residue that 8-bit
+  trails leave behind no longer draws a lattice over empty space.
+- Murmuration defaults to ink birds on a graded dusk sky. Opacity follows local
+  flock density, and the predator is drawn as a falcon on the same path the
+  flock flees.
+- Terrarium Worlds samples its pixel art "sharp bilinear" with the camera's
+  sub-pixel offset, so slow pans glide and pixel widths stay even. Distant
+  ridges dissolve toward the haze color.
+
 ## Time and review
 
 Chapter transitions blend gradually between gathering, splitting, and vortex

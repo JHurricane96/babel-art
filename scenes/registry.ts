@@ -155,7 +155,8 @@ registry.murmuration = {
   version: 1,
   kind: "entities",
   create: (gl, seed, params) => new Flock(seed, params),
-  styles: ["luminous", "silhouette"],
+  // Ink birds against a dusk sky is the default; luminous birds remain available.
+  styles: ["silhouette", "luminous"],
   parameters: {
     population: {
       label: "Population · restart",

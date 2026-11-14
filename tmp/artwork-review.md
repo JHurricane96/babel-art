@@ -1,9 +1,23 @@
 ARTWORK REVIEW: BABEL ART
 Review of the artworks at commit e228189, November 14, 2026
 
-This is a review and a proposed plan. Nothing here has been implemented in the
-app. Two small shader prototypes were rendered to test the quick fixes. Their
-source is in tmp/prototypes/ and is not connected to the app.
+STATUS (November 14, 2026): Phase 1 is implemented on branch
+claude/artwork-review-improvements-bkx0ia. It is not merged or deployed.
+- Done: S1 finish (highlight shoulder and dither), S2 perceptual palette
+  roles, Julia coloring, Contours as cartography, Rivers taper and age fade,
+  Slime vein shading, Chemical ring removal and softer relief, Life role
+  colors and hidden lattice, Murmuration ink-on-dusk (now the default style),
+  Terrarium sub-pixel panning and depth haze.
+- Moved to Phase 2: the Rivers aspect-ratio fix. It changes particle motion,
+  so it needs a versioned simulation change like the other Phase 2 items.
+- Every Phase 1 change is presentation only. Checkpoints, replay and saved
+  projects are unaffected.
+- See docs/art-direction.md, "Finish and color roles", for how the new
+  shared pieces work.
+
+The rest of this document is the original review. It describes the app as it
+was before Phase 1. The two prototypes in tmp/prototypes/ are now part of
+scenes/julia.ts and scenes/contours.ts.
 
 How the review was done:
 - Ran the dev build headlessly (Chromium, SwiftShader) with the default
