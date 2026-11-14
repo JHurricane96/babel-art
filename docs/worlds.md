@@ -46,24 +46,37 @@ existing schedule metadata remain unchanged.
 
 ## Murmuration, revision 2
 
-New Murmuration projects use a three-dimensional flock (`engine/murmuration.ts`),
-3,000 birds by default and up to 4,000. Each bird reacts to at most eight
-neighbors within its radius, much as starlings track a handful of nearby birds,
-so behavior and cost stay independent of local density. Alignment, cohesion and
-short-range separation shape the flock; three cohorts follow slowly wandering
-points that drift apart in split chapters, and vortex chapters circle and roll
-the flock so its sheet turns between face-on and edge-on. Birds near the edge of
-the sky turn gradually back toward its middle: the world never wraps and the
-flock stays above the hills. A falcon circles and periodically dives through the
-flock, which parts around it.
+New Murmuration projects use a three-dimensional starling flock
+(`engine/murmuration.ts`), 3,000 birds by default and up to 4,000, modelled on
+StarDisplay (Hildenbrandt, Carere & Hemelrijk 2010). Units are SI. Each bird
+reacts to its seven nearest neighbours, refreshed every 50 ms: separation,
+alignment and cohesion that is stronger for birds at the edge. Birds turn by
+banking, so turns carry momentum across the flock. A roost area, deeper than
+it is wide, keeps the flock wheeling in front of the viewer. A preferred height
+and a floor keep it aloft.
 
-The renderer projects birds with mild perspective. Semi-transparent ink birds
-overlap, so folds and edge-on sheets darken and face-on sheets thin into a
-veil; far birds take on the sky color. The dusk sky is rendered once per
-appearance and reused.
+Escape manoeuvres spread from bird to bird with the published recognition and
+reaction delays (Hemelrijk et al. 2015). A banking bird shows the camera more of
+its wings, so these waves read as dark bands. Startles, turns started by a few
+birds, and roughly every 40 seconds a breakaway group keep the flock changing
+without a predator. A weak pull toward the whole flock draws breakaway groups
+back. Falcon attacks (optional, on by default) come mostly from above, after
+Storms et al. (2019). The flock parts around the falcon, and a fast attack
+makes it burst outward.
 
-Checkpoints hold six values per bird (position and velocity) plus the evolution
-schedule. The hidden `flockVersion` parameter is 2 for new projects. Imported
+The renderer draws each simulated bird as several visible birds placed around
+it, each a soft mark whose darkness and thickness follow the wing area facing
+the camera. Every fourth bird also contributes a faint wide disc, so deep parts
+of the flock gain a smooth body. The image is drawn at the displayed size of
+the wall (`wallResolution` on the renderer), not 640×400 times preview quality,
+so birds stay sharp on large panels. The scenery is an overcast evening over
+fields with bare trees, poplar rows and farmhouses along a low horizon. It is
+rendered once per appearance and size and reused. Silhouette is the default
+style; luminous shows light birds against a night sky.
+
+Checkpoints hold eight values per bird (position, velocity, bank and escape
+clock), plus the evolution schedule, the current attack's aim and the neighbour
+lists. The hidden `flockVersion` parameter is 2 for new projects. Imported
 projects without it receive revision 1 and keep the original two-dimensional
 flock and its rendering until they start a new variation.
 

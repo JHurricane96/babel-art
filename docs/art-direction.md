@@ -27,8 +27,10 @@ examining cellular or chemical rules.
 
 Chemical Garden uses smooth concentration shading, membrane accents, and
 relief. Living Tapestry uses individual mosaic cells and fading colored trails.
-Murmuration combines colored agents with fine connections and soft background
-color masses. Particle Rivers combines broad streams, fine silk-like trails,
+Murmuration sets tens of thousands of small ink marks against a large quiet
+sky, with a low treeline for scale; density and banking birds carry the value
+contrast. (Projects saved with the earlier two-dimensional flock keep its
+colored agents and fine connections.) Particle Rivers combines broad streams, fine silk-like trails,
 and occasional bright heads. Contours and Interference add strata and fine
 veins to their larger moving structures.
 
