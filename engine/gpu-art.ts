@@ -1,4 +1,5 @@
 import { program, vertex } from "./grid";
+import { ROLE_GLSL, paletteRoles, setRoleUniforms } from "./finish";
 import type { Appearance, RenderFrame, SceneRenderer } from "./render-frame";
 import { PARTICLE_STRIDE } from "./particles";
 import { SLIME_WIDTH, SLIME_HEIGHT, SLIME_CELLS } from "./slime";
@@ -220,9 +221,27 @@ const background = `precision highp float;varying vec2 uv;uniform vec3 c0,c1,c2;
 void main(){vec2 p=uv;vec3 c;if(kind==0){float f=.5+.5*sin(p.x*7.+sin(p.y*8.+time*.04)*1.3);c=mix(c0*.15,c0*.7,f)+c1*.025;}
 else{float sky=smoothstep(0.,1.,p.y);c=mix(silhouette==1?mix(c0,c2,.45):c0*.3,mix(c0,c2,.28),sky);float sun=length((p-vec2(.72,.34))*vec2(1.6,1.));c+=c2*.16*exp(-sun*4.);c=mix(c,mix(c2,c1,.3),1.-smoothstep(.071,.078,sun));for(int i=0;i<3;i++){float n=float(i);float hill=.88+n*.035-sin(p.x*6.+n+seed*.01)*.035;c=mix(c,c0*(.8-n*.2),smoothstep(hill,hill+.004,p.y));}}
 gl_FragColor=vec4(c,1.);}`;
+// Slime field: a soft halo plus a vein band thresholded from the bilinear
+// field, so the low-resolution trail reads as crisp veins with bright cores
+// instead of blurred tubes. Grain lives on a fine world-fixed lattice.
 const slimeFragment = `precision highp float;varying vec2 uv;uniform sampler2D field;uniform vec3 c0,c1,c2;uniform float detail,seed;uniform int etched;
+${ROLE_GLSL}
 float value(vec2 p){vec2 v=texture2D(field,p).rg;return v.r+v.g/255.;}
-void main(){vec2 p=uv*vec2(192.,120.);float v=value(uv);float body=1.-exp(-v*2.1);float junction=clamp((v-.48)*1.7,0.,1.);float grain=fract(sin(dot(floor(p),vec2(127.1,311.7))+seed)*43758.5453)-.5;float fine=1.+detail*(.09*grain+.08*sin(v*65.+p.y*.13));float mineral=.5+.5*sin(p.x*.033+sin(p.y*.047));float warm=etched==1?.4+junction*.25+mineral*.2:.08+junction*.45+mineral*.15;vec3 pigment=mix(c1,c2,warm);vec3 c=c0*(.12+detail*.05*grain)+pigment*body*fine+pow(junction,6.)*.045;gl_FragColor=vec4(c,1.);}`;
+void main(){vec2 p=uv*vec2(192.,120.);float v=value(uv);
+float halo=1.-exp(-v*1.7);
+float vein=smoothstep(.3,.78,v);
+// How far inside a vein this pixel is, precomputed per cell in blue.
+float depth=smoothstep(.5,1.,texture2D(field,uv).b);
+float junction=clamp((v-.48)*1.7,0.,1.);
+float grain=fract(sin(dot(floor(uv*vec2(960.,600.)),vec2(127.1,311.7))+seed)*43758.5453)-.5;
+float mineral=.5+.5*sin(p.x*.033+sin(p.y*.047));
+float warm=etched==1?.58+junction*.25+mineral*.15:.08+junction*.45+mineral*.15;
+vec3 pigment=mix(mix(c1,toneBridge,smoothstep(0.,.5,warm)),c2,smoothstep(.5,1.,warm));
+vec3 c=toneGround*(.6+detail*.1*grain);
+c+=pigment*halo*.18;
+c+=pigment*vein*(.4+.3*depth+detail*.07*grain);
+c+=mix(pigment,toneHighlight,.55)*depth*depth*.28;
+gl_FragColor=vec4(c,1.);}`;
 
 export class EntityGPU implements SceneRenderer {
   width = 640;
@@ -299,6 +318,7 @@ export class EntityGPU implements SceneRenderer {
     a.colors.forEach((c, i) =>
       gl.uniform3fv(gl.getUniformLocation(p, "c" + i), c),
     );
+    setRoleUniforms(gl, p, a.colors);
     gl.uniform1f(gl.getUniformLocation(p, "time"), t);
     gl.uniform1f(gl.getUniformLocation(p, "seed"), a.seed % 10000);
     gl.uniform1i(
@@ -316,6 +336,24 @@ export class EntityGPU implements SceneRenderer {
         this.packed[i * 4 + 1] = v % 255;
         this.packed[i * 4 + 3] = 255;
       }
+      // Tube depth: the weakest trail one cell away in each direction. One
+      // pass here saves four filtered texture reads per pixel in the shader.
+      for (let y = 0; y < SLIME_HEIGHT; y++)
+        for (let x = 0; x < SLIME_WIDTH; x++) {
+          const l = Math.max(0, x - 1),
+            r = Math.min(SLIME_WIDTH - 1, x + 1),
+            u = Math.max(0, y - 1),
+            w = Math.min(SLIME_HEIGHT - 1, y + 1),
+            inner = Math.min(
+              d[y * SLIME_WIDTH + l],
+              d[y * SLIME_WIDTH + r],
+              d[u * SLIME_WIDTH + x],
+              d[w * SLIME_WIDTH + x],
+            );
+          this.packed[(y * SLIME_WIDTH + x) * 4 + 2] = Math.round(
+            Math.max(0, Math.min(1, inner)) * 255,
+          );
+        }
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, this.field!);
       gl.texSubImage2D(
@@ -363,11 +401,22 @@ export class EntityGPU implements SceneRenderer {
       for (let i = 0; i < d.length; i += PARTICLE_STRIDE * 7)
         b.rect(d[i] * 640 - 0.7, d[i + 1] * 400 - 0.7, 1.4, 1.4, [...c2, 0.8]);
     } else if (this.kind === "slime") {
+      const slimeRoles = paletteRoles(a.colors);
       for (let i = SLIME_CELLS; i < d.length; i += 3) {
         const x = d[i] * 640,
           y = d[i + 1] * 400,
           dx = Math.cos(d[i + 2]) * 2.5,
-          dy = Math.sin(d[i + 2]) * 2.5;
+          dy = Math.sin(d[i + 2]) * 2.5,
+          // Agents wandering through empty space stay faint; agents riding
+          // a vein are drawn as directional marks along it.
+          local =
+            d[
+              Math.min(SLIME_HEIGHT - 1, Math.floor(d[i + 1] * SLIME_HEIGHT)) *
+                SLIME_WIDTH +
+                Math.min(SLIME_WIDTH - 1, Math.floor(d[i] * SLIME_WIDTH))
+            ],
+          presence =
+            0.15 + 0.85 * Math.min(1, Math.max(0, (local - 0.2) / 0.5));
         if (detail > 0)
           b.line(
             x - dx,
@@ -375,10 +424,18 @@ export class EntityGPU implements SceneRenderer {
             x + dx,
             y + dy,
             0.65,
-            mixColor(c1, c2, (i % 12) / 12, 0.5 * detail),
+            mixColor(
+              a.style === "etched" ? slimeRoles.toneBridge : c1,
+              c2,
+              (i % 12) / 12,
+              0.5 * detail * presence,
+            ),
           );
         if ((i - SLIME_CELLS) % 45 === 0)
-          b.rect(x - 0.7, y - 0.7, 1.4, 1.4, [...c2, 0.3 + detail * 0.35]);
+          b.rect(x - 0.7, y - 0.7, 1.4, 1.4, [
+            ...c2,
+            (0.3 + detail * 0.35) * presence,
+          ]);
       }
     } else {
       for (let i = 0; i < d.length; i += 4) {

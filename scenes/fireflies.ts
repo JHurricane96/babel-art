@@ -1,3 +1,4 @@
+import { FINISH_GLSL } from "../engine/finish";
 export const fragment = `precision highp float;
 varying vec2 uv;
 uniform vec4 rect;
@@ -6,6 +7,7 @@ uniform float rotation, seed, speed, age, period;
 uniform int scene, scan;
 uniform vec3 c0,c1,c2;
 float hash(float n){return fract(sin(n*127.1+seed*.001)*43758.5453);}
+${FINISH_GLSL}
 vec3 palette(float f){return mix(mix(c0,c1,smoothstep(0.,.65,f)),c2,smoothstep(.6,1.,f));}
 void main(){
  vec2 local=vec2(uv.x,1.-uv.y);
@@ -24,5 +26,5 @@ void main(){
    col+=mix(c1,c2,h)*glow*(.55+.45*sin(t*1.5+k));
   }
 
- gl_FragColor=vec4(pow(max(col,vec3(0.)),vec3(.85)),1.);
+ gl_FragColor=vec4(finishColor(pow(max(col,vec3(0.)),vec3(.85))),1.);
 }`;

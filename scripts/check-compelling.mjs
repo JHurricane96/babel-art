@@ -112,6 +112,21 @@ try {
     `(()=>{const r=babelDebug.runtime;r.sim.restore(window.landmarkCheckpoint);r.renderStates.clear();r.capture();r.clearImages();delete window.landmarkCheckpoint;})()`,
   );
   assert.equal(identities.size, 4);
+  // Camera travel must reach the compositor as a sub-pixel offset, and that
+  // offset must move the image: slow pans glide instead of stepping.
+  const glide = await evaluate(
+    `(async()=>{const r=babelDebug.runtime,wait=()=>new Promise(res=>setTimeout(res,10));let fraction=null;for(let t=20;t<70&&fraction===null;t+=0.5){while(r.pending)await wait();babelDebug.project().time=t;await r.seek(t);const x=r.sim.camera.x;if(Math.abs(x-Math.round(x))>0.05)fraction={x,offset:r.renderer.sourceOffset(r.renderStates.get(r.sim.tick)??r.sim.captureFrame())[0]};}const original=r.renderer.sourceOffset,image=async shift=>{r.renderer.sourceOffset=()=>[shift,0];r.clearImages();await new Promise(res=>requestAnimationFrame(()=>requestAnimationFrame(res)));return document.getElementById('compositor').toDataURL();};const a=await image(0),b=await image(0.5);r.renderer.sourceOffset=original;r.clearImages();return {fraction,shifted:a!==b,gl:r.gl.getError()};})()`,
+  );
+  assert.ok(glide.fraction, "Camera travel must produce fractional positions");
+  assert.ok(
+    Math.abs(
+      glide.fraction.offset - (glide.fraction.x - Math.floor(glide.fraction.x)),
+    ) < 1e-6,
+    "Renderer must report the camera's sub-pixel offset: " +
+      JSON.stringify(glide),
+  );
+  assert.ok(glide.shifted, "Sub-pixel offsets must move the composited image");
+  assert.equal(glide.gl, 0);
   await evaluate(
     `document.getElementById('quality').value='auto';document.getElementById('play').click()`,
   );

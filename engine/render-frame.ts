@@ -16,6 +16,8 @@ export interface SceneRenderer {
   width: number;
   height: number;
   pixelated?: boolean;
+  /** Sub-pixel offset (source pixels) to apply when sampling a pixelated image. */
+  sourceOffset?(frame: RenderFrame): number[];
   render(
     frame: RenderFrame,
     appearance: Appearance,
