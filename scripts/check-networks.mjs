@@ -82,8 +82,9 @@ try {
   const physics = await evaluate(
     "JSON.stringify(window.babelDebug.runtime.sim.snapshot())",
   );
+  // High is the default; adaptive behavior is exercised under Auto.
   await evaluate(
-    "for(let i=0;i<200;i++)window.babelDebug.quality.observe(1/15,true)",
+    "document.getElementById('quality').value='auto';document.getElementById('quality').dispatchEvent(new Event('change'));for(let i=0;i<200;i++)window.babelDebug.quality.observe(1/15,true)",
   );
   await frame();
   assert.equal(await evaluate("window.babelDebug.runtime.entityScale"), 0.5);
