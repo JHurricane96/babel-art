@@ -83,6 +83,14 @@ function update(fn) {
   const previousId = project.scene.id,
     previousSeed = project.scene.seed;
   fn(project);
+  // A new Murmuration variation starts on the current flock revision; until
+  // then saved revision-1 projects keep their original behavior.
+  if (
+    project.scene.id === "murmuration" &&
+    previousSeed !== project.scene.seed &&
+    Number(project.scene.params.flockVersion) < 2
+  )
+    project.scene.params.flockVersion = 2;
   if (previousId !== project.scene.id || previousSeed !== project.scene.seed) {
     adaptiveQuality.reset();
     project.time = 0;
@@ -560,6 +568,7 @@ function draw(now) {
       )
     : Number($("quality").value);
   runtime.setPresentationScale(quality);
+  runtime.setOutputDensity(fit.scale * quality);
   const qualityMessage = automatic
     ? `Auto · ${Math.round(quality * 100)}% · adjusts detail to keep motion smooth`
     : "Manual resolution";

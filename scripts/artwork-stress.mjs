@@ -3,6 +3,7 @@ import { writeFile, mkdir } from "node:fs/promises";
 import { ParticleRivers } from "../engine/particles.ts";
 import { SlimeNetworks } from "../engine/slime.ts";
 import { Flock } from "../engine/entities.ts";
+import { Murmuration } from "../engine/murmuration.ts";
 import { TerrariumWorld, validateWorldSave } from "../engine/terrarium.ts";
 import { defaults } from "../scenes/registry.ts";
 const minutes = Math.max(1, Number(process.env.BABEL_STRESS_MINUTES ?? 30)),
@@ -11,7 +12,8 @@ const minutes = Math.max(1, Number(process.env.BABEL_STRESS_MINUTES ?? 30)),
 const cases = [
   ["rivers", ParticleRivers, {}],
   ["slime", SlimeNetworks, {}],
-  ["murmuration", Flock, {}],
+  ["murmuration", Murmuration, {}],
+  ["murmuration-v1", Flock, { flockVersion: 1, population: 480 }],
   ...[0, 1, 2, 3].map((biome) => [
     "terrarium-worlds",
     TerrariumWorld,
@@ -24,7 +26,7 @@ for (const [id, Type, extra] of cases.filter(
     !process.env.BABEL_STRESS_SCENE || process.env.BABEL_STRESS_SCENE === id,
 )) {
   const started = performance.now(),
-    s = new Type(42, { ...defaults(id), ...extra });
+    s = new Type(42, { ...defaults(id.replace("-v1", "")), ...extra });
   let frame;
   for (let t = 0; t < ticks; t++) {
     s.step();
@@ -47,7 +49,7 @@ for (const [id, Type, extra] of cases.filter(
     }
   }
   const cp = s.snapshot(),
-    replay = new Type(42, { ...defaults(id), ...extra });
+    replay = new Type(42, { ...defaults(id.replace("-v1", "")), ...extra });
   replay.restore(cp);
   for (let i = 0; i < 120; i++) {
     s.step();

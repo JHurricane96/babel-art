@@ -64,8 +64,16 @@ test("nonfinite state immediately requests strong recovery", () => {
   assert.equal(h.observe(0, new Float32Array([NaN, 1]), true), 3);
 });
 test("murmuration stays reproducible across scheduled interventions", () => {
-  const a = new Flock(42, defaults("murmuration")),
-    b = new Flock(42, defaults("murmuration"));
+  const a = new Flock(42, {
+      ...defaults("murmuration"),
+      flockVersion: 1,
+      population: 480,
+    }),
+    b = new Flock(42, {
+      ...defaults("murmuration"),
+      flockVersion: 1,
+      population: 480,
+    });
   for (let i = 0; i < 1234; i++) a.step();
   b.restore(a.snapshot());
   for (let i = 0; i < 2000; i++) {

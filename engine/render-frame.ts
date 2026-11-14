@@ -16,6 +16,11 @@ export interface SceneRenderer {
   width: number;
   height: number;
   pixelated?: boolean;
+  /**
+   * Render at the displayed size of the wall instead of 640×400 × preview
+   * quality, for scenes whose detail is finer than a 640-wide pixel.
+   */
+  wallResolution?: boolean;
   /** Sub-pixel offset (source pixels) to apply when sampling a pixelated image. */
   sourceOffset?(frame: RenderFrame): number[];
   render(

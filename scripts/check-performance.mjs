@@ -14,7 +14,7 @@ try {
   for (const [id, max] of [
     ["rivers", 1800],
     ["slime", 4000],
-    ["murmuration", 900],
+    ["murmuration", 4000],
     ["terrarium-worlds", 128],
   ])
     for (const mode of ["default", "maximum/mixed timing"]) {

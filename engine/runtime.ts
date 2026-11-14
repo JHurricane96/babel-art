@@ -46,6 +46,9 @@ export class Runtime {
   }
   entityCanvas = document.createElement("canvas");
   entityScale = 1;
+  /** Displayed pixels per world millimetre (0 when unknown). */
+  outputDensity = 0;
+  imageSize = "";
   id = "";
   key = "";
   events: { tick: number; params?: any; intervention?: EvolutionAction }[] = [];
@@ -430,6 +433,32 @@ export class Runtime {
     this.entityScale = next;
     this.clearImages();
   }
+  /**
+   * Displayed pixels per world millimetre. Wall-resolution renderers size
+   * their image from it, in quarter steps so window resizes rarely
+   * reallocate.
+   */
+  setOutputDensity(density: number) {
+    const before = this.imageScale();
+    this.outputDensity = Number.isFinite(density) ? Math.max(0, density) : 0;
+    if (this.imageScale() !== before) this.clearImages();
+  }
+  /** Entity image size relative to 640×400. */
+  imageScale() {
+    const r = this.renderer;
+    if (r?.pixelated) return 1;
+    if (!r?.wallResolution || !this.outputDensity) return this.entityScale;
+    const wanted = Math.max(
+        (this.world.width * this.outputDensity) / r.width,
+        (this.world.height * this.outputDensity) / r.height,
+      ),
+      limit = Math.min(
+        4096,
+        Number(this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE)) || 4096,
+      ),
+      cap = Math.min(limit / r.width, limit / r.height);
+    return Math.min(cap, Math.max(this.entityScale, Math.ceil(wanted * 4) / 4));
+  }
   prepareFrames(frames: any[], scene: any, colors: number[][]) {
     if (!this.renderer && !isEntity(this.sim)) return;
     const times = frames.flatMap((f) =>
@@ -453,6 +482,15 @@ export class Runtime {
       if (tick > wanted) break;
       selected = tick;
     }
+    const gl = this.gl;
+    const scale = this.imageScale();
+    const width = Math.round((this.renderer?.width ?? 640) * scale);
+    const height = Math.round((this.renderer?.height ?? 400) * scale);
+    // Cached images of another size (a layout or world change) are stale.
+    if (this.imageSize !== width + "x" + height) {
+      this.clearImages();
+      this.imageSize = width + "x" + height;
+    }
     const key = selected + ":" + scene.style + ":" + scene.palette;
     const cached = this.entityTextures.get(key);
     if (cached) {
@@ -460,15 +498,6 @@ export class Runtime {
       this.entityTextures.set(key, cached);
       return cached;
     }
-    const gl = this.gl;
-    const width = Math.round(
-      (this.renderer?.width ?? 640) *
-        (this.renderer?.pixelated ? 1 : this.entityScale),
-    );
-    const height = Math.round(
-      (this.renderer?.height ?? 400) *
-        (this.renderer?.pixelated ? 1 : this.entityScale),
-    );
     // Expose dimensions for the existing diagnostics without a canvas upload on native paths.
     if (this.entityCanvas.width !== width) this.entityCanvas.width = width;
     if (this.entityCanvas.height !== height) this.entityCanvas.height = height;

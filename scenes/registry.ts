@@ -7,6 +7,7 @@ import { fragment as contours } from "./contours";
 import { CHEMICAL_PRESETS, DEFAULT_CHEMICAL_PRESET } from "../engine/chemical";
 import { Grid } from "../engine/grid";
 import { Flock, Platformer } from "../engine/entities";
+import { Murmuration } from "../engine/murmuration";
 import { ParticleRivers } from "../engine/particles";
 import { SlimeNetworks, SLIME_PRESETS } from "../engine/slime";
 import type { Scene, Params } from "../engine/types";
@@ -151,17 +152,29 @@ registry.murmuration = {
   name: "Murmuration",
   subtitle: "A thousand small decisions",
   description:
-    "Banking birds gather into breathing formations, divide into streams and reunite above a shifting landscape.",
+    "Thousands of starlings fold and stream across a dusk sky, splitting around a diving falcon and rejoining as one shape.",
   version: 1,
   kind: "entities",
-  create: (gl, seed, params) => new Flock(seed, params),
-  styles: ["luminous", "silhouette"],
+  // Revision 2 is a three-dimensional flock; saved revision-1 projects keep
+  // the original two-dimensional flock until they start a new variation.
+  create: (gl, seed, params) =>
+    Number(params.flockVersion) >= 2
+      ? new Murmuration(seed, params)
+      : new Flock(seed, params),
+  styles: ["silhouette", "luminous"],
   parameters: {
+    flockVersion: {
+      label: "Flock revision",
+      value: 2,
+      options: ["1", "2"],
+      restart: true,
+      hidden: true,
+    },
     population: {
       label: "Population · restart",
-      value: 480,
+      value: 3000,
       min: 20,
-      max: 900,
+      max: 4000,
       step: 10,
       restart: true,
     },
