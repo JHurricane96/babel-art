@@ -365,7 +365,9 @@ gl_FragColor=vec4(c,1.);}`;
  * perspective); their tops are lacy with bare twigs and thicken into solid
  * trunks and undergrowth near the ground. A row of poplars, a low hedge, a few
  * large branching trees close by and a hazy barn give scale. Fields recede in
- * strips, with wetter patches and a sheen near the horizon. A soft stratus layer
+ * strips and furrows toward a vanishing point; flood water across the
+ * middle distance mirrors the sky glow and the treeline, with reeds along
+ * its near shore; a low mist softens the tree bases. A soft stratus layer
  * and a glow above the horizon texture the sky, and a fixed grain keeps large
  * gradients from looking flat. X and Y are in 640×400 image units, Y measured
  * up from the horizon; `pixel` is the size of one output pixel in those units.
@@ -379,6 +381,8 @@ float vnoise(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);
  return mix(mix(h21(i),h21(i+vec2(1.,0.)),f.x),mix(h21(i+vec2(0.,1.)),h21(i+vec2(1.,1.)),f.x),f.y);}
 float fbm(vec2 p){float v=0.,a=.5;for(int i=0;i<4;i++){v+=a*vnoise(p);p=p*2.03+17.1;a*=.5;}return v;}
 float edge(float d){return clamp(.5+d/pixel,0.,1.);}
+// 1 for the scene itself, 0 for its reflection, which skips fine texture.
+float FINE=1.;
 float seg(vec2 p,vec2 a,vec2 b,out float h){vec2 pa=p-a,ba=b-a;h=clamp(dot(pa,ba)/dot(ba,ba),0.,1.);return length(pa-ba*h);}
 // Bare twigs seen from afar: a fine, even grain with clumps, no strokes.
 float twigs(vec2 q,float id){
@@ -404,8 +408,8 @@ float wood(float X,float Y,float id,float w,float lo,float hi,float shape,float 
  }
  if(top<=0.)return 0.;
  top*=.55+.6*vnoise(vec2(X*.015+id*5.,id+2.));
- float d=top-Y+(fbm(vec2(X,Y)*.45+id)-.5)*top*.35;
- float lace=smoothstep(-.4,top*.4,d)*(.3+.5*smoothstep(.25,.75,twigs(vec2(X,Y),id)));
+ float d=top-Y+((FINE>.5?fbm(vec2(X,Y)*.45+id):vnoise(vec2(X,Y)*.45+id))-.5)*top*.35;
+ float lace=smoothstep(-.4,top*.4,d)*(.3+.5*(FINE>.5?smoothstep(.25,.75,twigs(vec2(X,Y),id)):.5));
  float solid=smoothstep(top*.45,top*.9,d);
  return clamp(max(lace,solid),0.,1.);}
 // A large bare tree: trunk, five limbs that bend upward, three branches on
@@ -441,7 +445,7 @@ float specimen(vec2 q,float cx,float H,float id){
  vec2 e=vec2(r.x/W,(r.y-H*.62)/(H*.48));
  float m=1.-dot(e,e)+(fbm(r*.25+id)-.5)*.8;
  float fuzz=exp(-near/(H*.06));
- float crown=smoothstep(-.1,.4,m)*fuzz*(.2+.6*smoothstep(.25,.75,twigs(r,id)));
+ float crown=smoothstep(-.1,.4,m)*fuzz*(.2+.6*(FINE>.5?smoothstep(.25,.75,twigs(r,id)):.5));
  return max(o,crown);}
 float specimens(float X,float Y){
  if(Y>40.)return 0.;
@@ -459,41 +463,82 @@ float barn(float X,float Y){
  float body=edge(7.-abs(dx))*edge(2.6+1.1*(1.-abs(dx)/7.)-Y);
  float shed=edge(2.4-abs(dx-10.))*edge(1.7+.4*(1.-abs(dx-10.)/2.4)-Y);
  return max(body,shed)*edge(Y+1.);}
-void main(){
- float X=uv.x*640.,Y=(HORIZON/400.-uv.y)*400.;
- float lum=silhouette==1?1.:.42;
- vec3 high=mix(toneShadow,toneBody,.55),low=mix(toneHighlight,toneDusk,.3);
- high=mix(vec3(dot(high,vec3(.2126,.7152,.0722))),high,.4);
- low=mix(vec3(dot(low,vec3(.2126,.7152,.0722))),low,.4);
+vec3 HIGH,LOW,INK;
+// Sky, woods and mist at a point at or above the horizon.
+vec3 landscape(float X,float Y){
  float k=clamp(Y/HORIZON,0.,1.);
- vec3 sky=mix(low,high,pow(k,.7));
+ vec3 c=mix(LOW,HIGH,pow(k,.7));
  // Stratus: long soft bands, darker bodies, none close to the horizon.
- float cl=fbm(vec2(X*.0035+seed*.01,Y*.03))*.7+fbm(vec2(X*.009,Y*.07)+5.)*.3;
- float cloud=smoothstep(.45,.72,cl)*smoothstep(25.,120.,Y);
- sky*=1.-.08*cloud;
- sky*=1.+.05*(fbm(vec2(X*.002,Y*.006)+9.)-.5);
+ if(Y>25.){
+  float cl=fbm(vec2(X*.0035+seed*.01,Y*.03))*.7+fbm(vec2(X*.009,Y*.07)+5.)*.3;
+  c*=1.-.08*smoothstep(.45,.72,cl)*smoothstep(25.,120.,Y);
+ }
+ if(FINE>.5)c*=1.+.05*(fbm(vec2(X*.002,Y*.006)+9.)-.5);
  // A pale glow just above the horizon.
- sky=mix(sky,low*1.07,.55*exp(-max(Y,0.)/16.));
- sky*=lum;low*=lum;
- vec3 ink=toneGround*.45;
- vec3 c=sky;
- c=mix(c,mix(ink,low,.74),wood(X,Y,1.,9.,1.5,4.5,1.,.3));
- c=mix(c,mix(ink,low,.55),wood(X+300.,Y,2.,7.,3.,9.,1.,.42));
- c=mix(c,mix(ink,low,.5),barn(X,Y));
- c=mix(c,mix(ink,low,.34),wood(X,Y,3.,2.6,9.,20.,1.4,.55));
- c=mix(c,mix(ink,low,.4),wood(X+150.,Y,6.,6.,5.,13.,1.,.5));
- c=mix(c,mix(ink,low,.2),wood(X+70.,Y,4.,3.2,1.6,3.8,1.,.38));
- c=mix(c,mix(ink,low,.12),specimens(X,Y));
+ c=mix(c,LOW*1.07,.55*exp(-max(Y,0.)/16.));
+ c=mix(c,mix(INK,LOW,.74),wood(X,Y,1.,9.,1.5,4.5,1.,.3));
+ c=mix(c,mix(INK,LOW,.55),wood(X+300.,Y,2.,7.,3.,9.,1.,.42));
+ c=mix(c,mix(INK,LOW,.5),barn(X,Y));
+ c=mix(c,mix(INK,LOW,.34),wood(X,Y,3.,2.6,9.,20.,1.4,.55));
+ c=mix(c,mix(INK,LOW,.4),wood(X+150.,Y,6.,6.,5.,13.,1.,.5));
+ c=mix(c,mix(INK,LOW,.2),wood(X+70.,Y,4.,3.2,1.6,3.8,1.,.38));
+ c=mix(c,mix(INK,LOW,.12),specimens(X,Y));
+ // A low mist lies over the fields and softens the bases of the trees.
+ return mix(c,LOW*1.02,.32*exp(-abs(Y-.8)/2.6));}
+void main(){
+ float X=uv.x*640.,Y=(HORIZON/400.-uv.y)*400.,g=-Y;
+ float lum=silhouette==1?1.:.42;
+ HIGH=mix(toneShadow,toneBody,.55);LOW=mix(toneHighlight,toneDusk,.3);
+ HIGH=mix(vec3(dot(HIGH,vec3(.2126,.7152,.0722))),HIGH,.4)*lum;
+ LOW=mix(vec3(dot(LOW,vec3(.2126,.7152,.0722))),LOW,.4)*lum;
+ INK=toneGround*.45;
+ // Flood water in the middle distance. The near shore is nearly level, as
+ // flat water is in perspective, with small inlets and points.
+ float far=.8+1.6*fbm(vec2(X*.012,1.));
+ float near=far+7.+6.*fbm(vec2(X*.004+seed*.001,4.))+2.5*(fbm(vec2(X*.05,6.))-.5);
+ float water=Y<0.?edge(g-far)*edge(near-g):0.;
+ // One landscape lookup per pixel (the shader stays small): the scene
+ // above the horizon, or its rippled mirror image for water. Elsewhere below
+ // the horizon the land covers it.
+ vec3 c=vec3(0.);
+ if(water>0.){
+  FINE=0.;
+  // Ripples shift whole rows, which breaks the image into streaks.
+  float row=g*4.5/(1.+.15*g);
+  c=landscape(X+(vnoise(vec2(X*.012,row))-.5)*(.4+.05*g),g*.96+(vnoise(vec2(X*.03,row+7.))-.5)*.4);
+  FINE=1.;
+ }else if(Y>-pixel)c=landscape(X,max(Y,0.));
  if(Y<0.){
-  float g=-Y,depth=clamp(g/(400.-HORIZON),0.,1.);
-  vec3 field=mix(mix(ink,low,.4),mix(ink,low,.14),pow(depth,.55));
+  float depth=clamp(g/(400.-HORIZON),0.,1.);
+  vec3 field=mix(mix(INK,LOW,.4),mix(INK,LOW,.14),pow(depth,.55));
   // Field strips, wider toward the viewer, and broad wetter patches.
   float band=log(g+1.)*3.6+1.4*fbm(vec2(X*.005,g*.04));
   field*=1.+.022*sin(band*6.2832)+.02*(vnoise(vec2(X*.04,g*1.5/(1.+g*.12)))-.5);
-  field=mix(field,low*.7,.12*smoothstep(.55,.8,fbm(vec2(X*.008,g*.08/(1.+g*.05))+3.)));
-  // Wet ground near the horizon catches the sky.
-  field=mix(field,low*.92,.3*exp(-g/3.5));
-  c=mix(c,field,edge(g));
+  field=mix(field,LOW*.7,.12*smoothstep(.55,.8,fbm(vec2(X*.008,g*.08/(1.+g*.05))+3.)));
+  // Plough furrows run toward a vanishing point; u is the across-field
+  // position (world x over distance). Faded where they would alias.
+  float vx=640.*(.3+.4*h21(vec2(3.,31.)));
+  float u=(X-vx)/max(g,.01);
+  field*=1.-.035*(.5+.5*sin(u*24.+fbm(vec2(u*.5,log(g+1.)*2.))*3.))*smoothstep(2.*pixel,7.*pixel,.26*g);
+  field=mix(field,LOW*.92,.3*exp(-g/3.5));
+  // The water mirrors the sky glow and the treeline, broken by ripples
+  // and darkening toward the viewer, behind a thin dark far bank.
+  if(water>0.){
+   vec3 mirror=c*(.8+.12*vnoise(vec2(X*.012,g*6./(1.+.2*g))));
+   mirror=mix(mirror,INK*.9,.55*smoothstep(0.,16.,g));
+   field=mix(field,mirror,water);
+   field=mix(field,mix(INK,LOW,.35),.6*water*edge(.25+.02*g-abs(g-far)));
+  }
+  // Reeds along the near shore: a dark bed with single stalks above it,
+  // taller toward the viewer.
+  float h=near-g,tall=(.7+.09*near)*(.4+.8*vnoise(vec2(X*.12,3.)));
+  float sp=.45,id=floor(X/sp),sx=(id+.2+.6*h21(vec2(id,51.)))*sp;
+  float lean=(h21(vec2(id,53.))-.5)*.25*h;
+  float stalk=edge(.06+.3*pixel-abs(X-sx-lean))*edge(tall*(.45+.55*h21(vec2(id,57.)))-h);
+  float bed=edge(tall*.35*(.7+.6*vnoise(vec2(X*.6,9.)))-h);
+  float reed=step(-.2,h)*max(stalk,bed);
+  field=mix(field,mix(INK,LOW,.16),reed*.9);
+  c=water>0.?field:mix(c,field,edge(g));
  }
  c+=(h21(floor(gl_FragCoord.xy))-.5)*.016;
  gl_FragColor=vec4(c,1.);

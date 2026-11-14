@@ -76,7 +76,7 @@ export const CAMERA = {
   /** Focal length in 640-wide image units: a long lens, so the flock fills the sky. */
   focal: 1100,
   /** Image row of the horizon in the 640×400 image. */
-  horizon: 350,
+  horizon: 364,
 };
 export function project(x: number, y: number, z: number) {
   const depth = Math.max(1, z - CAMERA.z),
