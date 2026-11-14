@@ -1,13 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Murmuration, BIRD_STRIDE, SKY } from "../engine/murmuration.ts";
+import { Murmuration, BIRD_STRIDE, attackAt } from "../engine/murmuration.ts";
 import { Flock } from "../engine/entities.ts";
 import { registry, defaults } from "../scenes/registry.ts";
 import { makeProject, validateProject } from "../shared/model.js";
 
 const params = (extra = {}) => ({ ...defaults("murmuration"), ...extra });
 
-test("new murmuration recipes use the 3D flock; revision 1 keeps the 2D flock", () => {
+test("new murmuration recipes use the starling flock; revision 1 keeps the 2D flock", () => {
   assert.equal(defaults("murmuration").flockVersion, 2);
   const create = registry.murmuration.create;
   assert.ok(create(null, 3, params({ population: 60 })) instanceof Murmuration);
@@ -17,13 +17,14 @@ test("new murmuration recipes use the 3D flock; revision 1 keeps the 2D flock", 
   );
 });
 
-test("3D flock replays exactly through checkpoints and interventions", () => {
+test("starling flock replays exactly through checkpoints, escapes and attacks", () => {
   const a = new Murmuration(42, params({ population: 400 })),
     b = new Murmuration(42, params({ population: 400 }));
-  for (let i = 0; i < 900; i++) a.step();
+  // Run past the first falcon attack so escapes and the attack aim are live.
+  for (let i = 0; i < 31 * 60; i++) a.step();
   b.restore(JSON.parse(JSON.stringify(a.snapshot())));
-  a.intervene({ kind: 2, serial: 5, x: 0.3, y: 0.3 });
-  b.intervene({ kind: 2, serial: 5, x: 0.3, y: 0.3 });
+  a.intervene({ kind: 1, serial: 5, x: 0.3, y: 0.3 });
+  b.intervene({ kind: 1, serial: 5, x: 0.3, y: 0.3 });
   for (let i = 0; i < 600; i++) {
     a.step();
     b.step();
@@ -31,39 +32,60 @@ test("3D flock replays exactly through checkpoints and interventions", () => {
   assert.deepEqual(a.snapshot(), b.snapshot());
 });
 
-test("3D flock stays finite, in the sky, and spread out over ten minutes", () => {
+test("starling flock stays finite, aloft, near the roost and together", () => {
   const sim = new Murmuration(9, params({ population: 900 }));
-  let inSky = 0,
-    samples = 0,
-    minWidth = Infinity;
-  for (let i = 1; i <= 36000; i++) {
+  let samples = 0,
+    aloft = 0,
+    near = 0,
+    worstGroup = 1;
+  for (let i = 1; i <= 10 * 60 * 60; i++) {
     sim.step();
-    if (i % 600) continue;
-    const b = sim.birds;
-    const xs = [];
+    if (i % 1200) continue;
+    const b = sim.birds,
+      n = b.length / BIRD_STRIDE;
     for (let at = 0; at < b.length; at += BIRD_STRIDE) {
       assert.ok(b.subarray(at, at + BIRD_STRIDE).every(Number.isFinite));
-      const inside =
-        b[at] > SKY.x0 - 0.08 &&
-        b[at] < SKY.x1 + 0.08 &&
-        b[at + 1] > SKY.y0 - 0.08 &&
-        b[at + 1] < SKY.y1 + 0.08;
-      inSky += inside ? 1 : 0;
       samples++;
-      xs.push(b[at]);
+      if (b[at + 1] > 15 && b[at + 1] < 110) aloft++;
+      if (Math.hypot(b[at], b[at + 2]) < 140) near++;
     }
-    xs.sort((p, q) => p - q);
-    // Width spanned by the central 80% of birds.
-    minWidth = Math.min(
-      minWidth,
-      xs[Math.floor(xs.length * 0.9)] - xs[Math.floor(xs.length * 0.1)],
-    );
+    // Largest connected group in the nearest-neighbour graph.
+    const parent = Int32Array.from({ length: n }, (_, i) => i),
+      find = (x) => {
+        while (parent[x] !== x) x = parent[x] = parent[parent[x]];
+        return x;
+      };
+    for (let i = 0; i < n; i++)
+      for (let k = 0; k < sim.counts[i]; k++)
+        parent[find(i)] = find(sim.neighbours[i * 7 + k]);
+    const sizes = new Map();
+    for (let i = 0; i < n; i++)
+      sizes.set(find(i), (sizes.get(find(i)) ?? 0) + 1);
+    worstGroup = Math.min(worstGroup, Math.max(...sizes.values()) / n);
   }
+  assert.ok(aloft / samples > 0.97, "birds stay aloft: " + aloft / samples);
   assert.ok(
-    inSky / samples > 0.97,
-    "birds stay in the sky: " + inSky / samples,
+    near / samples > 0.97,
+    "birds stay near the roost: " + near / samples,
   );
-  assert.ok(minWidth > 0.06, "flock keeps a visible spread: " + minWidth);
+  assert.ok(worstGroup > 0.6, "most birds stay one flock: " + worstGroup);
+});
+
+test("falcon attacks follow the observed pattern: mostly from above", () => {
+  let above = 0,
+    total = 0;
+  for (let seed = 1; seed <= 40; seed++)
+    for (let t = 20; t < 400; t += 1) {
+      const a = attackAt(t, seed);
+      if (!a || Math.abs(t - a.time) > 0.5) continue;
+      total++;
+      if (a.direction[1] < -0.3) above++;
+    }
+  assert.ok(total > 100);
+  assert.ok(
+    above / total > 0.55 && above / total < 0.85,
+    "share from above: " + above / total,
+  );
 });
 
 test("projects migrate and validate flock revisions", () => {
@@ -99,7 +121,7 @@ test("projects migrate and validate flock revisions", () => {
   );
   current.checkpoint = {
     ...current.checkpoint,
-    data: current.checkpoint.data.slice(6),
+    data: current.checkpoint.data.slice(BIRD_STRIDE),
   };
   assert.throws(() => validateProject(current));
 });

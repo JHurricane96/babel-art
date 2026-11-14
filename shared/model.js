@@ -238,9 +238,14 @@ function validateCheckpoint(c, scene) {
     scene.id === "murmuration" &&
     Number(params.flockVersion) >= 2 &&
     (c.data.length !== Number(params.population) * BIRD_STRIDE ||
-      !c.data.every((v, i) =>
-        i % BIRD_STRIDE < 3 ? Math.abs(v) <= 3 : Math.abs(v) <= 1,
-      ))
+      !c.data.every((v, i) => {
+        const k = i % BIRD_STRIDE;
+        // metres, metres per second, bank (rad), escape clock (s)
+        return (
+          Number.isFinite(v) &&
+          Math.abs(v) <= [5000, 5000, 5000, 200, 200, 200, 3.2, 10][k]
+        );
+      }))
   )
     throw new Error("Invalid flock checkpoint");
   if (

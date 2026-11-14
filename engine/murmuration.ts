@@ -2,124 +2,281 @@ import { frameBuffer } from "./render-frame";
 import type { RenderFrame } from "./render-frame";
 import { EvolutionSchedule, variationOf } from "./evolution";
 import type { EvolutionAction } from "./evolution";
-import { choreography } from "./choreography";
 import type { Params, Simulation, Snapshot } from "./types";
 import { rng } from "./types";
 
 /**
- * Murmuration, revision 2: a three-dimensional flock.
+ * Murmuration, revision 2: a starling flock after StarDisplay
+ * (Hildenbrandt, Carere & Hemelrijk 2010) with the escape manoeuvre that
+ * produces agitation waves (Hemelrijk, van Zuidam & Hildenbrandt 2015) and
+ * falcon attacks patterned on Storms et al. (2019).
  *
- * x spans the wall's width and y its height (0 at the top), both in [0, 1];
- * z is depth in [-0.5, 0.5], positive away from the viewer. Each bird reacts
- * to a capped number of nearby neighbors (as starlings track roughly seven),
- * so interaction cost and local behavior do not depend on flock density.
- * A slowly wandering attractor, blended chapters, soft sky containment and a
- * diving falcon shape the flock. Everything is deterministic from the seed,
- * tick, parameters and the checkpointed positions and velocities.
+ * Units are SI: metres, seconds, newtons. x runs to the right of the viewer,
+ * y is altitude, z is depth away from the camera. Each bird reacts to its
+ * seven nearest neighbours. It turns by banking: steering rolls the bird and
+ * the tilted lift turns it, which gives the flock the turning inertia that
+ * carries turns and dark bands across it. Everything is deterministic from
+ * the seed, the tick, the parameters and the checkpointed state.
  */
-export const BIRD_STRIDE = 6;
-const NEIGHBORS = 8,
-  RADIUS = 0.08,
-  SEPARATION = 0.045,
-  CELL = RADIUS,
-  MIN = [-0.25, -0.25, -0.75],
-  DIMS = [Math.ceil(1.5 / CELL), Math.ceil(1.5 / CELL), Math.ceil(1.5 / CELL)],
-  CELLS = DIMS[0] * DIMS[1] * DIMS[2];
-/** Sky region the flock is gently kept inside (above the hills). */
-export const SKY = {
-  x0: 0.05,
-  x1: 0.95,
-  y0: 0.06,
-  y1: 0.66,
-  z0: -0.26,
-  z1: 0.26,
+export const BIRD_STRIDE = 8; // x y z vx vy vz bank escape
+const MASS = 0.08,
+  GRAVITY = 9.81,
+  CRUISE = 10, // m/s at the default flight-speed parameter
+  LIFT_DRAG = 3.3,
+  SPEED_RELAX = 1, // s
+  NEIGHBOURS = 7,
+  HARD = 0.2, // m, hard-sphere radius
+  SEP_SIGMA2 = 1.37 * 1.37, // m², StarDisplay: separation radius 4 m
+  W_SEP = 1, // N
+  W_ALIGN = 0.5, // N
+  W_COHESION = 1, // N (scaled by the cohesion parameter)
+  W_NOISE = 0.01, // N
+  BLIND = -0.7071, // cos 135°: neighbours behind are ignored for cohesion and alignment
+  BANK_IN = 10,
+  BANK_OUT = 1,
+  BANK_ALIGN = 2, // 1/s, roll toward neighbours' mean bank
+  BANK_MAX = 1.4, // rad
+  ROOST_RADIUS = 55, // m
+  ROOST_HEIGHT = 55, // m
+  W_ROOST_H = 0.01, // N per metre outside the roost
+  W_ROOST_V = 0.05, // N per metre from the preferred height (capped)
+  ZIG_FORCE = 1, // N
+  ZIG_OUT = 0.25, // s
+  ZIG_BACK = 0.3, // s
+  REFRACTORY = 1, // s
+  CUE = 0.05, // s to recognise a neighbour's escape
+  REACTION = 0.076, // s, mean reaction time
+  SUBSTEPS = 2,
+  PERCEIVE = 3, // steps between a bird's neighbour updates (50 ms)
+  CELL = 3.5, // m, neighbour-grid cell
+  TABLE = 1 << 14;
+const ZIG = ZIG_OUT + ZIG_BACK;
+/** Weights that shape the flock's spacing and thickness (exposed for tuning). */
+export const TUNING = {
+  separation: 5 * W_SEP,
+  separationSigma2: SEP_SIGMA2,
+  cohesion: W_COHESION,
+  alignment: 2 * W_ALIGN,
+  height: W_ROOST_V,
+  heightCap: 0.6,
 };
 
-/** The wandering point the flock is drawn toward, per cohort. */
-export function attractor(
-  t: number,
-  seed: number,
-  cohort: number,
-  split: number,
-) {
-  const phase = (seed % 997) * 0.0063,
-    spread = split * (cohort - 1);
-  return [
-    0.5 +
-      0.19 * Math.sin(t * 0.047 + phase) +
-      0.16 * spread * Math.cos(t * 0.031),
-    0.34 + 0.1 * Math.sin(t * 0.061 + phase * 1.3) + 0.06 * spread,
-    0.16 * Math.sin(t * 0.039 + phase * 0.7) +
-      0.12 * spread * Math.sin(t * 0.05),
-  ];
+/** Fixed camera, shared by the simulation (activity) and the renderer. */
+export const CAMERA = {
+  x: 0,
+  y: 4,
+  z: -260,
+  /** Focal length in 640-wide image units. */
+  focal: 740,
+  /** Image row of the horizon in the 640×400 image. */
+  horizon: 330,
+};
+export function project(x: number, y: number, z: number) {
+  const depth = Math.max(1, z - CAMERA.z),
+    s = CAMERA.focal / depth;
+  return [320 + (x - CAMERA.x) * s, CAMERA.horizon - (y - CAMERA.y) * s, s];
 }
-/** The falcon's position: it circles wide and periodically dives through. */
-export function falcon(t: number, seed: number) {
-  const phase = (seed % 991) * 0.0071,
-    cycle = (t / 26 + phase) % 1,
-    dive = cycle > 0.62 ? Math.sin(((cycle - 0.62) / 0.38) * Math.PI) : 0,
-    target = attractor(t, seed, 1, 0);
-  const orbit = [
-    0.5 + 0.42 * Math.sin(t * 0.21 + phase),
-    0.12 + 0.05 * Math.cos(t * 0.17),
-    0.3 * Math.cos(t * 0.21 + phase),
-  ];
-  return orbit.map((v, i) => v + (target[i] - v) * dive);
+
+const hash = (n: number) => {
+  let h = Math.imul(n ^ 0x9e3779b9, 0x85ebca6b);
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+};
+
+/** Falcon attacks: the pass through the flock is centred on `time`. */
+export interface Attack {
+  index: number;
+  time: number;
+  speed: number;
+  fast: boolean;
+  direction: number[];
 }
-/** How strongly the falcon is present (fades in and out over minutes). */
-export const falconPresence = (t: number, seed: number, variation: number) =>
-  variation > 0
-    ? Math.pow(0.5 + 0.5 * Math.sin(t * 0.083 + seed * 0.001), 2)
-    : 1;
+export function attackAt(t: number, seed: number): Attack | undefined {
+  const k = Math.floor((t - 20) / 32);
+  for (const index of [k, k + 1]) {
+    if (index < 0) continue;
+    const time = 20 + 32 * index + 10 * hash(seed * 31 + index),
+      roll = hash(seed * 17 + index * 7 + 1);
+    if (t < time - 4 || t > time + 3) continue;
+    // Mostly from above (about 70%), at medium speed; one in eight is fast.
+    const from = hash(seed * 13 + index * 5 + 2),
+      side = hash(seed * 11 + index * 3 + 3) < 0.5 ? -1 : 1,
+      elevation = from < 0.7 ? 0.6 : from < 0.9 ? 0.05 : -0.35,
+      dx = side * Math.cos(elevation),
+      dy = -Math.sin(elevation),
+      dz = (hash(seed * 7 + index) - 0.5) * 0.6,
+      length = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    const fast = roll < 0.125;
+    return {
+      index,
+      time,
+      fast,
+      speed: fast ? 32 : roll > 0.9 ? 15 : 22,
+      direction: [dx / length, dy / length, dz / length],
+    };
+  }
+  return undefined;
+}
+export function falconAt(t: number, attack: Attack, target: number[]) {
+  const s = (t - attack.time) * attack.speed;
+  return [0, 1, 2].map((i) => target[i] + attack.direction[i] * s);
+}
 
 export class Murmuration implements Simulation {
   tick = 0;
+  historyBudgetBytes = 32 * 1024 * 1024;
   birds: Float64Array;
-  next: Float64Array;
   schedule: EvolutionSchedule;
-  cellCount = new Int32Array(CELLS);
-  cellStart = new Int32Array(CELLS + 1);
-  cellCursor = new Int32Array(CELLS);
+  /** Where the current attack aims: the flock's predicted centre. */
+  target: number[] = [0, ROOST_HEIGHT, 0];
+  targetIndex = -1;
+  /** Whether neighbour lists exist (they are part of the saved state). */
+  perceived = false;
+  // Scratch (derived every tick, never causal state across ticks).
+  neighbours: Int32Array;
+  counts: Int32Array;
+  force: Float64Array;
+  bucketCount = new Int32Array(TABLE);
+  bucketStart = new Int32Array(TABLE + 1);
+  bucketCursor = new Int32Array(TABLE);
   order: Int32Array;
-  cellOf: Int32Array;
+  bucketOf: Int32Array;
   constructor(
     public seed: number,
     public params: Params,
   ) {
     const count = Number(params.population);
     this.birds = new Float64Array(count * BIRD_STRIDE);
-    this.next = new Float64Array(count * BIRD_STRIDE);
+    this.neighbours = new Int32Array(count * NEIGHBOURS);
+    this.counts = new Int32Array(count);
+    this.force = new Float64Array(count * 3);
     this.order = new Int32Array(count);
-    this.cellOf = new Int32Array(count);
+    this.bucketOf = new Int32Array(count);
     this.schedule = new EvolutionSchedule(seed);
     const random = rng(seed),
-      center = attractor(0, seed, 1, 0),
-      speed = Number(params.velocity),
-      heading = random() * Math.PI * 2;
-    // Start as a loose, already-aligned flock rather than random noise.
+      heading = random() * Math.PI * 2,
+      speed = this.cruise(),
+      radius = Math.sqrt(count) * 0.62;
     for (let i = 0; i < count; i++) {
       const at = i * BIRD_STRIDE,
-        u = random() * 2 - 1,
+        r = radius * Math.sqrt(random()),
         a = random() * Math.PI * 2,
-        r = Math.cbrt(random()),
-        s = Math.sqrt(1 - u * u);
-      this.birds[at] = center[0] + 0.2 * r * s * Math.cos(a);
-      this.birds[at + 1] = center[1] + 0.09 * r * s * Math.sin(a);
-      this.birds[at + 2] = center[2] + 0.16 * r * u;
-      const h = heading + (random() - 0.5) * 0.6;
+        h = heading + (random() - 0.5) * 0.3;
+      this.birds[at] = Math.cos(heading) * 40 + r * Math.cos(a);
+      this.birds[at + 1] = ROOST_HEIGHT + (random() - 0.5) * 4;
+      this.birds[at + 2] = Math.sin(heading) * 40 + r * Math.sin(a) * 0.6;
       this.birds[at + 3] = Math.cos(h) * speed;
-      this.birds[at + 4] = (random() - 0.5) * 0.5 * speed;
+      this.birds[at + 4] = 0;
       this.birds[at + 5] = Math.sin(h) * speed;
     }
+    // Settle into a flock before the first frame.
+    for (let i = 0; i < 360; i++) this.step();
+    this.tick = 0;
+    this.targetIndex = -1;
   }
-  private cellIndex(x: number, y: number, z: number) {
-    const cx = Math.min(
-        DIMS[0] - 1,
-        Math.max(0, Math.floor((x - MIN[0]) / CELL)),
-      ),
-      cy = Math.min(DIMS[1] - 1, Math.max(0, Math.floor((y - MIN[1]) / CELL))),
-      cz = Math.min(DIMS[2] - 1, Math.max(0, Math.floor((z - MIN[2]) / CELL)));
-    return (cz * DIMS[1] + cy) * DIMS[0] + cx;
+  private cruise() {
+    return CRUISE * (Number(this.params.velocity ?? 0.12) / 0.12);
+  }
+  /**
+   * Seven nearest neighbours through a hashed grid. Like StarDisplay's 50 ms
+   * reaction time, each bird re-perceives every third step (a third of the
+   * flock per step); the lists are saved state, so replay stays exact.
+   */
+  private findNeighbours(all = false) {
+    const b = this.birds,
+      count = b.length / BIRD_STRIDE,
+      key = (cx: number, cy: number, cz: number) =>
+        (Math.imul(cx, 73856093) ^
+          Math.imul(cy, 19349663) ^
+          Math.imul(cz, 83492791)) &
+        (TABLE - 1);
+    this.bucketCount.fill(0);
+    for (let i = 0; i < count; i++) {
+      const at = i * BIRD_STRIDE,
+        k = key(
+          Math.floor(b[at] / CELL),
+          Math.floor(b[at + 1] / CELL),
+          Math.floor(b[at + 2] / CELL),
+        );
+      this.bucketOf[i] = k;
+      this.bucketCount[k]++;
+    }
+    this.bucketStart[0] = 0;
+    for (let k = 0; k < TABLE; k++)
+      this.bucketStart[k + 1] = this.bucketStart[k] + this.bucketCount[k];
+    this.bucketCursor.set(this.bucketStart.subarray(0, TABLE));
+    for (let i = 0; i < count; i++)
+      this.order[this.bucketCursor[this.bucketOf[i]]++] = i;
+    const bestD = new Float64Array(NEIGHBOURS),
+      bestJ = new Int32Array(NEIGHBOURS);
+    for (
+      let i = all ? 0 : this.tick % PERCEIVE;
+      i < count;
+      i += all ? 1 : PERCEIVE
+    ) {
+      const at = i * BIRD_STRIDE,
+        x = b[at],
+        y = b[at + 1],
+        z = b[at + 2],
+        cx = Math.floor(x / CELL),
+        cy = Math.floor(y / CELL),
+        cz = Math.floor(z / CELL);
+      let found = 0;
+      for (let reach = 1; reach <= 2 && found < NEIGHBOURS; reach++) {
+        found = 0;
+        for (let ox = -reach; ox <= reach; ox++)
+          for (let oy = -reach; oy <= reach; oy++)
+            for (let oz = -reach; oz <= reach; oz++) {
+              const k = key(cx + ox, cy + oy, cz + oz),
+                end = this.bucketStart[k + 1];
+              for (let m = this.bucketStart[k]; m < end; m++) {
+                const j = this.order[m];
+                if (j === i) continue;
+                const bt = j * BIRD_STRIDE,
+                  dx = b[bt] - x,
+                  dy = b[bt + 1] - y,
+                  dz = b[bt + 2] - z,
+                  d2 = dx * dx + dy * dy + dz * dz;
+                if (d2 > (CELL * (reach + 0.5)) ** 2) continue;
+                if (found < NEIGHBOURS) {
+                  let p = found++;
+                  while (p > 0 && bestD[p - 1] > d2) {
+                    bestD[p] = bestD[p - 1];
+                    bestJ[p] = bestJ[p - 1];
+                    p--;
+                  }
+                  bestD[p] = d2;
+                  bestJ[p] = j;
+                } else if (d2 < bestD[NEIGHBOURS - 1]) {
+                  let p = NEIGHBOURS - 1;
+                  while (p > 0 && bestD[p - 1] > d2) {
+                    bestD[p] = bestD[p - 1];
+                    bestJ[p] = bestJ[p - 1];
+                    p--;
+                  }
+                  bestD[p] = d2;
+                  bestJ[p] = j;
+                }
+              }
+            }
+      }
+      this.counts[i] = found;
+      for (let n = 0; n < found; n++)
+        this.neighbours[i * NEIGHBOURS + n] = bestJ[n];
+    }
+  }
+  /** Mean position and velocity of the flock. */
+  centre() {
+    const b = this.birds,
+      count = b.length / BIRD_STRIDE,
+      c = [0, 0, 0, 0, 0, 0];
+    for (let at = 0; at < b.length; at += BIRD_STRIDE)
+      for (let k = 0; k < 6; k++) c[k] += b[at + k];
+    return c.map((v) => v / count);
+  }
+  private startEscape(i: number, direction: number) {
+    const at = i * BIRD_STRIDE + 7;
+    if (this.birds[at] === 0) this.birds[at] = direction < 0 ? -1e-6 : 1e-6;
   }
   step() {
     this.tick++;
@@ -127,206 +284,280 @@ export class Murmuration implements Simulation {
     const action = this.schedule.advance(this.tick, variation);
     if (action) this.intervene(action);
     const b = this.birds,
-      n = this.next,
       count = b.length / BIRD_STRIDE,
       t = this.tick / 60,
-      chapter = choreography(t, this.seed),
-      speed = Number(this.params.velocity),
-      cohesion = Number(this.params.cohesion),
-      predator = !!this.params.predator,
-      hawk = falcon(t, this.seed),
-      presence = falconPresence(t, this.seed, variation),
-      centers = [0, 1, 2].map((c) =>
-        attractor(t, this.seed, c, chapter.split * variation),
-      );
-    // Counting sort of birds into grid cells.
-    this.cellCount.fill(0);
-    for (let i = 0; i < count; i++) {
-      const at = i * BIRD_STRIDE,
-        cell = this.cellIndex(b[at], b[at + 1], b[at + 2]);
-      this.cellOf[i] = cell;
-      this.cellCount[cell]++;
+      dt = 1 / 60,
+      cruise = this.cruise(),
+      cohesion = TUNING.cohesion * (Number(this.params.cohesion ?? 0.4) / 0.4),
+      random = rng(this.seed ^ Math.imul(this.tick, 0x9e3779b1));
+    this.findNeighbours(!this.perceived);
+    this.perceived = true;
+
+    // Falcon: fix the aim when an attack window opens.
+    const attack = this.params.predator ? attackAt(t, this.seed) : undefined;
+    if (attack && attack.index !== this.targetIndex) {
+      const c = this.centre(),
+        lead = attack.time - t;
+      this.target = [
+        c[0] + c[3] * lead,
+        c[1] + c[4] * lead,
+        c[2] + c[5] * lead,
+      ];
+      this.targetIndex = attack.index;
     }
-    this.cellStart[0] = 0;
-    for (let c = 0; c < CELLS; c++)
-      this.cellStart[c + 1] = this.cellStart[c] + this.cellCount[c];
-    this.cellCursor.set(this.cellStart.subarray(0, CELLS));
-    for (let i = 0; i < count; i++)
-      this.order[this.cellCursor[this.cellOf[i]]++] = i;
-    const random = rng(this.seed ^ Math.imul(this.tick, 0x9e3779b1));
+    const hawk = attack ? falconAt(t, attack, this.target) : undefined;
+
+    // Initiators: a bird and its neighbours start a turn (every ~10 s), and a
+    // single bird startles (every ~7 s), so ripples also run without a falcon.
+    const turnEvent = Math.floor(t / 10),
+      turnStart = turnEvent * 10 + 4 * hash(this.seed + turnEvent * 101),
+      turning = variation > 0 && t >= turnStart && t < turnStart + 1.4,
+      turner = Math.floor(hash(this.seed * 3 + turnEvent) * count),
+      turnSign = hash(this.seed * 5 + turnEvent) < 0.5 ? -1 : 1;
+    const startleEvent = Math.floor(t / 7),
+      startleTick = Math.round(
+        (startleEvent * 7 + 5 * hash(this.seed * 9 + startleEvent)) * 60,
+      );
+    if (variation > 0 && this.tick === startleTick)
+      this.startEscape(
+        Math.floor(hash(this.seed * 23 + startleEvent) * count),
+        hash(this.seed * 29 + startleEvent) - 0.5,
+      );
+
+    // Social, roost, escape and noise forces: computed once per reaction step.
     for (let i = 0; i < count; i++) {
       const at = i * BIRD_STRIDE,
         x = b[at],
         y = b[at + 1],
-        z = b[at + 2];
-      let vx = b[at + 3],
+        z = b[at + 2],
+        vx = b[at + 3],
         vy = b[at + 4],
-        vz = b[at + 5];
-      // Up to NEIGHBORS birds within RADIUS: own cell first, then the rest.
-      let found = 0,
-        ax = 0,
+        vz = b[at + 5],
+        v = Math.sqrt(vx * vx + vy * vy + vz * vz) || 1,
+        ex = vx / v,
+        ey = vy / v,
+        ez = vz / v;
+      // Lateral (right-hand) axis: forward × up.
+      let sx = -ez,
+        sz = ex;
+      const sl = Math.sqrt(sx * sx + sz * sz) || 1;
+      sx /= sl;
+      sz /= sl;
+      let fx = 0,
+        fy = 0,
+        fz = 0;
+      const n = this.counts[i];
+      let ax = 0,
         ay = 0,
         az = 0,
         cx = 0,
         cy = 0,
         cz = 0,
-        sx = 0,
-        sy = 0,
-        sz = 0;
-      const home = this.cellOf[i],
-        hx = home % DIMS[0],
-        hy = Math.floor(home / DIMS[0]) % DIMS[1],
-        hz = Math.floor(home / (DIMS[0] * DIMS[1]));
-      for (let k = 0; k < 27 && found < NEIGHBORS; k++) {
-        const ox = ((k + 13) % 3) - 1,
-          oy = Math.floor(((k + 13) % 9) / 3) - 1,
-          oz = Math.floor(((k + 13) % 27) / 9) - 1,
-          gx = hx + ox,
-          gy = hy + oy,
-          gz = hz + oz;
-        if (
-          gx < 0 ||
-          gy < 0 ||
-          gz < 0 ||
-          gx >= DIMS[0] ||
-          gy >= DIMS[1] ||
-          gz >= DIMS[2]
-        )
-          continue;
-        const cell = (gz * DIMS[1] + gy) * DIMS[0] + gx,
-          start = this.cellStart[cell],
-          length = this.cellStart[cell + 1] - start;
-        for (
-          let m = 0, scanned = 0;
-          m < length && scanned < 16 && found < NEIGHBORS;
-          m++
-        ) {
-          const j =
-            this.order[start + ((m + i * 7 + (this.tick >> 4)) % length)];
-          if (j === i) continue;
-          scanned++;
-          const bt = j * BIRD_STRIDE,
-            dx = b[bt] - x,
-            dy = b[bt + 1] - y,
-            dz = b[bt + 2] - z,
-            d2 = dx * dx + dy * dy + dz * dz;
-          if (d2 > RADIUS * RADIUS || d2 < 1e-12) continue;
-          found++;
-          ax += b[bt + 3];
-          ay += b[bt + 4];
-          az += b[bt + 5];
-          cx += dx;
-          cy += dy;
-          cz += dz;
-          if (d2 < SEPARATION * SEPARATION) {
-            const push =
-              ((SEPARATION - Math.sqrt(d2)) / (Math.sqrt(d2) + 1e-6)) * speed;
-            sx -= dx * push;
-            sy -= dy * push;
-            sz -= dz * push;
-          }
+        seen = 0,
+        ux = 0,
+        uy = 0,
+        uz = 0,
+        bankSum = 0;
+      for (let k = 0; k < n; k++) {
+        const j = this.neighbours[i * NEIGHBOURS + k],
+          bt = j * BIRD_STRIDE,
+          dx = b[bt] - x,
+          dy = b[bt + 1] - y,
+          dz = b[bt + 2] - z,
+          d = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1e-6,
+          hx = dx / d,
+          hy = dy / d,
+          hz = dz / d;
+        ux += hx;
+        uy += hy;
+        uz += hz;
+        bankSum += b[bt + 6];
+        // Separation: full inside the hard sphere, a half-Gaussian beyond it.
+        const g =
+          d <= HARD
+            ? 1
+            : Math.exp(-((d - HARD) ** 2) / TUNING.separationSigma2);
+        fx -= (TUNING.separation / n) * g * hx;
+        fy -= (TUNING.separation / n) * g * hy;
+        fz -= (TUNING.separation / n) * g * hz;
+        if (hx * ex + hy * ey + hz * ez < BLIND) continue;
+        const bv =
+          Math.sqrt(
+            b[bt + 3] * b[bt + 3] +
+              b[bt + 4] * b[bt + 4] +
+              b[bt + 5] * b[bt + 5],
+          ) || 1;
+        ax += b[bt + 3] / bv;
+        ay += b[bt + 4] / bv;
+        az += b[bt + 5] / bv;
+        if (d > HARD) {
+          cx += hx;
+          cy += hy;
+          cz += hz;
         }
+        seen++;
       }
-      let fx = 0,
-        fy = 0,
-        fz = 0;
-      if (found) {
-        fx +=
-          (ax / found - vx) * 0.14 +
-          (cx / found) * cohesion * speed * 0.06 +
-          sx * 0.6;
-        fy +=
-          (ay / found - vy) * 0.14 +
-          (cy / found) * cohesion * speed * 0.08 +
-          sy * 0.6;
-        fz +=
-          (az / found - vz) * 0.14 +
-          (cz / found) * cohesion * speed * 0.06 +
-          sz * 0.6;
+      if (seen) {
+        const al = Math.sqrt(ax * ax + ay * ay + az * az) || 1;
+        fx += TUNING.alignment * (ax / al - ex);
+        fy += TUNING.alignment * (ay / al - ey);
+        fz += TUNING.alignment * (az / al - ez);
+        // Edge birds (directions to neighbours point one way) cohere harder.
+        const centrality = n ? Math.sqrt(ux * ux + uy * uy + uz * uz) / n : 1;
+        fx += (centrality * cohesion * cx) / seen;
+        fy += (centrality * cohesion * cy) / seen;
+        fz += (centrality * cohesion * cz) / seen;
       }
-      // Global shaping: gather toward the cohort's wandering point, roll
-      // around it in vortex chapters.
-      // Seek rather than pull: only birds well away from the cohort's point
-      // steer toward it, so the flock travels as a whole instead of
-      // contracting into a ball.
-      const center = centers[i % 3],
-        dx = center[0] - x,
-        dy = center[1] - y,
-        dz = center[2] - z,
-        distance = Math.hypot(dx * 0.8, dy * 1.4, dz) || 1,
-        reach = Math.min(1, Math.max(0, (distance - 0.2) / 0.25)),
-        seek = (0.004 + 0.008 * chapter.gather) * variation * speed * reach;
-      fx += (dx / distance) * seek;
-      fy += (dy / distance) * seek;
-      fz += (dz / distance) * seek;
-      // Vortex chapters circle the flock around a vertical axis and roll it
-      // about a horizontal one, tilting the sheet between face-on (a wide,
-      // light veil) and edge-on (a dark line).
-      const spin = chapter.vortex * variation * speed * 0.05,
-        roll = Math.sin(t * 0.11 + (this.seed % 89)) * spin;
-      fx += -dz * spin * 6;
-      fz += dx * spin * 6 - dy * roll * 8;
-      fy += dz * roll * 8;
-      // Sky containment: never wrap, never sink into the hills. Near the
-      // edge of the sky a bird turns back toward its middle, gradually and
-      // individually, so the flock curves away instead of flattening
-      // against an invisible wall.
-      const ex = Math.max(SKY.x0 + 0.12 - x, x - (SKY.x1 - 0.12), 0),
-        ey = Math.max(SKY.y0 + 0.08 - y, y - (SKY.y1 - 0.08), 0),
-        ez = Math.max(SKY.z0 + 0.08 - z, z - (SKY.z1 - 0.08), 0),
-        edge = Math.min(4, (ex + ey * 1.5 + ez) * 8);
-      if (edge > 0) {
-        const tx = 0.5 - x,
-          ty = (SKY.y0 + SKY.y1) / 2 - y,
-          tz = -z,
-          tl = Math.hypot(tx, ty, tz) || 1;
-        fx += (tx / tl) * speed * 0.035 * edge;
-        fy += (ty / tl) * speed * 0.035 * edge;
-        fz += (tz / tl) * speed * 0.035 * edge;
+      // Roost: outside its radius, a sideways push turns the bird back home.
+      const r = Math.sqrt(x * x + z * z);
+      if (r > ROOST_RADIUS) {
+        const nx = x / r,
+          nz = z / r,
+          outward = 0.5 + 0.5 * (ex * nx + ez * nz),
+          turnHome = sx * -nx + sz * -nz >= 0 ? 1 : -1,
+          push = W_ROOST_H * (r - ROOST_RADIUS) * outward * turnHome;
+        fx += push * sx;
+        fz += push * sz;
       }
-      if (predator && presence > 0.02) {
+      fy -= Math.max(
+        -TUNING.heightCap,
+        Math.min(TUNING.heightCap, TUNING.height * (y - ROOST_HEIGHT)),
+      );
+      // Escape manoeuvre in progress: zig sideways, then back.
+      const escape = b[at + 7],
+        age = Math.abs(escape),
+        side = escape < 0 ? -1 : 1;
+      if (escape !== 0 && age < ZIG) {
+        const push = (age < ZIG_OUT ? 1 : -1) * ZIG_FORCE * side;
+        fx += push * sx;
+        fz += push * sz;
+      }
+      if (turning && (i === turner || this.isNeighbour(turner, i))) {
+        fx += 0.6 * turnSign * sx;
+        fz += 0.6 * turnSign * sz;
+      }
+      if (hawk) {
         const px = x - hawk[0],
           py = y - hawk[1],
           pz = z - hawk[2],
-          p2 = px * px + py * py + pz * pz;
-        if (p2 < 0.018) {
-          const flee = (presence * speed * 0.004) / (p2 + 0.002);
-          fx += px * flee;
-          fy += py * flee;
-          fz += pz * flee;
+          pd = Math.sqrt(px * px + py * py + pz * pz) || 1;
+        // Birds close to the falcon escape (a zig away from it), and the
+        // flock parts around it, opening a hole where it passes.
+        if (pd < 16 && escape === 0) this.startEscape(i, px * sx + pz * sz);
+        if (pd < 14) {
+          const away = (attack!.fast ? 2.2 : 1.2) * (1 - pd / 14);
+          fx += (px / pd) * away;
+          fy += (py / pd) * away;
+          fz += (pz / pd) * away;
+        }
+        // A fast pass makes the flock burst outward around the falcon.
+        if (attack!.fast && pd < 24) {
+          const burst = 1.4 * (1 - pd / 24);
+          fx += (px / pd) * burst;
+          fy += (py / pd) * burst;
+          fz += (pz / pd) * burst;
         }
       }
-      fx += (random() - 0.5) * speed * 0.01;
-      fy += (random() - 0.5) * speed * 0.02;
-      fz += (random() - 0.5) * speed * 0.01;
-      // Bounded turning, speed that relaxes toward cruising speed.
-      const f = Math.hypot(fx, fy, fz),
-        limit = speed * 0.07;
-      if (f > limit) {
-        fx *= limit / f;
-        fy *= limit / f;
-        fz *= limit / f;
+      fx += (random() - 0.5) * 2 * W_NOISE;
+      fy += (random() - 0.5) * 2 * W_NOISE;
+      fz += (random() - 0.5) * 2 * W_NOISE;
+      // Neighbours copy an escape they see, after recognising it and reacting.
+      if (escape === 0) {
+        const delay = CUE + REACTION + (hash(this.seed + i * 977) - 0.5) * 0.02;
+        for (let k = 0; k < Math.min(6, n); k++) {
+          const other =
+              b[this.neighbours[i * NEIGHBOURS + k] * BIRD_STRIDE + 7],
+            otherAge = Math.abs(other);
+          if (other !== 0 && otherAge >= delay && otherAge < delay + 0.1) {
+            this.startEscape(i, other);
+            break;
+          }
+        }
       }
-      vx += fx;
-      vy += fy;
-      vz += fz;
-      const v = Math.hypot(vx, vy, vz) || 1,
-        cruise =
-          speed *
-          (1 + 0.12 * Math.sin(t * 0.23 + i * 0.07)) *
-          (found < 3 ? 1.12 : 1),
-        target = v + (cruise - v) * 0.08;
-      vx *= target / v;
-      vy *= target / v;
-      vz *= target / v;
-      n[at] = x + vx / 60;
-      n[at + 1] = y + vy / 60;
-      n[at + 2] = z + vz / 60;
-      n[at + 3] = vx;
-      n[at + 4] = vy;
-      n[at + 5] = vz;
+      // Bank toward the neighbours' mean bank (birds match each other's roll).
+      if (n) b[at + 6] += (bankSum / n - b[at + 6]) * BANK_ALIGN * dt;
+      this.force[i * 3] = fx;
+      this.force[i * 3 + 1] = fy;
+      this.force[i * 3 + 2] = fz;
     }
-    [this.birds, this.next] = [this.next, this.birds];
+
+    // Flight physics, with banked turns, in substeps.
+    const h = dt / SUBSTEPS;
+    for (let i = 0; i < count; i++) {
+      const at = i * BIRD_STRIDE,
+        Fx = this.force[i * 3],
+        Fy = this.force[i * 3 + 1],
+        Fz = this.force[i * 3 + 2];
+      let vx = b[at + 3],
+        vy = b[at + 4],
+        vz = b[at + 5],
+        bank = b[at + 6];
+      for (let s = 0; s < SUBSTEPS; s++) {
+        const v = Math.sqrt(vx * vx + vy * vy + vz * vz) || 1,
+          ex = vx / v,
+          ey = vy / v,
+          ez = vz / v;
+        let sx = -ez,
+          sz = ex;
+        const sl = Math.sqrt(sx * sx + sz * sz) || 1;
+        sx /= sl;
+        sz /= sl;
+        // Bird's up before rolling: world up made perpendicular to forward.
+        let upx = -ey * ex,
+          upy = 1 - ey * ey,
+          upz = -ey * ez;
+        const ul = Math.sqrt(upx * upx + upy * upy + upz * upz) || 1;
+        upx /= ul;
+        upy /= ul;
+        upz /= ul;
+        // Roll in toward the steering's sideways pull, roll out gently.
+        const lateral = (Fx * sx + Fz * sz) / MASS;
+        bank +=
+          Math.atan(BANK_IN * Math.abs(lateral) * h) * Math.sign(lateral) -
+          Math.atan(BANK_OUT * Math.sin(bank) * h);
+        bank = Math.max(-BANK_MAX, Math.min(BANK_MAX, bank));
+        const cb = Math.cos(bank),
+          sb = Math.sin(bank),
+          lx = cb * upx + sb * sx,
+          ly = cb * upy,
+          lz = cb * upz + sb * sz,
+          ratio = (v * v) / (cruise * cruise),
+          lift = ratio * MASS * GRAVITY,
+          drag = (ratio * MASS * GRAVITY) / LIFT_DRAG,
+          thrust = (MASS * GRAVITY) / LIFT_DRAG,
+          speedControl = (MASS / SPEED_RELAX) * (cruise - v);
+        const ax =
+            (Fx + lift * lx + (thrust - drag + speedControl) * ex) / MASS,
+          ay =
+            (Fy +
+              lift * ly +
+              (thrust - drag + speedControl) * ey -
+              MASS * GRAVITY) /
+            MASS,
+          az = (Fz + lift * lz + (thrust - drag + speedControl) * ez) / MASS;
+        vx += ax * h;
+        vy += ay * h;
+        vz += az * h;
+        b[at] += vx * h;
+        b[at + 1] += vy * h;
+        b[at + 2] += vz * h;
+      }
+      b[at + 3] = vx;
+      b[at + 4] = vy;
+      b[at + 5] = vz;
+      b[at + 6] = bank;
+      // Escape clock: active zig, then refractory, then idle.
+      const escape = b[at + 7];
+      if (escape !== 0) {
+        const age = Math.abs(escape) + dt;
+        b[at + 7] = age > ZIG + REFRACTORY ? 0 : escape < 0 ? -age : age;
+      }
+    }
+  }
+  private isNeighbour(i: number, j: number) {
+    for (let k = 0; k < this.counts[i]; k++)
+      if (this.neighbours[i * NEIGHBOURS + k] === j) return true;
+    return false;
   }
   captureFrame(previous?: RenderFrame) {
     const frame = frameBuffer(
@@ -336,13 +567,27 @@ export class Murmuration implements Simulation {
       this.params,
     );
     frame.data.set(this.birds);
+    const t = this.tick / 60,
+      attack = this.params.predator ? attackAt(t, this.seed) : undefined;
+    frame.extra = {
+      falcon:
+        attack && attack.index === this.targetIndex
+          ? [...falconAt(t, attack, this.target), ...attack.direction]
+          : null,
+    };
     return frame;
   }
   snapshot(): Snapshot {
     return {
       tick: this.tick,
       data: Array.from(this.birds),
-      extra: { schedule: this.schedule.snapshot() },
+      extra: {
+        schedule: this.schedule.snapshot(),
+        target: [...this.target],
+        targetIndex: this.targetIndex,
+        neighbours: Array.from(this.neighbours),
+        counts: Array.from(this.counts),
+      },
     };
   }
   restore(s: Snapshot) {
@@ -351,35 +596,57 @@ export class Murmuration implements Simulation {
     this.tick = s.tick;
     this.birds.set(s.data);
     this.schedule.restore(s.extra?.schedule as any, this.tick);
+    const target = s.extra?.target as number[] | undefined;
+    this.target =
+      Array.isArray(target) &&
+      target.length === 3 &&
+      target.every(Number.isFinite)
+        ? [...target]
+        : [0, ROOST_HEIGHT, 0];
+    this.targetIndex = Number.isInteger(s.extra?.targetIndex)
+      ? Number(s.extra!.targetIndex)
+      : -1;
+    const count = this.birds.length / BIRD_STRIDE,
+      neighbours = s.extra?.neighbours as number[] | undefined,
+      counts = s.extra?.counts as number[] | undefined;
+    if (
+      Array.isArray(neighbours) &&
+      Array.isArray(counts) &&
+      neighbours.length === count * NEIGHBOURS &&
+      counts.length === count &&
+      neighbours.every((j) => Number.isInteger(j) && j >= 0 && j < count) &&
+      counts.every((c) => Number.isInteger(c) && c >= 0 && c <= NEIGHBOURS)
+    ) {
+      this.neighbours.set(neighbours);
+      this.counts.set(counts);
+      this.perceived = true;
+    } else this.perceived = false;
   }
   intervene(action: EvolutionAction) {
     const b = this.birds,
       count = b.length / BIRD_STRIDE,
       random = rng(this.seed + action.serial * 997),
-      speed = Number(this.params.velocity),
       share = [0, 0.08, 0.25, 1][action.kind],
       total = Math.max(1, Math.round(count * share)),
-      center = attractor(this.tick / 60, this.seed, 1, 0);
+      c = this.centre(),
+      speed = this.cruise();
     for (let k = 0; k < total; k++) {
       const at = ((k + action.serial * 131) % count) * BIRD_STRIDE;
       if (action.kind === 1) {
-        // Turn a group toward the event location (a startle or a call).
-        const dx = action.x - b[at],
-          dy = action.y - b[at + 1],
-          length = Math.hypot(dx, dy) || 1;
-        b[at + 3] = (dx / length) * speed;
-        b[at + 4] = (dy / length) * speed;
-        b[at + 5] *= 0.5;
+        // A startle: a group escapes, and the wave spreads from it.
+        b[at + 7] = b[at + 7] || (random() < 0.5 ? -1e-6 : 1e-6);
         continue;
       }
-      // Rejoin near the flock's wandering center.
-      const a = random() * Math.PI * 2;
-      b[at] = center[0] + 0.15 * (random() - 0.5);
-      b[at + 1] = center[1] + 0.08 * (random() - 0.5);
-      b[at + 2] = center[2] + 0.15 * (random() - 0.5);
-      b[at + 3] = Math.cos(a) * speed;
+      // Rejoin the flock near its centre, flying with it.
+      b[at] = c[0] + (random() - 0.5) * 20;
+      b[at + 1] = c[1] + (random() - 0.5) * 4;
+      b[at + 2] = c[2] + (random() - 0.5) * 20;
+      const v = Math.sqrt(c[3] * c[3] + c[4] * c[4] + c[5] * c[5]) || 1;
+      b[at + 3] = (c[3] / v) * speed;
       b[at + 4] = 0;
-      b[at + 5] = Math.sin(a) * speed;
+      b[at + 5] = (c[5] / v) * speed;
+      b[at + 6] = 0;
+      b[at + 7] = 0;
     }
   }
   activitySample() {
@@ -390,20 +657,23 @@ export class Murmuration implements Simulation {
         sample[0] = NaN;
         return sample;
       }
-      const x = Math.min(31, Math.max(0, Math.floor(b[at] * 32))),
-        y = Math.min(19, Math.max(0, Math.floor(b[at + 1] * 20)));
-      sample[y * 32 + x] = Math.min(1, sample[y * 32 + x] + 0.05);
+      const [px, py] = project(b[at], b[at + 1], b[at + 2]),
+        gx = Math.min(31, Math.max(0, Math.floor((px / 640) * 32))),
+        gy = Math.min(19, Math.max(0, Math.floor((py / 400) * 20)));
+      sample[gy * 32 + gx] = Math.min(1, sample[gy * 32 + gx] + 0.05);
     }
     return sample;
   }
   /** Canvas fallback for hosts without the native renderer. */
   paint(ctx: CanvasRenderingContext2D, w: number, h: number) {
-    ctx.fillStyle = "#1b2a3a";
+    ctx.fillStyle = "#c9b6a8";
     ctx.fillRect(0, 0, w, h);
-    ctx.fillStyle = "rgba(10,12,20,.7)";
+    ctx.fillStyle = "rgba(10,12,20,.6)";
     const b = this.birds;
-    for (let at = 0; at < b.length; at += BIRD_STRIDE)
-      ctx.fillRect(b[at] * w, b[at + 1] * h, 1.5, 1.5);
+    for (let at = 0; at < b.length; at += BIRD_STRIDE) {
+      const [px, py] = project(b[at], b[at + 1], b[at + 2]);
+      ctx.fillRect((px / 640) * w, (py / 400) * h, 1.2, 1.2);
+    }
   }
   dispose() {}
 }
