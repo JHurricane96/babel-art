@@ -19,14 +19,19 @@ import { rng } from "./types";
  * the seed, the tick, the parameters and the checkpointed state.
  */
 export const BIRD_STRIDE = 8; // x y z vx vy vz bank escape
+/** Spacing relative to StarDisplay: each simulated bird is a parcel of birds. */
+export const SPACING = 2.5;
 const MASS = 0.08,
   GRAVITY = 9.81,
   CRUISE = 10, // m/s at the default flight-speed parameter
   LIFT_DRAG = 3.3,
   SPEED_RELAX = 1, // s
   NEIGHBOURS = 7,
-  HARD = 0.2, // m, hard-sphere radius
-  SEP_SIGMA2 = 1.37 * 1.37, // m², StarDisplay: separation radius 4 m
+  // Each simulated bird stands for a parcel of real birds, so spacing is
+  // SPACING times StarDisplay's: the flock spans hundreds of metres, as
+  // real murmurations do, and turns slowly relative to its size.
+  HARD = 0.2 * SPACING, // m, hard-sphere radius
+  SEP_SIGMA2 = (1.37 * SPACING) ** 2, // m², StarDisplay: separation radius 4 m
   W_SEP = 1, // N
   W_ALIGN = 0.5, // N
   W_COHESION = 1, // N (scaled by the cohesion parameter)
@@ -36,17 +41,21 @@ const MASS = 0.08,
   BANK_OUT = 1,
   BANK_ALIGN = 2, // 1/s, roll toward neighbours' mean bank
   BANK_MAX = 1.4, // rad
-  ROOST_RX = 22, // m, half-width of the roost area across the view
-  ROOST_RZ = 50, // m, half-depth along the view
-  ROOST_HEIGHT = 40, // m
+  ROOST_HEIGHT = 60, // m, middle of the route's altitude band
   FLOOR = 14, // m, below this birds climb away from the ground
+  CEILING = 170, // m, above this birds descend
   BREAK_EVERY = 40, // s between breakaway groups
   BREAK_TIME = 3.5, // s a breakaway group pulls away
-  BREAK_RADIUS = 11, // m around the group's leader
+  BREAK_RADIUS = 11 * SPACING, // m around the group's leader
   BREAK_FORCE = 0.55, // N
-  W_JOIN = 0.25, // N, draws separated groups back toward the whole flock
-  W_ROOST_H = 0.01, // N per metre outside the roost
-  W_ROOST_V = 0.05, // N per metre from the preferred height (capped)
+  // The stream: birds follow the path a guide flew (equal-radius turns).
+  W_TRAIL_ALIGN = 0.35, // N toward the trail's direction where the bird is
+  W_TRAIL_PULL = 0.6, // N toward the trail's centre line, beyond its width
+  TRAIL_WIDTH = 24, // m, typical half-width of the stream
+  ROUTE_LEAD = 60, // s the route has flown before the artwork's time zero
+  WARM_UP = 6, // s of settling before time zero
+  GUIDE_PACE = 0.85, // the guide flies a little slower so the stream keeps up
+  STREAM_LENGTH = 45, // s of trail the stream spreads over
   ZIG_FORCE = 1, // N
   ZIG_OUT = 0.25, // s
   ZIG_BACK = 0.3, // s
@@ -55,7 +64,7 @@ const MASS = 0.08,
   REACTION = 0.076, // s, mean reaction time
   SUBSTEPS = 2,
   PERCEIVE = 3, // steps between a bird's neighbour updates (50 ms)
-  CELL = 3.5, // m, neighbour-grid cell
+  CELL = 3.5 * SPACING, // m, neighbour-grid cell
   TABLE = 1 << 14;
 const ZIG = ZIG_OUT + ZIG_BACK;
 /** Weights that shape the flock's spacing and thickness (exposed for tuning). */
@@ -64,17 +73,15 @@ export const TUNING = {
   separationSigma2: SEP_SIGMA2,
   cohesion: W_COHESION,
   alignment: 2 * W_ALIGN,
-  height: W_ROOST_V,
-  heightCap: 0.6,
 };
 
 /** Fixed camera, shared by the simulation (activity) and the renderer. */
 export const CAMERA = {
   x: 0,
   y: 2,
-  z: -200,
+  z: -600,
   /** Focal length in 640-wide image units: a long lens, so the flock fills the sky. */
-  focal: 1100,
+  focal: 1350,
   /** Image row of the horizon in the 640×400 image. */
   horizon: 364,
 };
@@ -129,6 +136,151 @@ export function falconAt(t: number, attack: Attack, target: number[]) {
   return [0, 1, 2].map((i) => target[i] + attack.direction[i] * s);
 }
 
+/** Smooth value noise in one dimension, in [0, 1]. */
+const smooth = (x: number, seed: number) => {
+  const i = Math.floor(x),
+    f = x - i,
+    u = f * f * (3 - 2 * f);
+  return hash(seed * 7919 + i) * (1 - u) + hash(seed * 7919 + i + 1) * u;
+};
+export const ROUTE_STEP = 0.1, // s of route integration
+  TRAIL_SAMPLE = 0.5, // s between stored trail points
+  TRAIL_SAMPLES = 180; // 90 s of trail
+const ROUTE_BOX = { x: 120, zMin: -30, zMax: 80, yMin: 55, yMax: 125 };
+/**
+ * The stream's guide: a seeded route through the sky in front of the viewer,
+ * flown at cruise speed. Long passes across the view, vertical loops that
+ * curl up and back, U-turns and S-bends. It is a pure function of the seed
+ * and time (integrated from zero), so it needs no saved state. Its recent
+ * path, the trail, is what the birds follow.
+ */
+export class Route {
+  time = 0;
+  p = [-120, 55, 20];
+  d = [1, 0, 0];
+  trail = new Float64Array(TRAIL_SAMPLES * 3);
+  /** Absolute index of the newest stored trail point. */
+  newest = 0;
+  loopAxis = [0, 0, 1];
+  loopLeft = 0;
+  loopRate = 0;
+  slot = -1;
+  constructor(
+    public seed: number,
+    public speed: number,
+  ) {
+    this.store(0);
+  }
+  private store(k: number) {
+    const at = (k % TRAIL_SAMPLES) * 3;
+    this.trail[at] = this.p[0];
+    this.trail[at + 1] = this.p[1];
+    this.trail[at + 2] = this.p[2];
+    this.newest = k;
+  }
+  /** Trail point k (absolute index), which must be among the stored ones. */
+  point(k: number, out: number[]) {
+    const at = (k % TRAIL_SAMPLES) * 3;
+    out[0] = this.trail[at];
+    out[1] = this.trail[at + 1];
+    out[2] = this.trail[at + 2];
+    return out;
+  }
+  oldest() {
+    return Math.max(0, this.newest - TRAIL_SAMPLES + 2);
+  }
+  advanceTo(t: number) {
+    while (this.time + ROUTE_STEP <= t + 1e-9) this.integrate();
+  }
+  private rotate(axis: number[], angle: number) {
+    // Rodrigues' rotation of the direction about a unit axis.
+    const [kx, ky, kz] = axis,
+      [x, y, z] = this.d,
+      c = Math.cos(angle),
+      s = Math.sin(angle),
+      dot = kx * x + ky * y + kz * z;
+    this.d[0] = x * c + (ky * z - kz * y) * s + kx * dot * (1 - c);
+    this.d[1] = y * c + (kz * x - kx * z) * s + ky * dot * (1 - c);
+    this.d[2] = z * c + (kx * y - ky * x) * s + kz * dot * (1 - c);
+    const l = Math.hypot(this.d[0], this.d[1], this.d[2]) || 1;
+    this.d[0] /= l;
+    this.d[1] /= l;
+    this.d[2] /= l;
+  }
+  private integrate() {
+    const h = ROUTE_STEP,
+      t = this.time,
+      seed = this.seed,
+      [x, y, z] = this.p;
+    // Manoeuvres in 18 s slots: now and then a vertical loop that curls up
+    // and back over the stream, an S-bend, or a climb or dive.
+    const slot = Math.floor(t / 18);
+    if (slot !== this.slot) {
+      this.slot = slot;
+      const kind = hash(seed * 13 + slot),
+        start = 2 + 6 * hash(seed * 17 + slot);
+      this.loopLeft = 0;
+      if (kind < 0.28 && y < 100) {
+        // Loop radius 18–32 m about the horizontal axis across the flight.
+        const radius = 18 + 14 * hash(seed * 19 + slot),
+          hl = Math.hypot(this.d[0], this.d[2]) || 1;
+        this.loopRate = this.speed / radius;
+        // Rotating about (−dz, 0, dx) pitches up: the head curls up and back.
+        this.loopAxis = [-this.d[2] / hl, 0, this.d[0] / hl];
+        this.loopLeft = -start; // negative: waiting to start
+      } else this.loopRate = kind < 0.7 ? 1 : -1; // S-bend sign or climb
+    }
+    if (this.loopLeft < 0) {
+      this.loopLeft += h;
+      if (this.loopLeft >= 0) this.loopLeft = (2 * Math.PI) / this.loopRate;
+    }
+    if (this.loopLeft > 0) {
+      this.rotate(this.loopAxis, this.loopRate * h);
+      this.loopLeft -= h;
+    } else {
+      // Yaw: slow wander, S-bends, and turning back inside the box.
+      let yaw =
+        0.18 * (smooth(t * 0.07, seed) - 0.5) +
+        0.22 * (smooth(t * 0.19, seed + 1) - 0.5) * (this.loopRate > 0 ? 2 : 1);
+      const hx = this.d[0],
+        hz = this.d[2],
+        hl = Math.hypot(hx, hz) || 1;
+      // Prefer passes across the view, where the stream's shapes show best.
+      yaw -= 0.15 * (hz / hl) * (hx >= 0 ? 1 : -1);
+      const outX = Math.max(0, Math.abs(x) - ROUTE_BOX.x),
+        outZ = Math.max(0, z - ROUTE_BOX.zMax, ROUTE_BOX.zMin - z);
+      if (outX > 0 || outZ > 0) {
+        const cx = -x,
+          cz = 15 - z,
+          cross = (hx * cz - hz * cx) / hl,
+          toward = (hx * cx + hz * cz) / hl / (Math.hypot(cx, cz) || 1);
+        if (toward < 0.95)
+          yaw =
+            (cross >= 0 ? 1 : -1) * Math.min(0.4, 0.12 + 0.01 * (outX + outZ));
+      }
+      this.rotate([0, 1, 0], -yaw * h);
+      // Pitch: level out, follow a slow climb-and-dive, stay in the band.
+      let pitch =
+        0.2 * (smooth(t * 0.11, seed + 2) - 0.5) +
+        0.1 * (smooth(t * 0.31, seed + 4) - 0.5);
+      if (this.loopRate < 0) pitch *= 3;
+      if (y < ROUTE_BOX.yMin) pitch = 0.15;
+      if (y > ROUTE_BOX.yMax) pitch = -0.15;
+      const target = Math.max(-0.3, Math.min(0.3, pitch * 4)),
+        current = Math.asin(Math.max(-1, Math.min(1, this.d[1]))),
+        hl2 = Math.hypot(this.d[0], this.d[2]) || 1,
+        side = [-this.d[2] / hl2, 0, this.d[0] / hl2];
+      this.rotate(side, (target - current) * 0.8 * h);
+    }
+    this.p[0] += this.d[0] * this.speed * h;
+    this.p[1] += this.d[1] * this.speed * h;
+    this.p[2] += this.d[2] * this.speed * h;
+    this.time = Math.round((t + h) * 1e6) / 1e6;
+    const k = Math.floor(this.time / TRAIL_SAMPLE + 1e-6);
+    if (k > this.newest) this.store(k);
+  }
+}
+
 export class Murmuration implements Simulation {
   tick = 0;
   historyBudgetBytes = 32 * 1024 * 1024;
@@ -139,10 +291,18 @@ export class Murmuration implements Simulation {
   targetIndex = -1;
   /** Whether neighbour lists exist (they are part of the saved state). */
   perceived = false;
+  /** The guide's route; recomputed from the seed, never saved. */
+  route: Route;
+  /** Each bird's place along the trail (absolute trail index; saved). */
+  lane: Int32Array;
+  /** Seconds of warm-up still to run before the artwork's time zero. */
+  warm = 0;
   // Scratch (derived every tick, never causal state across ticks).
   neighbours: Int32Array;
   counts: Int32Array;
   force: Float64Array;
+  /** Each bird's target speed this step (scratch). */
+  pace: Float64Array;
   bucketCount = new Int32Array(TABLE);
   bucketStart = new Int32Array(TABLE + 1);
   bucketCursor = new Int32Array(TABLE);
@@ -157,29 +317,65 @@ export class Murmuration implements Simulation {
     this.neighbours = new Int32Array(count * NEIGHBOURS);
     this.counts = new Int32Array(count);
     this.force = new Float64Array(count * 3);
+    this.pace = new Float64Array(count);
     this.order = new Int32Array(count);
     this.bucketOf = new Int32Array(count);
     this.schedule = new EvolutionSchedule(seed);
+    this.lane = new Int32Array(count);
     const random = rng(seed),
-      heading = random() * Math.PI * 2,
-      speed = this.cruise(),
-      radius = Math.sqrt(count) * 0.62;
+      speed = this.cruise();
+    // Lay the birds along the last 30 s of the guide's trail, then let them
+    // settle for six seconds before the artwork's time zero.
+    this.warm = WARM_UP;
+    this.route = new Route(seed, speed * GUIDE_PACE);
+    this.route.advanceTo(this.routeTime());
+    const a = [0, 0, 0],
+      c = [0, 0, 0],
+      newest = this.route.newest;
     for (let i = 0; i < count; i++) {
       const at = i * BIRD_STRIDE,
-        r = radius * Math.sqrt(random()),
-        a = random() * Math.PI * 2,
-        h = heading + (random() - 0.5) * 0.3;
-      this.birds[at] = Math.cos(heading) * 25 + r * Math.cos(a);
-      this.birds[at + 1] = ROOST_HEIGHT + (random() - 0.5) * 4;
-      this.birds[at + 2] = Math.sin(heading) * 30 + r * Math.sin(a) * 0.6;
-      this.birds[at + 3] = Math.cos(h) * speed;
-      this.birds[at + 4] = 0;
-      this.birds[at + 5] = Math.sin(h) * speed;
+        k = Math.max(
+          1,
+          newest -
+            1 -
+            Math.floor(
+              (this.streamLength() * hash(seed * 59 + i * 7)) / TRAIL_SAMPLE,
+            ),
+        );
+      random();
+      this.route.point(k, a);
+      this.route.point(k + 1, c);
+      const tx = c[0] - a[0],
+        ty = c[1] - a[1],
+        tz = c[2] - a[2],
+        tl = Math.hypot(tx, ty, tz) || 1,
+        w = this.streamWidth() * 0.7;
+      this.birds[at] = a[0] + (random() - 0.5) * 2 * w;
+      this.birds[at + 1] = a[1] + (random() - 0.5) * w;
+      this.birds[at + 2] = a[2] + (random() - 0.5) * 2 * w;
+      this.birds[at + 3] = (tx / tl) * speed;
+      this.birds[at + 4] = (ty / tl) * speed;
+      this.birds[at + 5] = (tz / tl) * speed;
+      this.lane[i] = k;
     }
-    // Settle into a flock before the first frame.
-    for (let i = 0; i < 360; i++) this.step();
+    for (let i = 0; i < WARM_UP * 60; i++) this.step();
     this.tick = 0;
+    this.warm = 0;
     this.targetIndex = -1;
+  }
+  /**
+   * Seconds of trail the stream spreads over, and its typical half-width:
+   * smaller flocks make a shorter, narrower stream so it stays as dense.
+   */
+  private streamLength() {
+    return STREAM_LENGTH * Math.sqrt(this.birds.length / BIRD_STRIDE / 3000);
+  }
+  private streamWidth() {
+    return TRAIL_WIDTH * Math.pow(this.birds.length / BIRD_STRIDE / 3000, 0.25);
+  }
+  /** Route seconds: the route runs a minute ahead so a trail exists at zero. */
+  private routeTime() {
+    return this.tick / 60 + ROUTE_LEAD - this.warm;
   }
   private cruise() {
     return CRUISE * (Number(this.params.velocity ?? 0.12) / 0.12);
@@ -299,16 +495,20 @@ export class Murmuration implements Simulation {
       random = rng(this.seed ^ Math.imul(this.tick, 0x9e3779b1));
     this.findNeighbours(!this.perceived);
     this.perceived = true;
+    const route = this.route;
+    route.advanceTo(this.routeTime());
 
-    // Falcon: fix the aim when an attack window opens.
+    // Falcon: fix the aim when an attack window opens, at a bird's predicted
+    // position (the stream's centre may be open sky).
     const attack = this.params.predator ? attackAt(t, this.seed) : undefined;
     if (attack && attack.index !== this.targetIndex) {
-      const c = this.centre(),
+      const at =
+          Math.floor(hash(this.seed * 53 + attack.index) * count) * BIRD_STRIDE,
         lead = attack.time - t;
       this.target = [
-        c[0] + c[3] * lead,
-        c[1] + c[4] * lead,
-        c[2] + c[5] * lead,
+        b[at] + b[at + 3] * lead,
+        b[at + 1] + b[at + 4] * lead,
+        b[at + 2] + b[at + 5] * lead,
       ];
       this.targetIndex = attack.index;
     }
@@ -348,10 +548,14 @@ export class Murmuration implements Simulation {
       breakFx = 0,
       breakFy = 0,
       breakFz = 0;
-    // Flock scale: the radius of a sheet of this many birds.
-    const reach = 0.62 * Math.sqrt(count),
+    const streamLength = this.streamLength(),
+      streamWidth = this.streamWidth(),
       breakRadius = BREAK_RADIUS * Math.pow(count / 3000, 0.4),
-      whole = this.centre();
+      oldest = route.oldest(),
+      newest = route.newest,
+      head = route.p,
+      pa = [0, 0, 0],
+      pb = [0, 0, 0];
     if (breaking) {
       const leader =
           Math.floor(hash(this.seed * 41 + breakEvent) * count) * BIRD_STRIDE,
@@ -452,23 +656,83 @@ export class Murmuration implements Simulation {
         fy += (centrality * cohesion * cy) / seen;
         fz += (centrality * cohesion * cz) / seen;
       }
-      // Roost: outside an ellipse (deeper than it is wide, so the flock
-      // wheels toward and away from the viewer), a sideways push turns the
-      // bird back home.
-      const qx = x / ROOST_RX,
-        qz = z / ROOST_RZ,
-        r = Math.sqrt(qx * qx + qz * qz);
-      if (r > 1) {
-        const gx = qx / ROOST_RX,
-          gz = qz / ROOST_RZ,
-          gl = Math.sqrt(gx * gx + gz * gz) || 1,
-          nx = gx / gl,
-          nz = gz / gl,
-          outward = 0.5 + 0.5 * (ex * nx + ez * nz),
-          turnHome = sx * -nx + sz * -nz >= 0 ? 1 : -1,
-          push = W_ROOST_H * (r - 1) * ROOST_RX * outward * turnHome;
-        fx += push * sx;
-        fz += push * sz;
+      // The stream: find the nearest stretch of the guide's trail near this
+      // bird's place along it, fly the trail's direction there, and keep
+      // within the stream's width (which swells and thins along its length).
+      {
+        let best = Infinity,
+          bestK = this.lane[i],
+          qx = 0,
+          qy = 0,
+          qz = 0,
+          tx = 1,
+          ty = 0,
+          tz = 0;
+        const from = Math.max(oldest, this.lane[i] - 2),
+          to = Math.min(newest, this.lane[i] + 4);
+        for (let k = from; k <= to; k++) {
+          route.point(k, pa);
+          if (k < newest) route.point(k + 1, pb);
+          else {
+            pb[0] = head[0];
+            pb[1] = head[1];
+            pb[2] = head[2];
+          }
+          const sx2 = pb[0] - pa[0],
+            sy2 = pb[1] - pa[1],
+            sz2 = pb[2] - pa[2],
+            sl2 = sx2 * sx2 + sy2 * sy2 + sz2 * sz2 || 1e-9,
+            u = Math.max(
+              0,
+              Math.min(
+                1,
+                ((x - pa[0]) * sx2 + (y - pa[1]) * sy2 + (z - pa[2]) * sz2) /
+                  sl2,
+              ),
+            ),
+            cx2 = pa[0] + sx2 * u,
+            cy2 = pa[1] + sy2 * u,
+            cz2 = pa[2] + sz2 * u,
+            // Vertical offsets count double: the stream is a flattened band.
+            d2 = (x - cx2) ** 2 + 4 * (y - cy2) ** 2 + (z - cz2) ** 2;
+          if (d2 < best) {
+            best = d2;
+            bestK = k;
+            qx = cx2;
+            qy = cy2;
+            qz = cz2;
+            const l = Math.sqrt(sl2);
+            tx = sx2 / l;
+            ty = sy2 / l;
+            tz = sz2 / l;
+          }
+        }
+        this.lane[i] = bestK;
+        // Spread the stream along the trail: each bird keeps to its own
+        // place behind the guide, speeding up when behind it and easing off
+        // when ahead, so the stream stays long and its shape persists.
+        const lag = (newest - bestK) * TRAIL_SAMPLE,
+          place = streamLength * hash(this.seed * 59 + i * 7);
+        this.pace[i] =
+          cruise *
+          GUIDE_PACE *
+          (1 + Math.max(-0.25, Math.min(0.35, (lag - place) / 8)));
+        fx += W_TRAIL_ALIGN * (tx - ex);
+        fy += W_TRAIL_ALIGN * (ty - ey);
+        fz += W_TRAIL_ALIGN * (tz - ez);
+        const dist = Math.sqrt(best),
+          // The band swells and pinches along its length.
+          width =
+            streamWidth *
+            (0.3 +
+              0.9 * smooth(bestK * TRAIL_SAMPLE * 0.12, this.seed + 3) +
+              0.5 * smooth(bestK * TRAIL_SAMPLE * 0.04, this.seed + 5));
+        if (dist > width) {
+          const pull = (W_TRAIL_PULL * Math.min(1, (dist - width) / 20)) / dist;
+          fx += (qx - x) * pull;
+          fy += (qy - y) * pull * 2;
+          fz += (qz - z) * pull;
+        }
       }
       if (breaking) {
         const bx = x - breakX,
@@ -480,26 +744,9 @@ export class Murmuration implements Simulation {
           fz += breakFz;
         }
       }
-      // Birds far from the whole flock (a group that broke away) are drawn
-      // gently back, so clusters part for a while and then merge again.
-      {
-        const jx = whole[0] - x,
-          jy = whole[1] - y,
-          jz = whole[2] - z,
-          jd = Math.sqrt(jx * jx + jy * jy + jz * jz) || 1;
-        if (jd > reach) {
-          const pull = (W_JOIN * Math.min(1, (jd - reach) / 20)) / jd;
-          fx += jx * pull;
-          fy += jy * pull * 0.3;
-          fz += jz * pull;
-        }
-      }
-      // The ground: birds pushed low by a dive pull up hard.
+      // The ground and the ceiling.
       if (y < FLOOR) fy += Math.min(1.5, 0.15 * (FLOOR - y));
-      fy -= Math.max(
-        -TUNING.heightCap,
-        Math.min(TUNING.heightCap, TUNING.height * (y - ROOST_HEIGHT)),
-      );
+      if (y > CEILING) fy -= Math.min(1, 0.05 * (y - CEILING));
       // Escape manoeuvre in progress: zig sideways, then back.
       const escape = b[at + 7],
         age = Math.abs(escape),
@@ -520,16 +767,17 @@ export class Murmuration implements Simulation {
           pd = Math.sqrt(px * px + py * py + pz * pz) || 1;
         // Birds close to the falcon escape (a zig away from it), and the
         // flock parts around it, opening a hole where it passes.
-        if (pd < 16 && escape === 0) this.startEscape(i, px * sx + pz * sz);
-        if (pd < 14) {
-          const away = (attack!.fast ? 2.2 : 1.2) * (1 - pd / 14);
+        if (pd < 6.4 * SPACING && escape === 0)
+          this.startEscape(i, px * sx + pz * sz);
+        if (pd < 5.6 * SPACING) {
+          const away = (attack!.fast ? 2.2 : 1.2) * (1 - pd / (5.6 * SPACING));
           fx += (px / pd) * away;
           fy += (py / pd) * away;
           fz += (pz / pd) * away;
         }
         // A fast pass makes the flock burst outward around the falcon.
-        if (attack!.fast && pd < 24) {
-          const burst = 1.4 * (1 - pd / 24);
+        if (attack!.fast && pd < 9.6 * SPACING) {
+          const burst = 1.4 * (1 - pd / (9.6 * SPACING));
           fx += (px / pd) * burst;
           fy += (py / pd) * burst;
           fz += (pz / pd) * burst;
@@ -599,10 +847,11 @@ export class Murmuration implements Simulation {
           ly = cb * upy,
           lz = cb * upz + sb * sz,
           ratio = (v * v) / (cruise * cruise),
-          lift = ratio * MASS * GRAVITY,
+          // Birds pull more lift in a banked turn so they hold altitude.
+          lift = (ratio * MASS * GRAVITY) / Math.max(0.5, cb),
           drag = (ratio * MASS * GRAVITY) / LIFT_DRAG,
           thrust = (MASS * GRAVITY) / LIFT_DRAG,
-          speedControl = (MASS / SPEED_RELAX) * (cruise - v);
+          speedControl = (MASS / SPEED_RELAX) * (this.pace[i] - v);
         const ax =
             (Fx + lift * lx + (thrust - drag + speedControl) * ex) / MASS,
           ay =
@@ -664,6 +913,7 @@ export class Murmuration implements Simulation {
         targetIndex: this.targetIndex,
         neighbours: Array.from(this.neighbours),
         counts: Array.from(this.counts),
+        lane: Array.from(this.lane),
       },
     };
   }
@@ -698,6 +948,37 @@ export class Murmuration implements Simulation {
       this.counts.set(counts);
       this.perceived = true;
     } else this.perceived = false;
+    // The route is a function of the seed and time: fly it again.
+    this.warm = 0;
+    this.route = new Route(this.seed, this.cruise() * GUIDE_PACE);
+    this.route.advanceTo(this.routeTime());
+    const lane = s.extra?.lane as number[] | undefined,
+      oldest = this.route.oldest(),
+      newest = this.route.newest;
+    if (
+      Array.isArray(lane) &&
+      lane.length === count &&
+      lane.every((k) => Number.isInteger(k) && k >= oldest && k <= newest)
+    )
+      this.lane.set(lane);
+    else {
+      // Without saved places, each bird takes the nearest trail point.
+      const p = [0, 0, 0];
+      for (let i = 0; i < count; i++) {
+        let best = Infinity;
+        for (let k = oldest; k <= newest; k++) {
+          this.route.point(k, p);
+          const d =
+            (this.birds[i * BIRD_STRIDE] - p[0]) ** 2 +
+            (this.birds[i * BIRD_STRIDE + 1] - p[1]) ** 2 +
+            (this.birds[i * BIRD_STRIDE + 2] - p[2]) ** 2;
+          if (d < best) {
+            best = d;
+            this.lane[i] = k;
+          }
+        }
+      }
+    }
   }
   intervene(action: EvolutionAction) {
     const b = this.birds,
@@ -714,10 +995,12 @@ export class Murmuration implements Simulation {
         b[at + 7] = b[at + 7] || (random() < 0.5 ? -1e-6 : 1e-6);
         continue;
       }
-      // Rejoin the flock near its centre, flying with it.
-      b[at] = c[0] + (random() - 0.5) * 20;
-      b[at + 1] = c[1] + (random() - 0.5) * 4;
-      b[at + 2] = c[2] + (random() - 0.5) * 20;
+      // Rejoin the stream near a bird in it, flying with the flock.
+      const host = Math.floor(random() * count) * BIRD_STRIDE;
+      b[at] = b[host] + (random() - 0.5) * 20;
+      b[at + 1] = b[host + 1] + (random() - 0.5) * 4;
+      b[at + 2] = b[host + 2] + (random() - 0.5) * 20;
+      this.lane[at / BIRD_STRIDE] = this.lane[host / BIRD_STRIDE];
       const v = Math.sqrt(c[3] * c[3] + c[4] * c[4] + c[5] * c[5]) || 1;
       b[at + 3] = (c[3] / v) * speed;
       b[at + 4] = 0;

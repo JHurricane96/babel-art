@@ -1,6 +1,6 @@
 import { program, vertex } from "./grid";
 import { ROLE_GLSL, paletteRoles, setRoleUniforms } from "./finish";
-import { BIRD_STRIDE, CAMERA } from "./murmuration";
+import { BIRD_STRIDE, CAMERA, SPACING } from "./murmuration";
 import type { Appearance, RenderFrame, SceneRenderer } from "./render-frame";
 import { PARTICLE_STRIDE } from "./particles";
 import { SLIME_WIDTH, SLIME_HEIGHT, SLIME_CELLS } from "./slime";
@@ -327,12 +327,12 @@ class RibbonGPU {
   }
 }
 /** Visible birds per simulated bird, and their placement around it. */
-const VISIBLE_PER_BIRD = 8,
+const VISIBLE_PER_BIRD = 12,
   OFFSET_COUNT = 4093,
-  BIRD_HALF_SPAN = 0.12, // m, drawn smaller than a starling so the flock reads vast
-  BIRD_THICK = 0.075, // m
-  HAZE_RADIUS = 1.5, // m, soft mass behind the specks
-  HAZE_ALPHA = 0.075,
+  BIRD_HALF_SPAN = 0.2, // m, a speck standing for a few birds at a distance
+  BIRD_THICK = 0.11, // m
+  HAZE_RADIUS = 1.1 * SPACING, // m, soft mass behind the specks
+  HAZE_ALPHA = 0.03,
   HAZE_EVERY = 4, // one disc per this many simulated birds (fill cost)
   OFFSETS = (() => {
     const o = new Float32Array(OFFSET_COUNT * 4);
@@ -346,9 +346,9 @@ const VISIBLE_PER_BIRD = 8,
     for (let i = 0; i < OFFSET_COUNT; i++) {
       // Forward, sideways and up, in metres around the simulated bird,
       // about half the spacing between simulated birds; then a wingbeat phase.
-      o[i * 4] = (next() - 0.5) * 1.6;
-      o[i * 4 + 1] = (next() - 0.5) * 1.6;
-      o[i * 4 + 2] = (next() - 0.5) * 0.8;
+      o[i * 4] = (next() - 0.5) * 1.6 * SPACING;
+      o[i * 4 + 1] = (next() - 0.5) * 1.6 * SPACING;
+      o[i * 4 + 2] = (next() - 0.5) * 0.8 * SPACING;
       o[i * 4 + 3] = next() * Math.PI * 2;
     }
     return o;
@@ -975,7 +975,7 @@ export class EntityGPU implements SceneRenderer {
       minThick = 0.55 * pixel,
       copies = Math.max(
         1,
-        Math.min(VISIBLE_PER_BIRD, 3 + Math.round(6 * detail)),
+        Math.min(VISIBLE_PER_BIRD, 4 + Math.round(10 * detail)),
       ),
       focal = CAMERA.focal;
     for (let i = 0, n = 0; i < d.length; i += BIRD_STRIDE, n++) {
