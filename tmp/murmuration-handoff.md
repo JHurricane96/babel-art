@@ -5,6 +5,10 @@ artwork, Murmuration. The project-wide notes are in `tmp/model-provider-handoff.
 
 Read sections 1 to 4 before touching code. The rest is reference.
 
+**Priority, set by the user on 15 November 2026:** "We should first have compelling flocking and
+flying. We don't even have that yet." Work on nothing else until the user says the flight itself is
+compelling. Roosting, an evening arc, moods and changing light are parked (section 9).
+
 ## 1. Where things stand
 
 - **On main:** a three-dimensional starling flock (`engine/murmuration.ts`, 3,000 birds, based on the
@@ -53,12 +57,12 @@ guard rails for catching failure. They do not prove beauty, and the user is the 
 | **Glance** (any still) | The flock reads as one translucent body with a clear outline: a pale veil where thin, dark where it folds or is seen edge-on. The sky is the lightest thing, the land the darkest, the flock in between. It is composed across the four panels and their gaps. | Real-renderer stills at five or more moments, in two palettes (`capture.mjs`); `tone.py` on sky-only crops: median darkness 0.10–0.20, 95th percentile 0.30 or more, grain 0.6 or less. |
 | **Ten seconds** (ripples) | Something travels through the flock: dark fronts that cross it in about half a second to two seconds, at least every few seconds in active passages, and rarely in calm ones. | A clip; a space-time picture (`reference/kymograph.py` on the clip) showing stripes across the flock. |
 | **A minute** (events) | Parts pull away and rejoin: a lobe of roughly 10–40% of the birds separates and merges back within about 5–30 seconds, a few times every five minutes. Different parts move in different directions at once. The outline changes character (band, veil, dome, hook), and no bird follows a scripted path. | Clips of 2–3 minutes; `groups.mjs` and `sheet.py`: one piece 50–90% of the time, two to four pieces otherwise, the largest piece never under half, every split healed. |
-| **An hour** | Passages with different character lasting minutes, with calm between them. No visible loop. The flock stays on the wall and never ends as a permanent ball or a permanent scatter. | Two-hour simulated runs per seed, three seeds: one-frame-a-minute sheets (`sheet.py`), and first-versus-last-20-minutes width and piece counts within 15% of each other. |
+| **An hour** (later; see the priority note at the top) | No visible loop. The flock stays on the wall and never ends as a permanent ball or a permanent scatter. Variety over minutes, with calm between busier passages. | Two-hour simulated runs per seed, three seeds: one-frame-a-minute sheets (`sheet.py`), and first-versus-last-20-minutes width and piece counts within 15% of each other. |
 | **The machine** | Smooth on the target hardware at the wall's resolution, with headroom. | Measured on the Pi (section 5). Until then, say "unmeasured". |
 
 What makes it this project's own, beyond any reference: the four-panel composition with a flock that
-crosses bezels; palettes that act as weather and time of day; light that drifts through an evening;
-arrival and descent to roost as the long arc; and a different evening for each daily seed.
+crosses bezels; palettes that act as weather and time of day; and a different sky for each daily
+seed. Longer structure (an arc through an evening) may come later, once the flight is right.
 
 ## 3. Working agreements with this user
 
@@ -92,22 +96,24 @@ Two ideas, each with evidence behind it:
 
 Order of work, with a gate after each step:
 
-1. **Budget (first, small).** Add a benchmark mode to the preview that draws 15,000 to 100,000 birds
-   the proposed way (section 5) and shows frame time. The user runs it on the Pi at the wall's
-   resolution. This fixes the bird counts before anything is tuned. *Gate: numbers from the Pi.*
-2. **Motion in the lab.** Change the simulation in `engine/murmuration.ts` as above, reviewing with
-   `export.mjs`, `render.py`, `sheet.py`, `groups.mjs`. Aim at the ten-second and one-minute tests.
-   *Gate: the user watches 2–3 minute clips.*
+1. **Flocking and flying, in the lab. This is the whole job for now.** Change the simulation in
+   `engine/murmuration.ts` as above, reviewing with `export.mjs`, `render.py`, `sheet.py`,
+   `groups.mjs`. Aim at the ten-second and one-minute tests: ripples, parts pulling away and
+   rejoining, parts moving in different directions, an outline that keeps changing character. Check
+   each candidate in the real renderer too (`capture.mjs`), so the offline picture does not mislead.
+   *Gate: the user watches 2–3 minute clips and says the flight is compelling.*
+2. **Budget.** Add a benchmark mode to the preview that draws 15,000 to 100,000 birds the proposed way
+   (section 5) and shows frame time. The user runs it on the Pi at the wall's resolution. Small, and
+   needed before step 3, but it must not delay step 1. *Gate: numbers from the Pi.*
 3. **Drawing.** Move bird placement to the graphics card; tune marks, grain and tone in the real
    renderer against the glance test. Let the flock pass behind the tree line when it is low.
    *Gate: stills, then the live preview on the user's machine.*
 4. **Scene and light** (section 8). *Gate: stills in several palettes.*
-5. **Hours** (section 9): moods, the evening arc, long-run checks. *Gate: one-frame-a-minute sheets
-   and a few real-time minutes from different hours.*
-6. **Integrate.** Saved-artwork version, checkpoints, tests, docs, performance check, pull request.
+5. **Integrate.** Saved-artwork version, checkpoints, tests, docs, performance check, pull request.
 
-Steps 2 and 3 can swap if the Pi numbers arrive late, but do not polish looks on a motion model that
-has not passed its gate.
+Only after that, and only if the user asks: longer structure over hours (section 9). While working on
+step 1, still run a 30-minute simulated check now and then, because a flock that drifts off the wall
+or collapses into a ball is a flight problem, not a structure problem.
 
 ## 5. Compute budget
 
@@ -241,16 +247,14 @@ apply to any model: it drifted to an edge or out of view about one minute in fiv
 steadily from 0.77 to 0.53 of the frame; it sometimes frayed into crumbs; and each minute differed but
 the character never changed. Check for all four.
 
-Proposed structure, not yet agreed in detail with the user:
+**Parked.** The user: "I don't think we should get distracted by roosting, we should first have
+compelling flocking and flying." Do not build any of the following until asked. They are kept only so
+the ideas are not lost:
 
-- **Moods lasting 2–6 minutes**, blending over about half a minute, in a seeded order with no
-  immediate repeats and calm moods most common: drift (long quiet bands), coil (folding and rolling),
-  divide (two or three clouds that wander and merge), unrest (tight turns, frequent ripples), high
-  veil (the flock rises and thins), falcon (attacks grouped into an episode, not on a timer).
-- **An evening arc of roughly 25–40 minutes:** small groups arrive and merge; the display; funnels
-  pour down to roost; a short quiet sky while the light changes; then a new evening. Whether the sky
-  may ever be nearly empty is an open question (section 13).
-- **Light** drifts slowly through each evening.
+- Moods lasting a few minutes each (calm drifting, folding and rolling, dividing into two or three
+  clouds, unrest with frequent ripples, a high thin veil, a falcon episode), in a seeded order.
+- An arc through an evening, with arrival and roosting.
+- Light that drifts slowly.
 - The app already has a seeded schedule for long-run events (`engine/evolution.ts`) and a "Variation"
   setting; use them instead of inventing new controls.
 
@@ -314,16 +318,13 @@ Answered on 15 November 2026:
 - Saved artworks need not be preserved. Aim for something strictly better.
 - Keep the flood water and its reflection.
 
-Still open:
+- Roosting and any evening arc are parked until the flight is compelling (see the top of this brief).
 
-- **Should the sky ever be nearly empty?** In the proposed evening arc (section 9) the whole flock
-  pours down to roost, and for a minute or two only a few stragglers are in the air before birds
-  return. The alternative is that birds are always up: only part of the flock goes down to roost at a
-  time, so the sky thins but never empties. Until the user answers, build the second (never empty).
+Nothing is open at the moment.
 
 ## 14. A prompt to start the next session
 
 > Read `tmp/murmuration-handoff.md` and `tools/murmuration-lab/README.md` in the babel-art repository.
-> Continue the Murmuration work from step 1 of section 4 (or step 2 if I have not sent Pi numbers
-> yet). Tell me your plan for that step before changing code, and show me clips or stills at each
+> Continue the Murmuration work from step 1 of section 4: compelling flocking and flying, nothing
+> else yet. Tell me your plan for that step before changing code, and show me clips or stills at each
 > gate. Work on the branch `claude/artwork-review-improvements-bkx0ia`.
