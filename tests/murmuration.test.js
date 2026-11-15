@@ -32,7 +32,7 @@ test("starling flock replays exactly through checkpoints, escapes and attacks", 
   assert.deepEqual(a.snapshot(), b.snapshot());
 });
 
-test("starling flock stays finite, aloft and in view; groups break away and rejoin", () => {
+test("starling flock stays finite, aloft and near the roost; groups break away and rejoin", () => {
   const sim = new Murmuration(9, params({ population: 1500 }));
   let samples = 0,
     aloft = 0,
@@ -49,9 +49,8 @@ test("starling flock stays finite, aloft and in view; groups break away and rejo
     for (let at = 0; at < b.length; at += BIRD_STRIDE) {
       assert.ok(b.subarray(at, at + BIRD_STRIDE).every(Number.isFinite));
       samples++;
-      if (b[at + 1] > 12 && b[at + 1] < 220) aloft++;
-      // Within the route's area in front of the camera.
-      if (Math.abs(b[at]) < 250 && b[at + 2] > -150 && b[at + 2] < 220) near++;
+      if (b[at + 1] > 15 && b[at + 1] < 110) aloft++;
+      if (Math.hypot(b[at], b[at + 2]) < 140) near++;
     }
     // Largest connected group in the nearest-neighbour graph.
     const parent = Int32Array.from({ length: n }, (_, i) => i),
@@ -76,11 +75,11 @@ test("starling flock stays finite, aloft and in view; groups break away and rejo
     near / samples > 0.97,
     "birds stay near the roost: " + near / samples,
   );
-  // The stream may pinch into two to four pieces, as real murmurations do,
-  // but it stays mostly together and never scatters.
-  assert.ok(whole / checks > 0.35, "flock is often whole: " + whole / checks);
+  // Breakaway groups are intended, but they return: the flock is whole most
+  // of the time and never scatters.
+  assert.ok(whole / checks > 0.6, "flock is usually whole: " + whole / checks);
   assert.ok(
-    largestSum / checks > 0.7,
+    largestSum / checks > 0.85,
     "mean largest group: " + largestSum / checks,
   );
   assert.ok(worstGroup > 0.4, "never scatters: " + worstGroup);
