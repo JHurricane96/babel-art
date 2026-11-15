@@ -31,7 +31,11 @@ What the user has asked for, in their words, in order:
 4. "I don't need this to track the video exactly. It was supposed to provide a reference and some
    inspiration. This artwork needs to be viewable for hours, not just 30 seconds."
 5. "Make it as beautiful as a real murmuration. Keep in mind compute requirements."
-6. Hardware: "Probably raspi latest model" (taken here as a Raspberry Pi 5; confirm).
+6. Hardware: "Probably raspi latest model", confirmed as the latest Raspberry Pi (a Pi 5 at the time
+   of writing).
+7. On the scene: "The water and reflection is nice let's keep."
+8. On saved artworks: "Don't care about current artworks saved, we're aiming to produce something
+   strictly better."
 
 ## 2. The goal
 
@@ -108,8 +112,9 @@ has not passed its gate.
 ## 5. Compute budget
 
 Target: Raspberry Pi 5 (four Cortex-A76 cores at 2.4 GHz, VideoCore VII graphics with OpenGL ES 3.1,
-two HDMI outputs). Not confirmed with the user: how many Pis drive the four panels, and at what
-resolution. **Nothing here has been measured on a Pi.**
+two HDMI outputs). Not known: how many Pis drive the four panels, and at what resolution. Do not ask
+again; design quality levels and let the benchmark in step 1 settle it. **Nothing here has been
+measured on a Pi.**
 
 Measured in this cloud container (Xeon at 2.1 GHz, no GPU), version on main, 3,000 birds:
 
@@ -213,10 +218,11 @@ Problems seen in the scene on main, compared with real dusk footage:
 - **Colour is too strong.** A teal or maroon sky reads as illustration. Real dusk is close to neutral
   with a slight warm-to-cool drift. Design the sky in light and dark first, then let the palette tint
   it lightly. Palettes become weather and hour, not colour schemes.
-- **The landscape still looks drawn.** The single symmetric tree with a soft halo, the frosted
-  conifer-like tree line and the busy mirrored water are the culprits. Wanted: small, dark, irregular
-  bare trees in uneven rows with gaps, one cluster of farm buildings, quiet near-black ground, and the
-  water reduced to a calm strip of reflected sky.
+- **The landscape still looks drawn.** The single symmetric tree with a soft halo and the frosted
+  conifer-like tree line are the culprits. Wanted: small, dark, irregular bare trees in uneven rows
+  with gaps, one cluster of farm buildings, and quiet near-black ground.
+- **Keep the flood water and its reflection.** The user likes them. When the trees and sky change,
+  the reflection must follow (it mirrors the same landscape function in the shader).
 - **Depth.** The flock is drawn over everything. When it is low it should pass behind the tree line.
 - **Composition.** The flock's area should be set from the panel layout so it mostly sits where the
   panels are and crosses between them, instead of hiding in a gap or sitting in one panel.
@@ -226,7 +232,7 @@ Problems seen in the scene on main, compared with real dusk footage:
 
 The user's own comments on backgrounds: an early dusk sky with hills "looks cheap"; the first tree
 line "still looks like clipart"; on the plain field, "lower the ground level ... or make the ground itself more
-interesting" (the water was the answer to that, with no verdict yet).
+interesting" (the water was the answer to that, and the user likes it).
 
 ## 9. Hours
 
@@ -242,8 +248,8 @@ Proposed structure, not yet agreed in detail with the user:
   divide (two or three clouds that wander and merge), unrest (tight turns, frequent ripples), high
   veil (the flock rises and thins), falcon (attacks grouped into an episode, not on a timer).
 - **An evening arc of roughly 25–40 minutes:** small groups arrive and merge; the display; funnels
-  pour down to roost; a short quiet sky while the light changes; then a new evening. The user has not
-  yet said whether a minute or two of nearly empty sky is acceptable. Ask.
+  pour down to roost; a short quiet sky while the light changes; then a new evening. Whether the sky
+  may ever be nearly empty is an open question (section 13).
 - **Light** drifts slowly through each evening.
 - The app already has a seeded schedule for long-run events (`engine/evolution.ts`) and a "Variation"
   setting; use them instead of inventing new controls.
@@ -264,8 +270,10 @@ Proposed structure, not yet agreed in detail with the user:
   `;`. Fragment shaders must begin with exactly `precision highp float;`. Avoid GLSL reserved words as
   names (`active` broke once).
 - `scenes/registry.ts`: parameters and the hidden `flockVersion` (1 is the old 2D flock, 2 the current
-  one). `shared/model.js` validates and migrates saved artworks. A new model should become version 3;
-  decide with the user whether version 2 saves keep the old flock or re-form as the new one.
+  one). `shared/model.js` validates and migrates saved artworks. The user does not need artworks saved
+  with the current flock preserved, so the new model can replace version 2 outright: saved version 2
+  artworks re-form as the new flock, and the version 2 simulation code need not be kept. Version 1
+  (the old 2D flock) has its own migration path; simplify it only if the user agrees.
 - Tests: `npm test` (58 unit tests; `tests/murmuration.test.js` covers replay, limits, cohesion and
   migration), `npm run typecheck`, and browser suites `test:browser`, `test:worlds`, `test:webgl1`,
   `test:performance` (run with `CHROME_BIN=/opt/pw-browsers/chromium` in the cloud container).
@@ -298,12 +306,20 @@ height 2.8, one piece (two at times), pace 0.10 widths per second, counter-flow 
 under 0.86. Tone in the real renderer: median darkness 0.07–0.27, 95th percentile 0.21–0.56, grain
 0.37–0.98.
 
-## 13. Open questions for the user
+## 13. Questions for the user
 
-1. Which Pi, how many of them for the four panels, and what resolution per panel?
-2. Is a minute or two of nearly empty sky between "evenings" acceptable?
-3. Should artworks saved with the current flock keep it, or re-form as the new one when loaded?
-4. Is the flood water in the scene wanted? (No verdict yet.)
+Answered on 15 November 2026:
+
+- Hardware: the latest Raspberry Pi. The number of Pis and the resolution are not known; see section 5.
+- Saved artworks need not be preserved. Aim for something strictly better.
+- Keep the flood water and its reflection.
+
+Still open:
+
+- **Should the sky ever be nearly empty?** In the proposed evening arc (section 9) the whole flock
+  pours down to roost, and for a minute or two only a few stragglers are in the air before birds
+  return. The alternative is that birds are always up: only part of the flock goes down to roost at a
+  time, so the sky thins but never empties. Until the user answers, build the second (never empty).
 
 ## 14. A prompt to start the next session
 
