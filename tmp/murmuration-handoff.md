@@ -41,6 +41,24 @@ What the user has asked for, in their words, in order:
 8. On saved artworks: "Don't care about current artworks saved, we're aiming to produce something
    strictly better."
 
+### Progress on step 1 (15 November 2026, commit a5f92c4)
+
+A new flight model replaces the one on main, on the working branch only, awaiting the user's verdict:
+- Turning has inertia: a bird's bank is driven by how far its neighbours' heading lies to its side
+  and decays on its own, so turns travel through the flock and a straight-flying flock settles level.
+- Turns start in small groups. Each piece checks its heading every second, and a piece drifting out
+  turns home from its leading edge. Occasional opposite turns at the two ends split the flock.
+  Strays and separated pieces are drawn back.
+- Softer vertical spacing spreads the flock into a sheet; spacing is 1.8 times StarDisplay's;
+  16 visible birds per simulated bird.
+
+What it does well: sheets with dark folds, veils, hooks and loops; a split and rejoin every
+minute or two; ripple fronts visible in the space-time picture. Weaknesses: it sometimes sits as a
+dense black ball; it sometimes breaks into several pieces for 20-40 s (after a falcon pass in
+particular); it often sits in one half of the wall. Costs here: 4.5 ms per simulation step, 3.6 ms
+to build marks, both on the main thread; too much for a Pi until the drawing moves to the GPU and
+the simulation off the main thread. Turning constants are in `TUNING` for sweeps.
+
 ## 2. The goal
 
 Not a copy of any video. The target is an artwork with its own terms:
