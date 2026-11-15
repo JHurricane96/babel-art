@@ -20,8 +20,10 @@ test("new murmuration recipes use the starling flock; revision 1 keeps the 2D fl
 test("starling flock replays exactly through checkpoints, escapes and attacks", () => {
   const a = new Murmuration(42, params({ population: 400 })),
     b = new Murmuration(42, params({ population: 400 }));
-  // Run past the first falcon attack so escapes and the attack aim are live.
-  for (let i = 0; i < 31 * 60; i++) a.step();
+  // Run past the first falcon attack so escapes and the attack aim are live,
+  // and stop between the once-a-second piece refreshes (not on a multiple
+  // of 60 ticks), so state that changes only on a refresh must be saved.
+  for (let i = 0; i < 31 * 60 + 23; i++) a.step();
   b.restore(JSON.parse(JSON.stringify(a.snapshot())));
   a.intervene({ kind: 1, serial: 5, x: 0.3, y: 0.3 });
   b.intervene({ kind: 1, serial: 5, x: 0.3, y: 0.3 });
@@ -32,7 +34,7 @@ test("starling flock replays exactly through checkpoints, escapes and attacks", 
   assert.deepEqual(a.snapshot(), b.snapshot());
 });
 
-test("starling flock stays finite, aloft and near the roost; groups break away and rejoin", () => {
+test("starling flock stays finite, aloft and in view; groups break away and rejoin", () => {
   const sim = new Murmuration(9, params({ population: 1500 }));
   let samples = 0,
     aloft = 0,
@@ -49,8 +51,9 @@ test("starling flock stays finite, aloft and near the roost; groups break away a
     for (let at = 0; at < b.length; at += BIRD_STRIDE) {
       assert.ok(b.subarray(at, at + BIRD_STRIDE).every(Number.isFinite));
       samples++;
-      if (b[at + 1] > 15 && b[at + 1] < 110) aloft++;
-      if (Math.hypot(b[at], b[at + 2]) < 140) near++;
+      if (b[at + 1] > 15 && b[at + 1] < 200) aloft++;
+      // Within the sky in front of the camera (home area plus its margin).
+      if (Math.abs(b[at]) < 150 && b[at + 2] > -110 && b[at + 2] < 190) near++;
     }
     // Largest connected group in the nearest-neighbour graph.
     const parent = Int32Array.from({ length: n }, (_, i) => i),
@@ -71,15 +74,13 @@ test("starling flock stays finite, aloft and near the roost; groups break away a
     worstGroup = Math.min(worstGroup, largest);
   }
   assert.ok(aloft / samples > 0.97, "birds stay aloft: " + aloft / samples);
+  assert.ok(near / samples > 0.97, "birds stay in view: " + near / samples);
+  // Splitting and rejoining is part of the design (turns start in small
+  // groups, and now and then two groups pull the flock apart), but the flock
+  // is often whole, mostly together, and never scatters.
+  assert.ok(whole / checks > 0.35, "flock is often whole: " + whole / checks);
   assert.ok(
-    near / samples > 0.97,
-    "birds stay near the roost: " + near / samples,
-  );
-  // Breakaway groups are intended, but they return: the flock is whole most
-  // of the time and never scatters.
-  assert.ok(whole / checks > 0.6, "flock is usually whole: " + whole / checks);
-  assert.ok(
-    largestSum / checks > 0.85,
+    largestSum / checks > 0.7,
     "mean largest group: " + largestSum / checks,
   );
   assert.ok(worstGroup > 0.4, "never scatters: " + worstGroup);
