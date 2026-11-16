@@ -8,8 +8,7 @@ import { rng } from "./types";
 /**
  * Murmuration, revision 2: a starling flock after StarDisplay
  * (Hildenbrandt, Carere & Hemelrijk 2010) with the escape manoeuvre that
- * produces agitation waves (Hemelrijk, van Zuidam & Hildenbrandt 2015) and
- * falcon attacks patterned on Storms et al. (2019).
+ * produces agitation waves (Hemelrijk, van Zuidam & Hildenbrandt 2015).
  *
  * Units are SI: metres, seconds, newtons. x runs to the right of the viewer,
  * y is altitude, z is depth away from the camera. Each bird reacts to its
@@ -43,7 +42,8 @@ const MASS = 0.08,
   TORQUE_HEADING = 30, // 1/s: bank change per radian of sideways difference from the neighbours' heading
   TORQUE = 1, // 1/s: bank change per unit of other sideways pull (in g)
   BANK_DECAY = 3, // 1/s
-  DRIVE = 12, // 1/s: how fast a bird starting a turn or escaping reaches its bank
+  ROLL_MAX = 5, // rad/s, fastest roll (keeps banking, and so shading, smooth)
+  DRIVE = 5, // 1/s: how fast a bird starting a turn or escaping reaches its bank
   SIDE_DIRECT = 0.6, // share of the sideways social force that acts directly
   LEVEL = 0.03, // N per m/s of climb or sink, levelling out
   FLOOR = 14, // m, below this birds climb away from the ground
@@ -52,14 +52,14 @@ const MASS = 0.08,
   TURN_GAP = 8, // s between turns started by small groups
   STRAY = 0.08, // pieces smaller than this share of the flock are strays
   W_STRAY = 0.45, // N drawing strays back toward the main body
-  W_PIECE = 0.45, // N drawing larger pieces back (less for larger pieces)
+  W_PIECE = 0.6, // N drawing larger pieces back (less for larger pieces)
   PITCH_GAP = 13, // s between climbs or dives
   SPLIT_GAP = 70, // s between splits
   STARTLE_GAP = 5, // s between startles
   REJOIN_RATE = 0.25, // chance per second that a separated piece heads back
   REJOIN_FORCE = 0.5, // N
   ZIG_FORCE = 0.6, // N
-  ZIG_BANK = 0.9, // rad
+  ZIG_BANK = 0.55, // rad
   ZIG_OUT = 0.25, // s
   ZIG_BACK = 0.3, // s
   REFRACTORY = 1, // s
@@ -71,7 +71,9 @@ const MASS = 0.08,
   TABLE = 1 << 14;
 const ZIG = ZIG_OUT + ZIG_BACK;
 /** The middle of the sky the flock keeps to (m): centre, half-sizes, altitude band. */
-const HOME = { x: 0, y: 100, z: 40, rx: 60, rz: 70, yLow: 65, yHigh: 135 };
+/** Image rows (of 400) kept clear above the flock. */
+const TOP_MARGIN = 40;
+const HOME = { x: 0, y: 100, z: 40, rx: 60, rz: 70, yLow: 65, yHigh: 125 };
 /** Weights that shape the flock's spacing and thickness (exposed for tuning). */
 export const TUNING = {
   separation: 5 * W_SEP,
@@ -107,45 +109,6 @@ const hash = (n: number) => {
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 };
 
-/** Falcon attacks: the pass through the flock is centred on `time`. */
-export interface Attack {
-  index: number;
-  time: number;
-  speed: number;
-  fast: boolean;
-  direction: number[];
-}
-export function attackAt(t: number, seed: number): Attack | undefined {
-  const k = Math.floor((t - 20) / 32);
-  for (const index of [k, k + 1]) {
-    if (index < 0) continue;
-    const time = 20 + 32 * index + 10 * hash(seed * 31 + index),
-      roll = hash(seed * 17 + index * 7 + 1);
-    if (t < time - 4 || t > time + 3) continue;
-    // Mostly from above (about 70%), at medium speed; one in eight is fast.
-    const from = hash(seed * 13 + index * 5 + 2),
-      side = hash(seed * 11 + index * 3 + 3) < 0.5 ? -1 : 1,
-      elevation = from < 0.7 ? 0.6 : from < 0.9 ? 0.05 : -0.35,
-      dx = side * Math.cos(elevation),
-      dy = -Math.sin(elevation),
-      dz = (hash(seed * 7 + index) - 0.5) * 0.6,
-      length = Math.sqrt(dx * dx + dy * dy + dz * dz);
-    const fast = roll < 0.125;
-    return {
-      index,
-      time,
-      fast,
-      speed: fast ? 32 : roll > 0.9 ? 15 : 22,
-      direction: [dx / length, dy / length, dz / length],
-    };
-  }
-  return undefined;
-}
-export function falconAt(t: number, attack: Attack, target: number[]) {
-  const s = (t - attack.time) * attack.speed;
-  return [0, 1, 2].map((i) => target[i] + attack.direction[i] * s);
-}
-
 /** One flock event: a group of birds that starts a turn, a climb or dive, or a return to the flock. */
 interface FlockEvent {
   kind: number; // EVENT_TURN, EVENT_PITCH or EVENT_REJOIN
@@ -164,9 +127,6 @@ export class Murmuration implements Simulation {
   historyBudgetBytes = 32 * 1024 * 1024;
   birds: Float64Array;
   schedule: EvolutionSchedule;
-  /** Where the current attack aims: a bird's predicted position. */
-  target: number[] = [0, HOME.y, HOME.z];
-  targetIndex = -1;
   /** Whether neighbour lists exist (they are part of the saved state). */
   perceived = false;
   /** Groups currently turning, climbing or rejoining (saved state). */
@@ -225,7 +185,6 @@ export class Murmuration implements Simulation {
     }
     for (let i = 0; i < WARM_UP * 60; i++) this.step();
     this.tick = 0;
-    this.targetIndex = -1;
     this.events = [];
   }
   private cruise() {
@@ -600,21 +559,6 @@ export class Murmuration implements Simulation {
     this.events = this.events.filter((e) => e.end > this.tick);
     this.startEvents(t, variation);
 
-    // Falcon: fix the aim when an attack window opens.
-    const attack = this.params.predator ? attackAt(t, this.seed) : undefined;
-    if (attack && attack.index !== this.targetIndex) {
-      const at =
-          Math.floor(hash(this.seed * 53 + attack.index) * count) * BIRD_STRIDE,
-        lead = attack.time - t;
-      this.target = [
-        b[at] + b[at + 3] * lead,
-        b[at + 1] + b[at + 4] * lead,
-        b[at + 2] + b[at + 5] * lead,
-      ];
-      this.targetIndex = attack.index;
-    }
-    const hawk = attack ? falconAt(t, attack, this.target) : undefined;
-
     // Startles: a single bird zigs, and the zig is copied outward.
     const startleEvent = Math.floor(t / STARTLE_GAP),
       startleTick = Math.round(
@@ -749,7 +693,15 @@ export class Murmuration implements Simulation {
       if (ox > 0) fx -= Math.sign(x - HOME.x) * Math.min(1, 0.02 * ox);
       if (oz > 0) fz -= Math.sign(z - HOME.z) * Math.min(1, 0.02 * oz);
       if (y < HOME.yLow) fy += Math.min(0.8, 0.03 * (HOME.yLow - y));
-      if (y > HOME.yHigh) fy -= Math.min(0.8, 0.03 * (y - HOME.yHigh));
+      // The ceiling is what the wall can show: nearer birds appear higher,
+      // so the highest allowed altitude falls as a bird comes closer.
+      const ceiling = Math.min(
+        HOME.yHigh,
+        CAMERA.y +
+          ((CAMERA.horizon - TOP_MARGIN) * Math.max(1, z - CAMERA.z)) /
+            CAMERA.focal,
+      );
+      if (y > ceiling) fy -= Math.min(1.2, 0.06 * (y - ceiling));
       if (y < FLOOR) fy += Math.min(1.5, 0.15 * (FLOOR - y));
       fy -= LEVEL * vy; // level out after a climb or a dive
       // Groups: hold a bank (turn), climb or dive, or head back to the flock.
@@ -766,8 +718,12 @@ export class Murmuration implements Simulation {
             Math.abs(g.e.amount) > Math.abs(command[i])
           )
             command[i] = g.e.amount * Math.min(1, 1.6 * fade);
-        } else if (g.e.kind === EVENT_PITCH) fy += g.e.amount * fade;
-        else {
+        } else if (g.e.kind === EVENT_PITCH) {
+          // Climbs fade out near the ceiling, dives near the floor.
+          const room =
+            g.e.amount > 0 ? (ceiling - y) / 20 : (y - HOME.yLow) / 20;
+          fy += g.e.amount * fade * Math.max(0, Math.min(1, room));
+        } else {
           const tx = g.e.target[0] - x,
             ty = g.e.target[1] - y,
             tz = g.e.target[2] - z,
@@ -785,26 +741,6 @@ export class Murmuration implements Simulation {
         fx += push * sx;
         fz += push * sz;
         command[i] = (age < ZIG_OUT ? -1 : 1) * side * ZIG_BANK;
-      }
-      if (hawk) {
-        const px = x - hawk[0],
-          py = y - hawk[1],
-          pz = z - hawk[2],
-          pd = Math.sqrt(px * px + py * py + pz * pz) || 1,
-          reach = 6.4 * SPACING;
-        if (pd < reach && escape === 0) this.startEscape(i, px * sx + pz * sz);
-        if (pd < reach) {
-          const away = (attack!.fast ? 1.4 : 0.8) * (1 - pd / reach);
-          fx += (px / pd) * away;
-          fy += (py / pd) * away;
-          fz += (pz / pd) * away;
-        }
-        if (attack!.fast && pd < 1.7 * reach) {
-          const burst = 0.8 * (1 - pd / (1.7 * reach));
-          fx += (px / pd) * burst;
-          fy += (py / pd) * burst;
-          fz += (pz / pd) * burst;
-        }
       }
       fx += (random() - 0.5) * 2 * W_NOISE;
       fy += (random() - 0.5) * 2 * W_NOISE;
@@ -860,13 +796,13 @@ export class Murmuration implements Simulation {
         // Positive bank turns toward the side axis (forward × up).
         const side = Fx * sx + Fz * sz,
           lateral = side / MASS;
-        if (Number.isNaN(cmd))
-          bank +=
-            (TUNING.torqueHeading * mis +
-              TUNING.torque * Math.atan(lateral / GRAVITY) -
-              TUNING.bankDecay * bank) *
-            h;
-        else bank += DRIVE * (cmd - bank) * h;
+        const rate = Number.isNaN(cmd)
+          ? TUNING.torqueHeading * mis +
+            TUNING.torque * Math.atan(lateral / GRAVITY) -
+            TUNING.bankDecay * bank
+          : DRIVE * (cmd - bank);
+        // A bird rolls no faster than ROLL_MAX, so banking stays smooth.
+        bank += Math.max(-ROLL_MAX, Math.min(ROLL_MAX, rate)) * h;
         bank = Math.max(-BANK_MAX, Math.min(BANK_MAX, bank));
         const cb = Math.cos(bank),
           sb = Math.sin(bank),
@@ -917,14 +853,6 @@ export class Murmuration implements Simulation {
       this.params,
     );
     frame.data.set(this.birds);
-    const t = this.tick / 60,
-      attack = this.params.predator ? attackAt(t, this.seed) : undefined;
-    frame.extra = {
-      falcon:
-        attack && attack.index === this.targetIndex
-          ? [...falconAt(t, attack, this.target), ...attack.direction]
-          : null,
-    };
     return frame;
   }
   snapshot(): Snapshot {
@@ -933,8 +861,6 @@ export class Murmuration implements Simulation {
       data: Array.from(this.birds),
       extra: {
         schedule: this.schedule.snapshot(),
-        target: [...this.target],
-        targetIndex: this.targetIndex,
         neighbours: Array.from(this.neighbours),
         counts: Array.from(this.counts),
         events: this.events.map((e) => [
@@ -958,16 +884,6 @@ export class Murmuration implements Simulation {
     this.tick = s.tick;
     this.birds.set(s.data);
     this.schedule.restore(s.extra?.schedule as any, this.tick);
-    const target = s.extra?.target as number[] | undefined;
-    this.target =
-      Array.isArray(target) &&
-      target.length === 3 &&
-      target.every(Number.isFinite)
-        ? [...target]
-        : [0, HOME.y, HOME.z];
-    this.targetIndex = Number.isInteger(s.extra?.targetIndex)
-      ? Number(s.extra!.targetIndex)
-      : -1;
     const count = this.birds.length / BIRD_STRIDE,
       neighbours = s.extra?.neighbours as number[] | undefined,
       counts = s.extra?.counts as number[] | undefined;

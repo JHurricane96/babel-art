@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Murmuration, BIRD_STRIDE, attackAt } from "../engine/murmuration.ts";
+import { Murmuration, BIRD_STRIDE } from "../engine/murmuration.ts";
 import { Flock } from "../engine/entities.ts";
 import { registry, defaults } from "../scenes/registry.ts";
 import { makeProject, validateProject } from "../shared/model.js";
@@ -17,11 +17,11 @@ test("new murmuration recipes use the starling flock; revision 1 keeps the 2D fl
   );
 });
 
-test("starling flock replays exactly through checkpoints, escapes and attacks", () => {
+test("starling flock replays exactly through checkpoints, escapes and splits", () => {
   const a = new Murmuration(42, params({ population: 400 })),
     b = new Murmuration(42, params({ population: 400 }));
-  // Run past the first falcon attack so escapes and the attack aim are live,
-  // and stop between the once-a-second piece refreshes (not on a multiple
+  // Run long enough for escapes, turning groups and a split to be live, and
+  // stop between the once-a-second piece refreshes (not on a multiple
   // of 60 ticks), so state that changes only on a refresh must be saved.
   for (let i = 0; i < 31 * 60 + 23; i++) a.step();
   b.restore(JSON.parse(JSON.stringify(a.snapshot())));
@@ -84,23 +84,6 @@ test("starling flock stays finite, aloft and in view; groups break away and rejo
     "mean largest group: " + largestSum / checks,
   );
   assert.ok(worstGroup > 0.4, "never scatters: " + worstGroup);
-});
-
-test("falcon attacks follow the observed pattern: mostly from above", () => {
-  let above = 0,
-    total = 0;
-  for (let seed = 1; seed <= 40; seed++)
-    for (let t = 20; t < 400; t += 1) {
-      const a = attackAt(t, seed);
-      if (!a || Math.abs(t - a.time) > 0.5) continue;
-      total++;
-      if (a.direction[1] < -0.3) above++;
-    }
-  assert.ok(total > 100);
-  assert.ok(
-    above / total > 0.55 && above / total < 0.85,
-    "share from above: " + above / total,
-  );
 });
 
 test("projects migrate and validate flock revisions", () => {

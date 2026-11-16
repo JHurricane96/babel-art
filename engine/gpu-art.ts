@@ -972,8 +972,11 @@ export class EntityGPU implements SceneRenderer {
         ? mixColor(roles.toneGround, [0, 0, 0], 0.55)
         : mixColor(a.colors[1], roles.toneHighlight, 0.6),
       pixel = 640 / Math.max(1, width),
-      minLength = 0.9 * pixel,
-      minThick = 0.55 * pixel,
+      // Marks never get smaller than about two output pixels across (these
+      // are half-sizes): a smaller quad can miss every pixel centre and blink
+      // out as the bird moves. Below that size the mark fades instead.
+      minLength = 1.1 * pixel,
+      minThick = 1.0 * pixel,
       copies = Math.max(
         1,
         Math.min(VISIBLE_PER_BIRD, 4 + Math.round(15 * detail)),
@@ -1051,9 +1054,8 @@ export class EntityGPU implements SceneRenderer {
           cx = 320 + (px - CAMERA.x) * scale,
           cy = CAMERA.horizon - (py - CAMERA.y) * scale;
         if (cx < -8 || cx > 648 || cy < -8 || cy > 408) continue;
-        // Wingbeat: the span shortens on the downstroke.
-        const beat = 1 - 0.3 * Math.max(0, Math.sin(t * 14 + OFFSETS[o + 3])),
-          half = BIRD_HALF_SPAN * beat * scale,
+        // No visible wingbeat: at this distance a beating wing only twinkles.
+        const half = BIRD_HALF_SPAN * scale,
           dx = wx * half,
           dy = -wy * half,
           length = Math.sqrt(dx * dx + dy * dy),
@@ -1075,51 +1077,6 @@ export class EntityGPU implements SceneRenderer {
           ax * across,
           shade * coverage,
         );
-      }
-    }
-    const hawk = f.extra?.falcon as number[] | null | undefined;
-    if (hawk) {
-      // A falcon about three starlings across: long pointed wings
-      // swept back, flapping slowly; drawn with the same soft marks.
-      const depth = hawk[2] - CAMERA.z;
-      if (depth > 1) {
-        const scale = focal / depth,
-          x = 320 + (hawk[0] - CAMERA.x) * scale,
-          y = CAMERA.horizon - (hawk[1] - CAMERA.y) * scale,
-          hx = hawk[3] * scale,
-          hy = -hawk[4] * scale,
-          hl = Math.sqrt(hx * hx + hy * hy) || 1,
-          fx = hx / hl,
-          fy = hy / hl,
-          span = Math.max(BIRD_HALF_SPAN * 3.4 * scale, 2.5 * pixel),
-          flap = 0.75 + 0.25 * Math.sin(t * 7),
-          thin = Math.max(span * 0.13, minThick);
-        b.add(
-          x,
-          y,
-          fx * span * 0.42,
-          fy * span * 0.42,
-          -fy * thin * 1.3,
-          fx * thin * 1.3,
-          0.95,
-        );
-        for (const side of [-1, 1]) {
-          // Wing: out to the side and swept back toward the tail.
-          const wx = -fy * side * flap - fx * 0.45,
-            wy = fx * side * flap - fy * 0.45,
-            wl = Math.sqrt(wx * wx + wy * wy) || 1,
-            mx = x + (wx / wl) * span * 0.5,
-            my = y + (wy / wl) * span * 0.5;
-          b.add(
-            mx,
-            my,
-            (wx / wl) * span * 0.52,
-            (wy / wl) * span * 0.52,
-            (-wy / wl) * thin,
-            (wx / wl) * thin,
-            0.95,
-          );
-        }
       }
     }
     b.draw(640, 400, this.speckTexture(), base);
