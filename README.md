@@ -49,7 +49,7 @@ See [Architecture](docs/architecture.md) and [Timing experiments and hardware va
 
 - **Living Tapestry:** Conway’s Life and cyclic automata, with generation trails, configurable rate/resolution, and seeded colony injections.
 - **Chemical Garden:** GPU Gray–Scott chemistry, coral/dividing-cell/labyrinth presets, feed/kill controls, and embossed/flat styles. Selecting a preset starts a fresh garden; **Restart garden** also recovers a collapsed saved simulation while preserving your chosen parameters. Requires WebGL2 floating-point render targets.
-- **Murmuration:** Interacting agents with flocking, obstacle avoidance, changing attractors and an optional predator.
+- **Murmuration:** A three-dimensional starling flock of tens of thousands of birds that shimmers, folds, splits and rejoins.
 - **Particle Rivers:** Seeded agents trace luminous currents, tributaries and moving vortices. Fixed-length trails and continuous recirculation keep the ink flowing without accumulating canvas history.
 - **Slime Mold Networks:** Sensing agents build and abandon a shared trail field around moving nutrient pools. Mycelium, Copper Delta and Night Bloom presets combine topology, trail memory, color and surface style. The field starts with an established weave; use **Restart network** to start it again.
 - **Platformer Terrarium:** Autonomous exploration of seeded platform worlds, collectibles, recovery and level progression. Pixel and geometric styles share the same game state. There are no player controls.
@@ -82,7 +82,7 @@ See [art direction](docs/art-direction.md) for the composition goals. `npm run t
 
 Platformer Terrarium traverses three biomes: Glasswood, Amber Ruins and Tidal Observatory. The explorer plans jumps over varied terrain, surveys landmarks once, and proceeds through seeded expeditions. Parallax scenery, vegetation, ambient creatures, weather and an articulated explorer add activity at several scales. Gameplay remains autonomous.
 
-Murmuration is a three-dimensional starling flock of 3,000 birds by default (up to 4,000) that wheels above winter farmland and a low, misty treeline. Birds turn by banking, so turning waves cross the flock as dark bands. Groups break away and rejoin, and the flock parts around a diving falcon. It is drawn at the wall's displayed resolution. Saved projects from the earlier two-dimensional flock keep it until they start a new variation; see [world implementation](docs/worlds.md).
+Murmuration is a three-dimensional flock of 20,000 starlings by default (up to 40,000), every one drawn, wheeling above winter farmland and a low, misty treeline. Bands of tighter-packed birds roll through it as a shimmer, startles sweep across it as waves, and it folds, splits and rejoins. It is drawn at the wall's displayed resolution. Saved projects from the earlier two-dimensional flock keep it until they start a new variation; see [world implementation](docs/worlds.md).
 
 Run `npm run test:worlds` for biome review images, exact replay and bounded live playback of both artworks. See [world implementation](docs/worlds.md) for behavior and save compatibility.
 

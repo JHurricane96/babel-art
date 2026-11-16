@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Murmuration, BIRD_STRIDE, attackAt } from "../engine/murmuration.ts";
+import { Murmuration, BIRD_STRIDE } from "../engine/murmuration.ts";
 import { Flock } from "../engine/entities.ts";
 import { registry, defaults } from "../scenes/registry.ts";
 import { makeProject, validateProject } from "../shared/model.js";
@@ -17,11 +17,45 @@ test("new murmuration recipes use the starling flock; revision 1 keeps the 2D fl
   );
 });
 
-test("starling flock replays exactly through checkpoints, escapes and attacks", () => {
-  const a = new Murmuration(42, params({ population: 400 })),
-    b = new Murmuration(42, params({ population: 400 }));
-  // Run past the first falcon attack so escapes and the attack aim are live.
-  for (let i = 0; i < 31 * 60; i++) a.step();
+/** Shares of the flock in each connected piece (occupied 12 m cells), largest first. */
+function pieces(d) {
+  const C = 12,
+    cells = new Map();
+  for (let at = 0; at < d.length; at += BIRD_STRIDE) {
+    const k = `${Math.floor(d[at] / C)},${Math.floor(d[at + 1] / C)},${Math.floor(d[at + 2] / C)}`;
+    cells.set(k, (cells.get(k) ?? 0) + 1);
+  }
+  const seen = new Set(),
+    sizes = [];
+  for (const [k, c] of cells) {
+    if (seen.has(k) || c < 2) continue;
+    let total = 0;
+    const stack = [k];
+    seen.add(k);
+    while (stack.length) {
+      const cur = stack.pop();
+      total += cells.get(cur);
+      const [x, y, z] = cur.split(",").map(Number);
+      for (let dx = -1; dx <= 1; dx++)
+        for (let dy = -1; dy <= 1; dy++)
+          for (let dz = -1; dz <= 1; dz++) {
+            const nk = `${x + dx},${y + dy},${z + dz}`;
+            if (!seen.has(nk) && (cells.get(nk) ?? 0) >= 2) {
+              seen.add(nk);
+              stack.push(nk);
+            }
+          }
+    }
+    sizes.push(total);
+  }
+  return sizes.sort((a, b) => b - a).map((v) => (v * BIRD_STRIDE) / d.length);
+}
+
+test("starling flock replays exactly through checkpoints and panic waves", () => {
+  const a = new Murmuration(42, params({ population: 1000 })),
+    b = new Murmuration(42, params({ population: 1000 }));
+  // Past the first spontaneous startles, so panic waves are under way.
+  for (let i = 0; i < 31 * 60 + 23; i++) a.step();
   b.restore(JSON.parse(JSON.stringify(a.snapshot())));
   a.intervene({ kind: 1, serial: 5, x: 0.3, y: 0.3 });
   b.intervene({ kind: 1, serial: 5, x: 0.3, y: 0.3 });
@@ -32,8 +66,8 @@ test("starling flock replays exactly through checkpoints, escapes and attacks", 
   assert.deepEqual(a.snapshot(), b.snapshot());
 });
 
-test("starling flock stays finite, aloft and near the roost; groups break away and rejoin", () => {
-  const sim = new Murmuration(9, params({ population: 1500 }));
+test("starling flock stays finite, aloft and in view; it splits and rejoins", () => {
+  const sim = new Murmuration(9, params({ population: 2000 }));
   let samples = 0,
     aloft = 0,
     near = 0,
@@ -44,62 +78,30 @@ test("starling flock stays finite, aloft and near the roost; groups break away a
   for (let i = 1; i <= 5 * 60 * 60; i++) {
     sim.step();
     if (i % 1200) continue;
-    const b = sim.birds,
-      n = b.length / BIRD_STRIDE;
-    for (let at = 0; at < b.length; at += BIRD_STRIDE) {
-      assert.ok(b.subarray(at, at + BIRD_STRIDE).every(Number.isFinite));
+    assert.ok(sim.birds.every(Number.isFinite));
+    const d = sim.captureFrame().data;
+    for (let at = 0; at < d.length; at += BIRD_STRIDE) {
       samples++;
-      if (b[at + 1] > 15 && b[at + 1] < 110) aloft++;
-      if (Math.hypot(b[at], b[at + 2]) < 140) near++;
+      if (d[at + 1] > 15 && d[at + 1] < 220) aloft++;
+      // Within the sky in front of the camera.
+      if (Math.abs(d[at]) < 260 && d[at + 2] > -160 && d[at + 2] < 260) near++;
     }
-    // Largest connected group in the nearest-neighbour graph.
-    const parent = Int32Array.from({ length: n }, (_, i) => i),
-      find = (x) => {
-        while (parent[x] !== x) x = parent[x] = parent[parent[x]];
-        return x;
-      };
-    for (let i = 0; i < n; i++)
-      for (let k = 0; k < sim.counts[i]; k++)
-        parent[find(i)] = find(sim.neighbours[i * 7 + k]);
-    const sizes = new Map();
-    for (let i = 0; i < n; i++)
-      sizes.set(find(i), (sizes.get(find(i)) ?? 0) + 1);
-    const largest = Math.max(...sizes.values()) / n;
+    const largest = pieces(d)[0];
     checks++;
     largestSum += largest;
     if (largest > 0.9) whole++;
     worstGroup = Math.min(worstGroup, largest);
   }
   assert.ok(aloft / samples > 0.97, "birds stay aloft: " + aloft / samples);
+  assert.ok(near / samples > 0.97, "birds stay in view: " + near / samples);
+  // Two attractors pull the halves of the flock apart and together again,
+  // so it is often in two pieces, but it is often whole and never scatters.
+  assert.ok(whole / checks > 0.35, "flock is often whole: " + whole / checks);
   assert.ok(
-    near / samples > 0.97,
-    "birds stay near the roost: " + near / samples,
-  );
-  // Breakaway groups are intended, but they return: the flock is whole most
-  // of the time and never scatters.
-  assert.ok(whole / checks > 0.6, "flock is usually whole: " + whole / checks);
-  assert.ok(
-    largestSum / checks > 0.85,
+    largestSum / checks > 0.65,
     "mean largest group: " + largestSum / checks,
   );
   assert.ok(worstGroup > 0.4, "never scatters: " + worstGroup);
-});
-
-test("falcon attacks follow the observed pattern: mostly from above", () => {
-  let above = 0,
-    total = 0;
-  for (let seed = 1; seed <= 40; seed++)
-    for (let t = 20; t < 400; t += 1) {
-      const a = attackAt(t, seed);
-      if (!a || Math.abs(t - a.time) > 0.5) continue;
-      total++;
-      if (a.direction[1] < -0.3) above++;
-    }
-  assert.ok(total > 100);
-  assert.ok(
-    above / total > 0.55 && above / total < 0.85,
-    "share from above: " + above / total,
-  );
 });
 
 test("projects migrate and validate flock revisions", () => {
@@ -123,7 +125,7 @@ test("projects migrate and validate flock revisions", () => {
     ...current.scene,
     id: "murmuration",
     style: "silhouette",
-    params: params({ population: 120 }),
+    params: params({ population: 1000 }),
   };
   const sim = new Murmuration(1, current.scene.params);
   for (let i = 0; i < 30; i++) sim.step();
@@ -131,7 +133,7 @@ test("projects migrate and validate flock revisions", () => {
   current.time = sim.tick / 60;
   assert.equal(
     validateProject(current).checkpoint.data.length,
-    120 * BIRD_STRIDE,
+    1000 * BIRD_STRIDE,
   );
   current.checkpoint = {
     ...current.checkpoint,

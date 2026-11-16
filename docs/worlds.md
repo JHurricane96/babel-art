@@ -46,28 +46,27 @@ existing schedule metadata remain unchanged.
 
 ## Murmuration, revision 2
 
-New Murmuration projects use a three-dimensional starling flock
-(`engine/murmuration.ts`), 3,000 birds by default and up to 4,000, modelled on
-StarDisplay (Hildenbrandt, Carere & Hemelrijk 2010). Units are SI. Each bird
-reacts to its seven nearest neighbours, refreshed every 50 ms: separation,
-alignment and cohesion that is stronger for birds at the edge. Birds turn by
-banking, so turns carry momentum across the flock. A roost area, deeper than
-it is wide, keeps the flock wheeling in front of the viewer. A preferred height
-and a floor keep it aloft.
+New Murmuration projects use a three-dimensional flock of 20,000 starlings by
+default (up to 40,000), every one drawn (`engine/murmuration.ts`). The approach
+follows Frank Force's LittleJS murmuration demo (MIT licence): birds steer from
+averages kept on a coarse 3D grid (alignment and cohesion from a bird's cell and
+the six it touches, separation from how the count changes across them), so the
+cost grows linearly with the number of birds, and a finer density grid read with
+smooth interpolation keeps the spacing even. Three slow plane waves, each
+drifting and turning on its own, push birds toward their moving crests, so bands
+of tighter-packed and darker birds roll through the flock: this is its shimmer.
+Panic spreads as in an excitable medium from occasional spontaneous startles,
+so each sweeps across the flock once as a band. A slowly drifting
+divergence-free flow folds the flock into sheets, and two drifting attractors
+each pull half of it, so it splits and rejoins. There is no falcon in this
+revision. The simulation runs in the demo's units and is scaled to world metres
+for drawing (`WORLD_SCALE`).
 
-Escape manoeuvres spread from bird to bird with the published recognition and
-reaction delays (Hemelrijk et al. 2015). A banking bird shows the camera more of
-its wings, so these waves read as dark bands. Startles, turns started by a few
-birds, and roughly every 40 seconds a breakaway group keep the flock changing
-without a predator. A weak pull toward the whole flock draws breakaway groups
-back. Falcon attacks (optional, on by default) come mostly from above, after
-Storms et al. (2019). The flock parts around the falcon, and a fast attack
-makes it burst outward.
-
-The renderer draws each simulated bird as several visible birds placed around
-it, each a soft mark whose darkness and thickness follow the wing area facing
-the camera. Every fourth bird also contributes a faint wide disc, so deep parts
-of the flock gain a smooth body. The image is drawn at the displayed size of
+Every bird is drawn as one short dash, wing tip to wing tip, in the same ink:
+birds are not shaded one by one, so the flock's darkness comes only from how
+many overlap along the line of sight. Birds in a panic band are drawn slightly
+darker (`engine/murmuration-look.ts`). Marks never shrink below about two output
+pixels; they fade instead, so distant birds do not blink. The image is drawn at the displayed size of
 the wall (`wallResolution` on the renderer), not 640×400 times preview quality,
 so birds stay sharp on large panels. The scenery is a winter evening over
 farmland: woodland bands at several distances pale into the sky, with lacy
@@ -81,9 +80,9 @@ the sky from looking flat. It is rendered once per appearance and size and
 reused. Silhouette is the default
 style; luminous shows light birds against a night sky.
 
-Checkpoints hold eight values per bird (position, velocity, bank and escape
-clock), plus the evolution schedule, the current attack's aim and the neighbour
-lists. The hidden `flockVersion` parameter is 2 for new projects. Imported
+Checkpoints hold eight values per bird (position, velocity, panic and its
+refractory clock) plus the evolution schedule; at 20,000 birds that is about
+2.8 MB of JSON, so shrinking it is a known follow-up. The hidden `flockVersion` parameter is 2 for new projects. Imported
 projects without it receive revision 1 and keep the original two-dimensional
 flock and its rendering until they start a new variation.
 

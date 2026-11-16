@@ -152,7 +152,7 @@ registry.murmuration = {
   name: "Murmuration",
   subtitle: "A thousand small decisions",
   description:
-    "Thousands of starlings fold and stream across a dusk sky, splitting around a diving falcon and rejoining as one shape.",
+    "Thousands of starlings fold and stream across a dusk sky, rippling as turns pass through them, pulling apart and rejoining as one shape.",
   version: 1,
   kind: "entities",
   // Revision 2 is a three-dimensional flock; saved revision-1 projects keep
@@ -172,10 +172,10 @@ registry.murmuration = {
     },
     population: {
       label: "Population · restart",
-      value: 3000,
+      value: 20000,
       min: 20,
-      max: 4000,
-      step: 10,
+      max: 40000,
+      step: 500,
       restart: true,
     },
     cohesion: { label: "Cohesion", value: 0.4, min: 0.05, max: 1, step: 0.05 },
@@ -186,7 +186,8 @@ registry.murmuration = {
       max: 0.3,
       step: 0.01,
     },
-    predator: { label: "Autonomous predator", value: true },
+    // Only the earlier two-dimensional flock (revision 1) has a predator.
+    predator: { label: "Autonomous predator", value: false, hidden: true },
   },
 };
 registry.platformer = {
