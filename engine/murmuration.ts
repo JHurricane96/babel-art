@@ -110,7 +110,7 @@ export const TUNING = {
   jink: 6,
   startleGap: 9, // seconds between spontaneous startles, on average
   floor: 20,
-  ceiling: 46,
+  ceiling: 42,
 };
 /** The density waves: wavelength, speed, turning rate, start angle, tilt, swell rate. */
 const WAVES = [
@@ -178,9 +178,9 @@ export class Murmuration implements Simulation {
   attractor(g: number, t: number) {
     const s = (this.seed % 9973) * 0.37 + g * 2.1;
     return [
-      30 * Math.sin(t * 0.05 + s) + 10 * Math.sin(t * 0.13 + g + s * 0.3),
-      29 + 4 * Math.sin(t * 0.09 + g * 1.3 + s),
-      18 * Math.sin(t * 0.07 + g * 3.7 + s * 0.7),
+      20 * Math.sin(t * 0.05 + s) + 7 * Math.sin(t * 0.13 + g + s * 0.3),
+      27 + 4 * Math.sin(t * 0.09 + g * 1.3 + s),
+      14 * Math.sin(t * 0.07 + g * 3.7 + s * 0.7),
     ];
   }
   /** Panic every bird within `radius` of bird i that is not refractory. */

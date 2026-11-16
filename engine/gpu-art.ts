@@ -144,7 +144,7 @@ class MarkStream {
     this.prog = program(
       gl,
       `attribute vec3 p;attribute vec2 corner;uniform vec2 size;varying vec2 uv;varying float alpha;void main(){uv=corner;alpha=p.z;gl_Position=vec4(p.xy/size*2.-1.,0.,1.);}`,
-      `precision highp float;varying vec2 uv;varying float alpha;uniform sampler2D mark;uniform vec3 ink;void main(){gl_FragColor=vec4(ink,alpha*texture2D(mark,uv).a);}`,
+      `precision highp float;varying vec2 uv;varying float alpha;uniform sampler2D mark;uniform vec3 ink;void main(){vec2 q=uv*2.-1.;float g=max(0.,exp(-2.5*dot(q,q))-.082)/.918;gl_FragColor=vec4(ink,alpha*g);}`,
     );
     this.buffer = gl.createBuffer()!;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
@@ -390,46 +390,55 @@ float wood(float X,float Y,float id,float w,float lo,float hi,float shape,float 
  return clamp(max(lace,solid),0.,1.);}
 // A large bare tree: trunk, five limbs that bend upward, three branches on
 // each, inside a lacy dome of twigs.
+// A bare winter tree seen from a few hundred metres: a short trunk that forks
+// low, seven limbs that bend as they rise and thin out, side branches, and a
+// crown of fine twigs, dense near the limbs and lacy toward a ragged,
+// lopsided edge where the sky shows through.
 float specimen(vec2 q,float cx,float H,float id){
  vec2 r=q-vec2(cx,0.);
- float W=H*.72;
- if(abs(r.x)>W*1.15||r.y>H*1.15||r.y<-1.)return 0.;
+ float lean=(h21(vec2(id,5.))-.5)*.25;
+ float W=H*(.55+.15*h21(vec2(id,6.)));
+ if(abs(r.x-lean*H*.5)>W*1.2||r.y>H*1.15||r.y<-1.)return 0.;
  float k=H/24.,h;
- vec2 fork=vec2((h21(vec2(id,1.))-.5)*H*.1,H*(.26+.1*h21(vec2(id,2.))));
+ vec2 fork=vec2(lean*H*.15,H*(.2+.12*h21(vec2(id,2.))));
  float d=seg(r,vec2(0.,-1.),fork,h);
- float o=edge((1.-.3*h)*k+.25*pixel-d),near=1e3;
- for(int j=0;j<5;j++){float fj=float(j);
+ float o=edge((.75-.25*h)*k+.2*pixel-d),near=1e3;
+ for(int j=0;j<7;j++){float fj=float(j);
   float u=h21(vec2(id,fj+3.)),v=h21(vec2(fj,id+7.));
-  float ang=(fj-2.)*.42+(u-.5)*.35;
-  float len=H*(.5+.2*v)*(1.-.1*abs(fj-2.));
+  float ang=(fj-3.)*.3+(u-.5)*.3+lean;
+  float len=H*(.42+.3*v)*(1.-.07*abs(fj-3.));
   vec2 dir=vec2(sin(ang),cos(ang));
-  vec2 mid=fork+dir*len*.5+vec2(0.,len*.07);
-  vec2 tip=fork+dir*len+vec2(0.,len*.12);
-  d=seg(r,fork,mid,h);o=max(o,edge((.55-.15*h)*k+.2*pixel-d));
-  d=seg(r,mid,tip,h);o=max(o,edge((.4-.28*h)*k+.15*pixel-d));
-  near=min(near,d);
-  for(int m=0;m<4;m++){float fm=float(m);
+  // Limbs bend upward as they go: three segments, each steeper and thinner.
+  vec2 p1=fork+dir*len*.38;
+  vec2 p2=p1+vec2(dir.x*.8,dir.y*1.1+.25)*len*.32;
+  vec2 tip=p2+vec2(dir.x*.5,dir.y+.5)*len*.3;
+  d=seg(r,fork,p1,h);o=max(o,edge((.34-.08*h)*k+.12*pixel-d));near=min(near,d);
+  d=seg(r,p1,p2,h);o=max(o,edge((.24-.08*h)*k+.1*pixel-d));near=min(near,d);
+  d=seg(r,p2,tip,h);o=max(o,edge((.15-.1*h)*k+.08*pixel-d)*.9);near=min(near,d);
+  for(int m=0;m<3;m++){float fm=float(m);
    float s=h21(vec2(id+fj*3.,fm+11.));
-   vec2 base=mix(fork,tip,.3+.18*fm);
-   float a2=ang+(mod(fm,2.)*2.-1.)*(.45+.3*s);
-   vec2 end2=base+vec2(sin(a2),cos(a2))*len*(.42+.25*s);
-   d=seg(r,base,end2,h);o=max(o,edge((.24-.17*h)*k+.12*pixel-d)*(.95-.25*h));
+   vec2 base=m==0?p1:m==1?p2:mix(p1,p2,.5);
+   float a2=ang+(mod(fm+fj,2.)*2.-1.)*(.5+.35*s);
+   vec2 end2=base+vec2(sin(a2),cos(a2)+.3)*len*(.22+.2*s);
+   d=seg(r,base,end2,h);o=max(o,edge((.11-.08*h)*k+.06*pixel-d)*.85);
    near=min(near,d);
   }
  }
- // Twigs gather around the branches and thin out toward the crown's edge.
- vec2 e=vec2(r.x/W,(r.y-H*.62)/(H*.48));
- float m=1.-dot(e,e)+(fbm(r*.25+id)-.5)*.8;
- float fuzz=exp(-near/(H*.06));
- float crown=smoothstep(-.1,.4,m)*fuzz*(.2+.6*(FINE>.5?smoothstep(.25,.75,twigs(r,id)):.5));
+ // The crown: a lopsided oval with a ragged edge, filled with fine twigs
+ // that cluster along the limbs; drawn faint so the sky shows through.
+ vec2 e=vec2((r.x-lean*H*.4-(h21(vec2(id,8.))-.5)*W*.3)/W,(r.y-H*.6)/(H*.42));
+ float m=1.-dot(e,e)+(fbm(r*.35+id)-.5)*.9;
+ float body=smoothstep(-.05,.5,m);
+ float lace=FINE>.5?smoothstep(.45,.8,vnoise(r*2.8+id*3.)*.55+vnoise(mat2(.8,.6,-.6,.8)*r*6.1+id)*.45):.5;
+ float crown=body*(.08+.5*lace)*(.45+.55*exp(-near/(H*.08)));
  return max(o,crown);}
 float specimens(float X,float Y){
- if(Y>40.)return 0.;
+ if(Y>30.)return 0.;
  float o=0.,cell=floor(X/110.);
  for(int j=-1;j<=1;j++){float i=cell+float(j);
   if(h21(vec2(i,41.))<.35)continue;
   float cx=(i+.2+.6*h21(vec2(i,43.)))*110.;
-  o=max(o,specimen(vec2(X,Y),cx,22.+12.*h21(vec2(i,47.)),i));
+  o=max(o,specimen(vec2(X,Y),cx,13.+7.*h21(vec2(i,47.)),i));
  }
  return o;}
 // A long low barn and a shed, hazy in the middle distance.
@@ -947,7 +956,10 @@ export class EntityGPU implements SceneRenderer {
         ? mixColor(roles.toneGround, [0, 0, 0], 0.6)
         : mixColor(a.colors[1], roles.toneHighlight, 0.6),
       pixel = 640 / Math.max(1, width),
-      minHalf = 1.0 * pixel,
+      // Half-sizes never fall below 1.4 output pixels, so the smooth falloff
+      // drawn in the shader always spans a few pixels: tiny marks stay soft
+      // and move smoothly instead of stepping from pixel to pixel.
+      minHalf = 1.4 * pixel,
       focal = CAMERA.focal,
       half = BIRD_HALF_SPAN * (0.8 + 0.25 * detail),
       sweep = half * 0.3,
