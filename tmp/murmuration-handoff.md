@@ -41,6 +41,23 @@ What the user has asked for, in their words, in order:
 8. On saved artworks: "Don't care about current artworks saved, we're aiming to produce something
    strictly better."
 
+### Progress on step 1, second approach (16 November 2026)
+
+The user found the a5f92c4 flight model "pretty bad": the shimmer looked random, birds blinking in and
+out. Two removals and a rethink followed:
+- The falcon is removed for now ("a distraction... make something compelling first").
+- The per-bird shading by wing angle is gone: it was the cause of the random twinkle.
+- The flock model now follows the approach of Frank Force's LittleJS murmuration demo (MIT, the user's
+  reference: https://killedbyapixel.github.io/LittleJS-Demos/murmuration/): 20,000 real birds steered
+  from a coarse 3D grid (no neighbour search), even spacing from a finer density grid, three travelling
+  density waves for the shimmer, panic spreading as an excitable medium (started by occasional
+  spontaneous startles), a slowly drifting divergence-free flow that folds the flock, and two drifting
+  attractors that split and merge it. Darkness comes only from overlap; birds in a panic band are drawn
+  slightly darker. Each bird is one dash, wing tip to wing tip. Simulation runs in the demo's units and
+  is scaled by WORLD_SCALE for the renderer.
+- Costs here: 4.6 ms per step for 20,000 birds, 2.6 ms to build marks; checkpoints are 2.8 MB (too big
+  for long-term saves; quantise or thin them before integration).
+
 ### Progress on step 1 (15 November 2026, commit a5f92c4)
 
 A new flight model replaces the one on main, on the working branch only, awaiting the user's verdict:

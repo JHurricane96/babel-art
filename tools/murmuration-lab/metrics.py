@@ -1,6 +1,6 @@
 """Shape and motion measures of an export, computed the way reference/video_metrics.py measures a video.
 
-    python tools/murmuration-lab/metrics.py <export.bin> [--spread 0.8]
+    python tools/murmuration-lab/metrics.py <export.bin> [--spread 0]
 
 Guard rails only. These numbers can rule out a wrong shape (a blob, a flock that never splits); they
 cannot show that the motion is beautiful. Judge that from clips and stills, and let the user decide.
@@ -8,7 +8,7 @@ cannot show that the motion is beautiful. Judge that from clips and stills, and 
 import argparse, json
 import numpy as np, cv2
 
-ap = argparse.ArgumentParser(); ap.add_argument("src"); ap.add_argument("--spread", type=float, default=0.8); a = ap.parse_args()
+ap = argparse.ArgumentParser(); ap.add_argument("src"); ap.add_argument("--spread", type=float, default=0.0); a = ap.parse_args()
 meta = json.load(open(a.src + ".json")); n, frames, fps = meta["n"], meta["frames"], meta["fps"]
 d = np.fromfile(a.src, np.float32).reshape(frames, n, 6)
 W, H = 640, 400

@@ -1,6 +1,7 @@
 import { program, vertex } from "./grid";
 import { ROLE_GLSL, paletteRoles, setRoleUniforms } from "./finish";
-import { BIRD_STRIDE, CAMERA, SPACING } from "./murmuration";
+import { BIRD_STRIDE, CAMERA } from "./murmuration";
+import { birdShade } from "./murmuration-look";
 import type { Appearance, RenderFrame, SceneRenderer } from "./render-frame";
 import { PARTICLE_STRIDE } from "./particles";
 import { SLIME_WIDTH, SLIME_HEIGHT, SLIME_CELLS } from "./slime";
@@ -132,7 +133,7 @@ export class Batch {
  */
 const MARK_CHUNK = 16384;
 class MarkStream {
-  capacity = 65536;
+  capacity = 98304; // two marks a bird for up to 40,000 birds, with room to spare
   data = new Float32Array(this.capacity * 12);
   count = 0;
   buffer: WebGLBuffer;
@@ -326,34 +327,8 @@ class RibbonGPU {
     this.gl.deleteProgram(this.prog);
   }
 }
-/** Visible birds per simulated bird, and their placement around it. */
-const VISIBLE_PER_BIRD = 16,
-  OFFSET_COUNT = 4093,
-  BIRD_HALF_SPAN = 0.28, // m, a speck standing for a few birds at a distance
-  BIRD_THICK = 0.15, // m
-  HAZE_RADIUS = 1.1 * SPACING, // m, soft mass behind the specks
-  HAZE_ALPHA = 0.03,
-  HAZE_EVERY = 4, // one disc per this many simulated birds (fill cost)
-  OFFSETS = (() => {
-    const o = new Float32Array(OFFSET_COUNT * 4);
-    let h = 0x2f6b9a1d;
-    const next = () => {
-      h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
-      h = Math.imul(h ^ (h >>> 12), 0x297a2d39);
-      h ^= h >>> 15;
-      return (h >>> 0) / 4294967296;
-    };
-    for (let i = 0; i < OFFSET_COUNT; i++) {
-      // Forward, sideways and up, in metres around the simulated bird,
-      // overlapping the neighbouring birds' copies so the grain is even;
-      // then a wingbeat phase.
-      o[i * 4] = (next() - 0.5) * 2.6 * SPACING;
-      o[i * 4 + 1] = (next() - 0.5) * 2.6 * SPACING;
-      o[i * 4 + 2] = (next() - 0.5) * 1.2 * SPACING;
-      o[i * 4 + 3] = next() * Math.PI * 2;
-    }
-    return o;
-  })();
+/** Half the drawn wingspan of a bird (m, at the simulation's world scale). */
+const BIRD_HALF_SPAN = 0.9;
 const background = `precision highp float;varying vec2 uv;uniform vec3 c0,c1,c2;uniform float time,seed;uniform int kind,silhouette;
 ${ROLE_GLSL}
 void main(){vec2 p=uv;vec3 c;if(kind==0){float f=.5+.5*sin(p.x*7.+sin(p.y*8.+time*.04)*1.3);c=mix(c0*.15,c0*.7,f)+c1*.025;}
@@ -947,20 +922,20 @@ export class EntityGPU implements SceneRenderer {
     return this.speck;
   }
   /**
-   * Revision-2 murmuration. Each simulated bird stands for a few visible
-   * birds placed around it in its own frame (a fixed pattern per bird), so the
-   * flock reads as tens of thousands of specks without simulating them all.
-   * Every bird is a soft speck stretched along its wing span as seen from the
-   * camera. Its darkness and thickness follow the wing area it shows the
-   * viewer: a level bird seen edge-on is a faint dash, a banking bird shows
-   * the flat of its wings and goes dark, so turning waves cross the flock as
-   * dark bands. Marks never shrink below about one output pixel; below that
-   * their opacity falls instead, which keeps the far flock from shimmering.
+   * Revision-2 murmuration. Every simulated bird is drawn, as a short dash
+   * in the same ink from wing tip to wing tip, placed in 3D from the bird's
+   * heading and projected, so a bird
+   * flying across the view shows edge-on and one flying toward or away from
+   * it shows its full span. Birds are not shaded one by one; the flock's
+   * darkness comes from how many overlap along the line of sight, so the
+   * shimmer is the simulation's travelling density bands and panic waves.
+   * Marks never get smaller than about two output pixels across; below that
+   * they fade instead, which keeps distant birds from blinking.
    */
   drawFlock3D(
     f: RenderFrame,
     a: Appearance,
-    t: number,
+    _t: number,
     detail: number,
     width: number,
   ) {
@@ -969,115 +944,77 @@ export class EntityGPU implements SceneRenderer {
       roles = paletteRoles(a.colors),
       ink = a.style !== "luminous",
       base = ink
-        ? mixColor(roles.toneGround, [0, 0, 0], 0.55)
+        ? mixColor(roles.toneGround, [0, 0, 0], 0.6)
         : mixColor(a.colors[1], roles.toneHighlight, 0.6),
       pixel = 640 / Math.max(1, width),
-      // Marks never get smaller than about two output pixels across (these
-      // are half-sizes): a smaller quad can miss every pixel centre and blink
-      // out as the bird moves. Below that size the mark fades instead.
-      minLength = 1.1 * pixel,
-      minThick = 1.0 * pixel,
-      copies = Math.max(
-        1,
-        Math.min(VISIBLE_PER_BIRD, 4 + Math.round(15 * detail)),
-      ),
-      focal = CAMERA.focal;
-    for (let i = 0, n = 0; i < d.length; i += BIRD_STRIDE, n++) {
+      minHalf = 1.0 * pixel,
+      focal = CAMERA.focal,
+      half = BIRD_HALF_SPAN * (0.8 + 0.25 * detail),
+      sweep = half * 0.3,
+      thick = half * 0.35;
+    const project = (x: number, y: number, z: number, out: number[]) => {
+      const s = focal / Math.max(1, z - CAMERA.z);
+      out[0] = 320 + (x - CAMERA.x) * s;
+      out[1] = CAMERA.horizon - (y - CAMERA.y) * s;
+      out[2] = s;
+    };
+    const P = [0, 0, 0],
+      Q = [0, 0, 0];
+    for (let i = 0; i < d.length; i += BIRD_STRIDE) {
       const x = d[i],
         y = d[i + 1],
-        z = d[i + 2],
-        vx = d[i + 3],
+        z = d[i + 2];
+      if (z - CAMERA.z < 1) continue;
+      project(x, y, z, P);
+      if (P[0] < -8 || P[0] > 648 || P[1] < -8 || P[1] > 408) continue;
+      const vx = d[i + 3],
         vy = d[i + 4],
         vz = d[i + 5],
-        bank = d[i + 6],
         v = Math.sqrt(vx * vx + vy * vy + vz * vz) || 1,
         ex = vx / v,
         ey = vy / v,
-        ez = vz / v;
-      let sx = -ez,
-        sz = ex;
-      const sl = Math.sqrt(sx * sx + sz * sz) || 1;
-      sx /= sl;
-      sz /= sl;
-      let ux = -ey * ex,
-        uy = 1 - ey * ey,
-        uz = -ey * ez;
-      const ul = Math.sqrt(ux * ux + uy * uy + uz * uz) || 1;
-      ux /= ul;
-      uy /= ul;
-      uz /= ul;
-      const cb = Math.cos(bank),
-        sb = Math.sin(bank),
-        // Wing normal (the bird's up after rolling) and the span axis.
-        nx = cb * ux + sb * sx,
-        ny = cb * uy,
-        nz = cb * uz + sb * sz,
-        wx = cb * sx - sb * ux,
-        wy = -sb * uy,
-        lx = x - CAMERA.x,
-        ly = y - CAMERA.y,
-        lz = z - CAMERA.z,
-        ll = Math.sqrt(lx * lx + ly * ly + lz * lz) || 1,
-        area = Math.abs((nx * lx + ny * ly + nz * lz) / ll),
-        shade = 0.42 + 0.55 * Math.pow(area, 1.3),
-        thick = BIRD_THICK * (0.35 + 0.65 * area);
-      // A faint soft disc for every fourth simulated bird: where the flock is
-      // deep along the line of sight the discs pile up into a smooth dark
-      // mass. Sparse and large, to keep the blended fill affordable.
-      if (detail > 0 && n % HAZE_EVERY === 0) {
-        const depth = z - CAMERA.z;
-        if (depth > 1) {
-          const scale = focal / depth,
-            r = HAZE_RADIUS * scale;
-          b.add(
-            320 + (x - CAMERA.x) * scale,
-            CAMERA.horizon - (y - CAMERA.y) * scale,
-            r,
-            0,
-            0,
-            r,
-            HAZE_ALPHA * shade * Math.min(1, detail / 0.8),
-          );
-        }
-      }
-      for (let k = 0; k < copies; k++) {
-        const o = ((n * VISIBLE_PER_BIRD + k) % OFFSET_COUNT) * 4,
-          of = OFFSETS[o],
-          os = OFFSETS[o + 1],
-          ou = OFFSETS[o + 2],
-          px = x + ex * of + sx * os + ux * ou,
-          py = y + ey * of + uy * ou,
-          pz = z + ez * of + sz * os + uz * ou,
-          depth = pz - CAMERA.z;
-        if (depth < 1) continue;
-        const scale = focal / depth,
-          cx = 320 + (px - CAMERA.x) * scale,
-          cy = CAMERA.horizon - (py - CAMERA.y) * scale;
-        if (cx < -8 || cx > 648 || cy < -8 || cy > 408) continue;
-        // No visible wingbeat: at this distance a beating wing only twinkles.
-        const half = BIRD_HALF_SPAN * scale,
-          dx = wx * half,
-          dy = -wy * half,
-          length = Math.sqrt(dx * dx + dy * dy),
-          along = Math.max(length, minLength),
-          across = Math.max(thick * scale, minThick),
-          // Coverage the mark would have had at its true size.
-          coverage = Math.min(
-            1,
-            (Math.max(length, 0.25 * pixel) * thick * scale) / (along * across),
-          ),
-          ax = length > 1e-6 ? dx / length : 1,
-          ay = length > 1e-6 ? dy / length : 0;
-        b.add(
-          cx,
-          cy,
-          ax * along,
-          ay * along,
-          -ay * across,
-          ax * across,
-          shade * coverage,
+        ez = vz / v,
+        hl = Math.sqrt(ex * ex + ez * ez) || 1,
+        sx = -ez / hl,
+        sz = ex / hl,
+        shade = birdShade(d, i),
+        across = Math.max(thick * P[2], minHalf);
+      // One dash from wing tip to wing tip, set a little behind the body.
+      project(
+        x + sx * half - ex * sweep,
+        y - ey * sweep,
+        z + sz * half - ez * sweep,
+        Q,
+      );
+      const lx = Q[0],
+        ly = Q[1];
+      project(
+        x - sx * half - ex * sweep,
+        y - ey * sweep,
+        z - sz * half - ez * sweep,
+        Q,
+      );
+      const mx = (lx + Q[0]) / 2,
+        my = (ly + Q[1]) / 2,
+        hx = (lx - Q[0]) / 2,
+        hy = (ly - Q[1]) / 2,
+        length = Math.sqrt(hx * hx + hy * hy),
+        along = Math.max(length, minHalf),
+        ux = length > 1e-6 ? hx / length : 1,
+        uy = length > 1e-6 ? hy / length : 0,
+        coverage = Math.min(
+          1,
+          (Math.max(length, 0.25 * pixel) * thick * P[2]) / (along * across),
         );
-      }
+      b.add(
+        mx,
+        my,
+        ux * along,
+        uy * along,
+        -uy * across,
+        ux * across,
+        shade * coverage,
+      );
     }
     b.draw(640, 400, this.speckTexture(), base);
   }

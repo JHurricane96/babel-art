@@ -1,6 +1,6 @@
 """Contact sheet from an export: one small frame every <step> seconds, and shape measures over time.
 
-    python tools/murmuration-lab/sheet.py <export.bin> <out.png> <stepSeconds> [--spread 0.8]
+    python tools/murmuration-lab/sheet.py <export.bin> <out.png> <stepSeconds> [--spread 0]
 
 For hours-long checks export at a low rate (for example 0.2 fps for 30–120 minutes) and use a
 60 s step: the sheet shows one frame a minute and the printout shows drift over five-minute blocks.
@@ -9,7 +9,7 @@ import argparse, json
 import numpy as np, cv2
 
 ap = argparse.ArgumentParser(); ap.add_argument("src"); ap.add_argument("out"); ap.add_argument("step", type=float)
-ap.add_argument("--spread", type=float, default=0.8); a = ap.parse_args()
+ap.add_argument("--spread", type=float, default=0.0); a = ap.parse_args()
 meta = json.load(open(a.src + ".json")); n, fps, frames = meta["n"], meta["fps"], meta["frames"]
 d = np.fromfile(a.src, np.float32).reshape(frames, n, 6)
 off = np.random.default_rng(7).uniform(-a.spread, a.spread, (8, n, 2))

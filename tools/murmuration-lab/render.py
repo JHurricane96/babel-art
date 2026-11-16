@@ -4,13 +4,14 @@
 
 A 60 s clip takes about a minute on a CPU. Use it to judge motion and shape only: tone, grain and
 scenery must be judged in the real renderer (capture.mjs). --ref stacks a reference video on top.
---spread is the scatter of visible birds around each simulated bird, in metres.
+--spread/--copies scatter extra visible birds around each simulated bird (metres); the default draws each bird once.
 """
 import argparse, json, subprocess
 import numpy as np, cv2
 
 ap = argparse.ArgumentParser(); ap.add_argument("src"); ap.add_argument("out"); ap.add_argument("--ref")
-ap.add_argument("--spread", type=float, default=0.8); ap.add_argument("--copies", type=int, default=8)
+ap.add_argument("--spread", type=float, default=0.0); ap.add_argument("--copies", type=int, default=1)
+ap.add_argument("--span", type=float, default=1.8, help="drawn bird size in metres (world scale)")
 a = ap.parse_args()
 meta = json.load(open(a.src + ".json")); n, frames, fps = meta["n"], meta["frames"], meta["fps"]
 d = np.fromfile(a.src, np.float32).reshape(frames, n, 6)
@@ -26,13 +27,14 @@ proc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_
 for f in range(frames):
     x, y, s, area, dx, dy = d[f].T
     acc = np.zeros((H * SS, W * SS), np.float32)
-    shade = 0.35 + 0.6 * area ** 1.3                      # banking birds show their wings and read darker
+    shade = area                                          # the exporter's shade, 0..1
     for c in range(a.copies):
-        for e in (-0.5, 0.0, 0.5):                        # three samples along the wing span
-            ix = ((x + off[c, :, 0] * s + dx * 0.24 * e) * k * SS).astype(np.int32)
-            iy = ((y + off[c, :, 1] * s + dy * 0.24 * e) * k * SS).astype(np.int32)
+        # A small chevron: wings across the flight direction, swept back.
+        for e, w in ((0.0, 0.0), (-0.25, 0.5), (-0.25, -0.5), (-0.1, 0.25), (-0.1, -0.25)):
+            ix = ((x + off[c, :, 0] * s + (dx * e - dy * w) * a.span) * k * SS).astype(np.int32)
+            iy = ((y + off[c, :, 1] * s + (dy * e + dx * w) * a.span) * k * SS).astype(np.int32)
             ok = (ix >= 0) & (ix < W * SS) & (iy >= 0) & (iy < H * SS)
-            np.add.at(acc, (iy[ok], ix[ok]), shade[ok] / 3)
+            np.add.at(acc, (iy[ok], ix[ok]), shade[ok] / 5 * 2.2)
     acc = cv2.resize(cv2.GaussianBlur(acc, (0, 0), 0.8), (W, H), interpolation=cv2.INTER_AREA) * SS * SS
     frame = np.clip(sky * np.exp(-1.1 * acc), 0, 255).astype(np.uint8)
     if ref is not None:

@@ -6,86 +6,41 @@ import type { Params, Simulation, Snapshot } from "./types";
 import { rng } from "./types";
 
 /**
- * Murmuration, revision 2: a starling flock after StarDisplay
- * (Hildenbrandt, Carere & Hemelrijk 2010) with the escape manoeuvre that
- * produces agitation waves (Hemelrijk, van Zuidam & Hildenbrandt 2015).
+ * Murmuration, revision 2: tens of thousands of starlings, each one drawn.
  *
- * Units are SI: metres, seconds, newtons. x runs to the right of the viewer,
- * y is altitude, z is depth away from the camera. Each bird reacts to its
- * seven nearest neighbours. It turns by banking: steering rolls the bird and
- * the tilted lift turns it, which gives the flock the turning inertia that
- * carries turns and dark bands across it. Everything is deterministic from
- * the seed, the tick, the parameters and the checkpointed state.
+ * The approach follows Frank Force's LittleJS murmuration demo (MIT licence,
+ * https://killedbyapixel.github.io/LittleJS-Demos/murmuration/): birds steer
+ * from averages kept on a coarse 3D grid instead of searching for neighbours,
+ * so the cost grows only linearly with the number of birds.
+ *
+ * - Alignment and cohesion come from the averages of a bird's grid cell and
+ *   the six cells it touches; separation from how the bird count changes
+ *   across them. A finer density grid, read with smooth interpolation, keeps
+ *   the spacing even inside the cells.
+ * - Shimmer: three slow plane waves, each drifting and turning on its own,
+ *   push birds toward their moving crests, so bands of tighter-packed (and so
+ *   darker) birds roll through the flock. The spacing force keeps the bands
+ *   travelling instead of setting into clumps.
+ * - Agitation: panic spreads as in an excitable medium. A bird catches it
+ *   from panicking neighbours, flares, calms, and cannot catch it again for a
+ *   while, so each startle sweeps across the flock once as a band.
+ * - Folding: a slowly drifting divergence-free (ABC) flow stretches and folds
+ *   the flock into sheets and ribbons without bunching it.
+ * - Splitting: two slowly drifting attractors each pull half the birds, so
+ *   the flock divides and merges again.
+ *
+ * Simulation units are those of the demo (metres at a smaller scale); the
+ * frame given to the renderer is scaled to world metres by WORLD_SCALE.
+ * Everything is deterministic from the seed, the tick, the parameters and
+ * the checkpoint.
  */
-export const BIRD_STRIDE = 8; // x y z vx vy vz bank escape
-/** Spacing relative to StarDisplay: each simulated bird stands for a few birds. */
-export const SPACING = 1.8;
-const MASS = 0.08,
-  GRAVITY = 9.81,
-  CRUISE = 10, // m/s at the default flight-speed parameter
-  LIFT_DRAG = 3.3,
-  SPEED_RELAX = 1, // s
-  NEIGHBOURS = 7,
-  HARD = 0.2 * SPACING, // m, hard-sphere radius
-  SEP_SIGMA2 = (1.37 * SPACING) ** 2, // m²
-  W_SEP = 1, // N
-  W_ALIGN = 0.5, // N
-  W_COHESION = 1, // N (scaled by the cohesion parameter)
-  W_NOISE = 0.01, // N
-  BLIND = -0.7071, // cos 135°: neighbours behind are ignored for cohesion and alignment
-  BANK_MAX = 1.3, // rad
-  // Turning has inertia, as in the inertial spin model (Cavagna et al.): the
-  // sideways pull of a bird's neighbours (mostly their differing heading)
-  // changes its bank, the bank turns it, and the bank decays slowly. A
-  // heading change therefore runs through the flock as a wave, and a flock
-  // flying straight settles level.
-  TORQUE_HEADING = 30, // 1/s: bank change per radian of sideways difference from the neighbours' heading
-  TORQUE = 1, // 1/s: bank change per unit of other sideways pull (in g)
-  BANK_DECAY = 3, // 1/s
-  ROLL_MAX = 5, // rad/s, fastest roll (keeps banking, and so shading, smooth)
-  DRIVE = 5, // 1/s: how fast a bird starting a turn or escaping reaches its bank
-  SIDE_DIRECT = 0.6, // share of the sideways social force that acts directly
-  LEVEL = 0.03, // N per m/s of climb or sink, levelling out
-  FLOOR = 14, // m, below this birds climb away from the ground
-  OUTER = 1.6, // backstop pull beyond this multiple of the home area
-  WARM_UP = 6, // s of settling before time zero
-  TURN_GAP = 8, // s between turns started by small groups
-  STRAY = 0.08, // pieces smaller than this share of the flock are strays
-  W_STRAY = 0.45, // N drawing strays back toward the main body
-  W_PIECE = 0.6, // N drawing larger pieces back (less for larger pieces)
-  PITCH_GAP = 13, // s between climbs or dives
-  SPLIT_GAP = 70, // s between splits
-  STARTLE_GAP = 5, // s between startles
-  REJOIN_RATE = 0.25, // chance per second that a separated piece heads back
-  REJOIN_FORCE = 0.5, // N
-  ZIG_FORCE = 0.6, // N
-  ZIG_BANK = 0.55, // rad
-  ZIG_OUT = 0.25, // s
-  ZIG_BACK = 0.3, // s
-  REFRACTORY = 1, // s
-  CUE = 0.02, // s to recognise a neighbour's escape (each bird stands for several)
-  REACTION = 0.03, // s
-  SUBSTEPS = 2,
-  PERCEIVE = 3, // steps between a bird's neighbour updates (50 ms)
-  CELL = 3.5 * SPACING, // m, neighbour-grid cell
-  TABLE = 1 << 14;
-const ZIG = ZIG_OUT + ZIG_BACK;
-/** The middle of the sky the flock keeps to (m): centre, half-sizes, altitude band. */
-/** Image rows (of 400) kept clear above the flock. */
-const TOP_MARGIN = 40;
-const HOME = { x: 0, y: 100, z: 40, rx: 60, rz: 70, yLow: 65, yHigh: 125 };
-/** Weights that shape the flock's spacing and thickness (exposed for tuning). */
-export const TUNING = {
-  separation: 5 * W_SEP,
-  separationSigma2: SEP_SIGMA2,
-  cohesion: W_COHESION,
-  alignment: 2 * W_ALIGN,
-  torqueHeading: TORQUE_HEADING,
-  torque: TORQUE,
-  bankDecay: BANK_DECAY,
-  sideDirect: SIDE_DIRECT,
-  flatten: 0.6, // vertical separation scale (vertical cohesion is scaled by its inverse)
-};
+export const BIRD_STRIDE = 8; // x y z vx vy vz panic cool (simulation units)
+/** World metres per simulation unit. */
+export const WORLD_SCALE = 2.6;
+/** Kept for the renderer: visible birds are the simulated birds themselves. */
+export const SPACING = 1;
+const WORLD_Y = 18, // world altitude of simulation height 0
+  WORLD_Z = 40; // world depth of simulation depth 0
 
 /** Fixed camera, shared by the simulation (activity) and the renderer. */
 export const CAMERA = {
@@ -109,773 +64,495 @@ const hash = (n: number) => {
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 };
 
-/** One flock event: a group of birds that starts a turn, a climb or dive, or a return to the flock. */
-interface FlockEvent {
-  kind: number; // EVENT_TURN, EVENT_PITCH or EVENT_REJOIN
-  centre: number; // bird index the group forms around (the group moves with it)
-  radius: number; // m
-  end: number; // tick
-  amount: number; // bank (rad) for a turn, vertical force (N) for a pitch
-  target: number[]; // where a rejoining group heads
-}
-const EVENT_TURN = 0,
-  EVENT_PITCH = 1,
-  EVENT_REJOIN = 2;
+// Coarse grid: 4-unit cells over x -80..80, y -8..72, z -60..60.
+const CELL = 4,
+  GX = 40,
+  GY = 20,
+  GZ = 30,
+  GXY = GX * GY,
+  GN = GX * GY * GZ,
+  GOX = (-GX * CELL) / 2,
+  GOY = -8,
+  GOZ = (-GZ * CELL) / 2;
+// Fine density grid for even spacing.
+const FCELL = 1.5,
+  FGX = Math.ceil(((GX + 1) * CELL) / FCELL) + 3,
+  FGY = Math.ceil(((GY + 1) * CELL) / FCELL) + 3,
+  FGZ = Math.ceil(((GZ + 1) * CELL) / FCELL) + 3,
+  FGXY = FGX * FGY;
+
+/** Steering weights (exposed for tuning). */
+export const TUNING = {
+  align: 1.4,
+  cohesion: 0.7,
+  separate: 0.18,
+  wander: 1,
+  pressure: 0.002, // push down the gradient of count squared, against clumping
+  denseCount: 150, // past this many birds a cell, cohesion turns outward
+  spread: 15, // even spacing from the fine density gradient
+  spreadMax: 8,
+  wave: 8, // push toward the density waves' crests (units/s²)
+  waveSwell: 0.6,
+  waveDepth: 0.8,
+  attract: 26,
+  attractRadius: 8,
+  flow: 1.2,
+  flowSpeed: 11,
+  flowScale: 0.07,
+  flowDrift: 0.15,
+  speedMin: 8,
+  speedMax: 13,
+  speedPanic: 8,
+  panicDecay: 0.94,
+  panicThreshold: 0.12,
+  panicCatch: 0.1,
+  panicRefractory: 2,
+  jink: 6,
+  startleGap: 9, // seconds between spontaneous startles, on average
+  floor: 20,
+  ceiling: 46,
+};
+/** The density waves: wavelength, speed, turning rate, start angle, tilt, swell rate. */
+const WAVES = [
+  { length: 38, speed: 5, turn: 0.021, angle: 0, tilt: 0.25, swell: 0.23 },
+  { length: 52, speed: 6.5, turn: -0.016, angle: 2.2, tilt: -0.2, swell: 0.17 },
+  { length: 30, speed: 4, turn: 0.027, angle: 4.1, tilt: 0.35, swell: 0.29 },
+];
+const WARM_UP = 8; // s of settling before time zero
+const DT = 1 / 60;
 
 export class Murmuration implements Simulation {
   tick = 0;
   historyBudgetBytes = 32 * 1024 * 1024;
   birds: Float64Array;
   schedule: EvolutionSchedule;
-  /** Whether neighbour lists exist (they are part of the saved state). */
-  perceived = false;
-  /** Groups currently turning, climbing or rejoining (saved state). */
-  events: FlockEvent[] = [];
-  // Scratch (derived every tick, never causal state across ticks).
-  neighbours: Int32Array;
-  counts: Int32Array;
-  force: Float64Array;
-  /** The bank a bird is commanded to hold (NaN: none), and how far its
-   * neighbours' heading lies to its side (radians); both scratch. */
-  command: Float64Array;
-  misalign: Float64Array;
-  /** Which piece of the flock each bird belongs to (scratch, refreshed every second). */
-  piece: Int32Array;
-  /** Size of each bird's piece, and the main piece's centre (scratch, refreshed every second). */
-  pieceSize: Int32Array;
-  mainCentre = [0, 0, 0];
-  mainSize = 0;
-  bucketCount = new Int32Array(TABLE);
-  bucketStart = new Int32Array(TABLE + 1);
-  bucketCursor = new Int32Array(TABLE);
-  order: Int32Array;
-  bucketOf: Int32Array;
+  /** Which attractor pulls each bird (fixed per bird). */
+  group: Uint8Array;
+  // Scratch (rebuilt every step).
+  cell: Int32Array;
+  gridCount = new Float32Array(GN);
+  gridPanic = new Float32Array(GN);
+  gridV = new Float32Array(GN * 3);
+  gridP = new Float32Array(GN * 3);
+  cellA = new Float32Array(GN * 3);
+  cellPanic = new Float32Array(GN);
+  cellCohesion = new Float32Array(GN);
+  cellSpread = new Float32Array(GN);
+  cellStep = new Int32Array(GN).fill(-1e9);
+  fine = new Uint16Array(FGXY * FGZ);
+  waveData = new Float64Array(WAVES.length * 8);
+  centre = [0, 29, 0];
   constructor(
     public seed: number,
     public params: Params,
   ) {
-    const count = Number(params.population);
+    const count = Math.max(1, Math.round(Number(params.population)));
     this.birds = new Float64Array(count * BIRD_STRIDE);
-    this.neighbours = new Int32Array(count * NEIGHBOURS);
-    this.counts = new Int32Array(count);
-    this.force = new Float64Array(count * 3);
-    this.command = new Float64Array(count);
-    this.misalign = new Float64Array(count);
-    this.piece = new Int32Array(count);
-    this.pieceSize = new Int32Array(count).fill(count);
-    this.order = new Int32Array(count);
-    this.bucketOf = new Int32Array(count);
+    this.group = new Uint8Array(count);
+    this.cell = new Int32Array(count);
     this.schedule = new EvolutionSchedule(seed);
-    // Start as a loose sheet crossing the view, then settle before time zero.
-    const random = rng(seed),
-      heading = (random() < 0.5 ? 0 : Math.PI) + (random() - 0.5) * 0.6,
-      speed = this.cruise(),
-      radius = Math.sqrt(count) * 0.55 * SPACING;
+    const random = rng(seed);
     for (let i = 0; i < count; i++) {
-      const at = i * BIRD_STRIDE,
-        r = radius * Math.sqrt(random()),
-        a = random() * Math.PI * 2,
-        h = heading + (random() - 0.5) * 0.2;
-      this.birds[at] = HOME.x + r * Math.cos(a);
-      this.birds[at + 1] = HOME.y + (random() - 0.5) * 6 * SPACING;
-      this.birds[at + 2] = HOME.z + r * Math.sin(a) * 0.5;
-      this.birds[at + 3] = Math.cos(h) * speed;
-      this.birds[at + 4] = 0;
-      this.birds[at + 5] = Math.sin(h) * speed;
+      const g = (this.group[i] = i & 1),
+        a = this.attractor(g, -WARM_UP),
+        u = random() * 2 - 1,
+        theta = random() * Math.PI * 2,
+        rad = Math.cbrt(random()),
+        ring = Math.sqrt(1 - u * u) * rad,
+        at = i * BIRD_STRIDE;
+      this.birds[at] = a[0] + Math.cos(theta) * ring * 16;
+      this.birds[at + 1] = a[1] + u * rad * 6;
+      this.birds[at + 2] = a[2] + Math.sin(theta) * ring * 12;
+      this.birds[at + 3] = 10 + (random() - 0.5) * 3;
+      this.birds[at + 4] = (random() - 0.5) * 2;
+      this.birds[at + 5] = 3 + (random() - 0.5) * 3;
     }
-    for (let i = 0; i < WARM_UP * 60; i++) this.step();
-    this.tick = 0;
-    this.events = [];
+    this.tick = -Math.round(WARM_UP * 60);
+    while (this.tick < 0) this.step();
   }
-  private cruise() {
-    return CRUISE * (Number(this.params.velocity ?? 0.12) / 0.12);
+  /** Speed multiplier from the flight-speed parameter. */
+  private pace() {
+    return Number(this.params.velocity ?? 0.12) / 0.12;
   }
-  private findNeighbours(all = false) {
+  /** Two slowly drifting points, each pulling half the flock. */
+  attractor(g: number, t: number) {
+    const s = (this.seed % 9973) * 0.37 + g * 2.1;
+    return [
+      30 * Math.sin(t * 0.05 + s) + 10 * Math.sin(t * 0.13 + g + s * 0.3),
+      29 + 4 * Math.sin(t * 0.09 + g * 1.3 + s),
+      18 * Math.sin(t * 0.07 + g * 3.7 + s * 0.7),
+    ];
+  }
+  /** Panic every bird within `radius` of bird i that is not refractory. */
+  private scare(i: number, radius: number) {
     const b = this.birds,
       count = b.length / BIRD_STRIDE,
-      key = (cx: number, cy: number, cz: number) =>
-        (Math.imul(cx, 73856093) ^
-          Math.imul(cy, 19349663) ^
-          Math.imul(cz, 83492791)) &
-        (TABLE - 1);
-    this.bucketCount.fill(0);
-    for (let i = 0; i < count; i++) {
-      const at = i * BIRD_STRIDE,
-        k = key(
-          Math.floor(b[at] / CELL),
-          Math.floor(b[at + 1] / CELL),
-          Math.floor(b[at + 2] / CELL),
-        );
-      this.bucketOf[i] = k;
-      this.bucketCount[k]++;
-    }
-    this.bucketStart[0] = 0;
-    for (let k = 0; k < TABLE; k++)
-      this.bucketStart[k + 1] = this.bucketStart[k] + this.bucketCount[k];
-    this.bucketCursor.set(this.bucketStart.subarray(0, TABLE));
-    for (let i = 0; i < count; i++)
-      this.order[this.bucketCursor[this.bucketOf[i]]++] = i;
-    const bestD = new Float64Array(NEIGHBOURS),
-      bestJ = new Int32Array(NEIGHBOURS);
-    for (
-      let i = all ? 0 : this.tick % PERCEIVE;
-      i < count;
-      i += all ? 1 : PERCEIVE
-    ) {
-      const at = i * BIRD_STRIDE,
-        x = b[at],
-        y = b[at + 1],
-        z = b[at + 2],
-        cx = Math.floor(x / CELL),
-        cy = Math.floor(y / CELL),
-        cz = Math.floor(z / CELL);
-      let found = 0;
-      for (let reach = 1; reach <= 2 && found < NEIGHBOURS; reach++) {
-        found = 0;
-        for (let ox = -reach; ox <= reach; ox++)
-          for (let oy = -reach; oy <= reach; oy++)
-            for (let oz = -reach; oz <= reach; oz++) {
-              const k = key(cx + ox, cy + oy, cz + oz),
-                end = this.bucketStart[k + 1];
-              for (let m = this.bucketStart[k]; m < end; m++) {
-                const j = this.order[m];
-                if (j === i) continue;
-                const bt = j * BIRD_STRIDE,
-                  dx = b[bt] - x,
-                  dy = b[bt + 1] - y,
-                  dz = b[bt + 2] - z,
-                  d2 = dx * dx + dy * dy + dz * dz;
-                if (d2 > (CELL * (reach + 0.5)) ** 2) continue;
-                if (found < NEIGHBOURS) {
-                  let p = found++;
-                  while (p > 0 && bestD[p - 1] > d2) {
-                    bestD[p] = bestD[p - 1];
-                    bestJ[p] = bestJ[p - 1];
-                    p--;
-                  }
-                  bestD[p] = d2;
-                  bestJ[p] = j;
-                } else if (d2 < bestD[NEIGHBOURS - 1]) {
-                  let p = NEIGHBOURS - 1;
-                  while (p > 0 && bestD[p - 1] > d2) {
-                    bestD[p] = bestD[p - 1];
-                    bestJ[p] = bestJ[p - 1];
-                    p--;
-                  }
-                  bestD[p] = d2;
-                  bestJ[p] = j;
-                }
-              }
-            }
-      }
-      this.counts[i] = found;
-      for (let n = 0; n < found; n++)
-        this.neighbours[i * NEIGHBOURS + n] = bestJ[n];
-    }
-  }
-  /** Mean position and velocity of the flock. */
-  centre() {
-    const b = this.birds,
-      count = b.length / BIRD_STRIDE,
-      c = [0, 0, 0, 0, 0, 0];
-    for (let at = 0; at < b.length; at += BIRD_STRIDE)
-      for (let k = 0; k < 6; k++) c[k] += b[at + k];
-    return c.map((v) => v / count);
-  }
-  private startEscape(i: number, direction: number) {
-    const at = i * BIRD_STRIDE + 7;
-    if (this.birds[at] === 0) this.birds[at] = direction < 0 ? -1e-6 : 1e-6;
-  }
-  /**
-   * Pieces of the flock: connected parts of the nearest-neighbour graph.
-   * Returns the pieces' sizes and centroids, largest first.
-   */
-  private findPieces() {
-    const count = this.birds.length / BIRD_STRIDE,
-      parent = this.piece,
-      b = this.birds;
-    for (let i = 0; i < count; i++) parent[i] = i;
-    const find = (x: number) => {
-      while (parent[x] !== x) x = parent[x] = parent[parent[x]];
-      return x;
-    };
-    for (let i = 0; i < count; i++)
-      for (let k = 0; k < this.counts[i]; k++) {
-        const j = this.neighbours[i * NEIGHBOURS + k],
-          dx = b[i * BIRD_STRIDE] - b[j * BIRD_STRIDE],
-          dy = b[i * BIRD_STRIDE + 1] - b[j * BIRD_STRIDE + 1],
-          dz = b[i * BIRD_STRIDE + 2] - b[j * BIRD_STRIDE + 2];
-        // Only near neighbours hold a piece together.
-        if (dx * dx + dy * dy + dz * dz < (4 * SPACING) ** 2)
-          parent[find(i)] = find(j);
-      }
-    const stats = new Map<number, number[]>();
-    for (let i = 0; i < count; i++) {
-      const r = find(i);
-      parent[i] = r;
-      let s = stats.get(r);
-      if (!s) stats.set(r, (s = [0, 0, 0, 0, r]));
-      s[0]++;
-      s[1] += b[i * BIRD_STRIDE];
-      s[2] += b[i * BIRD_STRIDE + 1];
-      s[3] += b[i * BIRD_STRIDE + 2];
-    }
-    return [...stats.values()]
-      .map((s) => ({
-        size: s[0],
-        root: s[4],
-        c: [s[1] / s[0], s[2] / s[0], s[3] / s[0]],
-      }))
-      .sort((p, q) => q.size - p.size || p.root - q.root);
-  }
-  /** New groups that start turns, climbs, splits and returns. */
-  private startEvents(t: number, variation: number) {
-    const b = this.birds,
-      count = b.length / BIRD_STRIDE,
-      seed = this.seed,
-      lively = 0.5 + variation,
-      tick = this.tick;
-    const fires = (k: number, gap: number, salt: number) => {
-      const index = Math.floor(t / gap);
-      if (index < 1) return -1;
-      const at = Math.round(
-        (index * gap + gap * hash(seed * salt + index)) * 60,
-      );
-      return at === tick ? index : -1;
-    };
-    // A turn: a few birds bank and hold it; the roll spreads to the rest as
-    // a wave. Birds far out or heading away from the middle of the sky turn
-    // back toward it; otherwise the turn is a wander, left or right.
-    const turn = fires(0, TURN_GAP / lively, 61);
-    if (turn >= 0) {
-      let best = -1,
-        bestScore = -Infinity;
-      for (let k = 0; k < 24; k++) {
-        const i = Math.floor(hash(seed * 67 + turn * 31 + k) * count),
-          at = i * BIRD_STRIDE,
-          ox = (b[at] - HOME.x) / HOME.rx,
-          oz = (b[at + 2] - HOME.z) / HOME.rz,
-          out = Math.hypot(ox, oz),
-          v = Math.hypot(b[at + 3], b[at + 5]) || 1,
-          away =
-            ((ox * b[at + 3]) / HOME.rx + (oz * b[at + 5]) / HOME.rz) /
-            v /
-            (out || 1),
-          score =
-            out * (0.5 + Math.max(0, away)) +
-            0.3 * hash(seed * 71 + turn * 7 + k);
-        if (score > bestScore) {
-          bestScore = score;
-          best = i;
-        }
-      }
-      const at = best * BIRD_STRIDE,
-        vx = b[at + 3],
-        vz = b[at + 5],
-        hx = HOME.x - b[at],
-        hz = HOME.z - b[at + 2],
-        homeSide = vx * hz - vz * hx >= 0 ? 1 : -1, // +1: home is to the left
-        homing = bestScore > 0.9,
-        sign = homing ? homeSide : hash(seed * 73 + turn) < 0.5 ? -1 : 1,
-        strength = homing
-          ? 0.55 + 0.25 * hash(seed * 79 + turn)
-          : 0.25 + 0.35 * hash(seed * 79 + turn);
-      this.events.push({
-        kind: EVENT_TURN,
-        centre: best,
-        radius: (10 + 10 * hash(seed * 83 + turn)) * SPACING,
-        end:
-          tick + Math.round((homing ? 3 : 2 + 2 * hash(seed * 89 + turn)) * 60),
-        amount: -sign * strength * BANK_MAX * 0.75,
-        target: [0, 0, 0],
-      });
-    }
-    // A climb or a dive: the sheet folds where part of it rises or sinks.
-    const pitch = fires(1, PITCH_GAP / lively, 97);
-    if (pitch >= 0) {
-      const i = Math.floor(hash(seed * 101 + pitch) * count),
-        y = b[i * BIRD_STRIDE + 1],
-        up =
-          y < HOME.yLow + 10
-            ? 1
-            : y > HOME.yHigh - 10
-              ? -1
-              : hash(seed * 103 + pitch) < 0.5
-                ? -1
-                : 1;
-      this.events.push({
-        kind: EVENT_PITCH,
-        centre: i,
-        radius: (12 + 10 * hash(seed * 107 + pitch)) * SPACING,
-        end: tick + Math.round((1.5 + 2 * hash(seed * 109 + pitch)) * 60),
-        amount: up * (0.35 + 0.35 * hash(seed * 113 + pitch)),
-        target: [0, 0, 0],
-      });
-    }
-    // A split: groups at the two ends of the flock commit to opposite turns
-    // and tear it apart. The pieces find each other again later.
-    const split = variation > 0 ? fires(2, SPLIT_GAP / lively, 127) : -1;
-    if (split >= 0) {
-      const c = this.centre(),
-        hv = Math.hypot(c[3], c[5]) || 1,
-        ax = -c[5] / hv,
-        az = c[3] / hv; // across the flock's travel
-      let lo = 0,
-        hi = 0,
-        loV = Infinity,
-        hiV = -Infinity;
-      for (let i = 0; i < count; i++) {
-        const at = i * BIRD_STRIDE,
-          v =
-            (b[at] - c[0]) * ax +
-            (b[at + 2] - c[2]) * az +
-            0.4 * (b[at + 1] - c[1]);
-        if (v < loV) ((loV = v), (lo = i));
-        if (v > hiV) ((hiV = v), (hi = i));
-      }
-      const span = Math.max(10, hiV - loV),
-        long = Math.round((3 + 3 * hash(seed * 131 + split)) * 60);
-      for (const [i, sign] of [
-        [lo, 1],
-        [hi, -1],
-      ])
-        this.events.push({
-          kind: EVENT_TURN,
-          centre: i,
-          radius: Math.min(22 * SPACING, span * 0.35),
-          end: tick + long,
-          amount: sign * 0.65 * BANK_MAX,
-          target: [0, 0, 0],
-        });
-    }
-    // Every second, each piece of the flock looks where it is going. A piece
-    // that is out toward the edge of the sky and heading further out turns
-    // home: the birds at its leading edge start the turn, the rest follow.
-    // Pieces that have drifted apart turn back toward the main body.
-    if (tick % 60 === 0) {
-      const pieces = this.findPieces(),
-        sizes = new Map(pieces.map((p) => [p.root, p.size]));
-      for (let i = 0; i < count; i++)
-        this.pieceSize[i] = sizes.get(this.piece[i]) ?? count;
-      this.mainCentre = pieces[0].c;
-      this.mainSize = pieces[0].size;
-      for (const p of pieces) {
-        if (p.size < Math.max(3, count * 0.03)) continue;
-        let vx = 0,
-          vz = 0,
-          lead = -1,
-          leadV = -Infinity;
-        for (let i = 0; i < count; i++)
-          if (this.piece[i] === p.root) {
-            vx += b[i * BIRD_STRIDE + 3];
-            vz += b[i * BIRD_STRIDE + 5];
-          }
-        const vl = Math.hypot(vx, vz) || 1;
-        vx /= vl;
-        vz /= vl;
-        const ox = (p.c[0] - HOME.x) / HOME.rx,
-          oz = (p.c[2] - HOME.z) / HOME.rz,
-          out = Math.hypot(ox, oz),
-          away = (ox * vx + oz * vz) / (out || 1);
-        if (out < 0.55 || away < -0.2) continue;
-        if (
-          this.events.some(
-            (e) =>
-              e.kind === EVENT_TURN &&
-              e.radius > 0 &&
-              this.piece[e.centre] === p.root &&
-              e.amount !== 0 &&
-              e.target[0] === 1,
-          )
-        )
-          continue;
-        for (let i = 0; i < count; i++)
-          if (this.piece[i] === p.root) {
-            const v = b[i * BIRD_STRIDE] * vx + b[i * BIRD_STRIDE + 2] * vz;
-            if (v > leadV) ((leadV = v), (lead = i));
-          }
-        const hx = HOME.x - p.c[0],
-          hz = HOME.z - p.c[2],
-          left = vx * hz - vz * hx >= 0 ? 1 : -1,
-          urgency = Math.min(1, out - 0.4);
-        this.events.push({
-          kind: EVENT_TURN,
-          centre: lead,
-          radius: Math.sqrt(p.size) * (0.8 + 0.8 * urgency) * SPACING + 8,
-          end: tick + Math.round((2 + 2 * urgency) * 60),
-          amount: -left * (0.45 + 0.4 * urgency) * BANK_MAX,
-          target: [1, 0, 0], // marks a homing turn
-        });
-      }
-      if (pieces.length > 1) {
-        const main = pieces[0];
-        for (const p of pieces.slice(1)) {
-          if (p.size < Math.max(3, count * 0.01)) continue;
-          const d = Math.hypot(
-            p.c[0] - main.c[0],
-            p.c[1] - main.c[1],
-            p.c[2] - main.c[2],
-          );
-          if (d < 12 * SPACING) continue;
-          // Wait a while after splitting so pieces travel apart first.
-          if (hash(seed * 137 + tick + p.root) > REJOIN_RATE) continue;
-          let centre = -1;
-          for (let i = 0; i < count && centre < 0; i++)
-            if (this.piece[i] === p.root) centre = i;
-          if (
-            centre < 0 ||
-            this.events.some(
-              (e) => e.kind === EVENT_REJOIN && this.piece[e.centre] === p.root,
-            )
-          )
-            continue;
-          this.events.push({
-            kind: EVENT_REJOIN,
-            centre,
-            radius: Math.sqrt(p.size) * 1.6 * SPACING + 10,
-            end: tick + Math.round(4 * 60),
-            amount: 0,
-            target: main.c,
-          });
-        }
+      at0 = i * BIRD_STRIDE;
+    for (let j = 0; j < count; j++) {
+      const at = j * BIRD_STRIDE,
+        dx = b[at] - b[at0],
+        dy = b[at + 1] - b[at0 + 1],
+        dz = b[at + 2] - b[at0 + 2];
+      if (dx * dx + dy * dy + dz * dz < radius * radius && b[at + 7] <= 0) {
+        b[at + 6] = 1;
+        b[at + 7] = TUNING.panicRefractory;
       }
     }
-    if (this.events.length > 24) this.events.splice(0, this.events.length - 24);
   }
   step() {
     this.tick++;
     const variation = variationOf(this.params);
-    const action = this.schedule.advance(this.tick, variation);
-    if (action) this.intervene(action);
+    if (this.tick > 0) {
+      const action = this.schedule.advance(this.tick, variation);
+      if (action) this.intervene(action);
+    }
     const b = this.birds,
       count = b.length / BIRD_STRIDE,
+      T = TUNING,
+      pace = this.pace(),
       t = this.tick / 60,
-      dt = 1 / 60,
-      cruise = this.cruise(),
-      cohesion = TUNING.cohesion * (Number(this.params.cohesion ?? 0.4) / 0.4),
+      dt = DT * pace,
       random = rng(this.seed ^ Math.imul(this.tick, 0x9e3779b1));
-    this.findNeighbours(!this.perceived);
-    this.perceived = true;
-    this.events = this.events.filter((e) => e.end > this.tick);
-    this.startEvents(t, variation);
 
-    // Startles: a single bird zigs, and the zig is copied outward.
-    const startleEvent = Math.floor(t / STARTLE_GAP),
-      startleTick = Math.round(
-        (startleEvent * STARTLE_GAP +
-          STARTLE_GAP * hash(this.seed * 9 + startleEvent)) *
-          60,
-      );
-    if (variation > 0 && this.tick === startleTick)
-      this.startEscape(
-        Math.floor(hash(this.seed * 23 + startleEvent) * count),
-        hash(this.seed * 29 + startleEvent) - 0.5,
-      );
-
-    // Event groups: who is in each, from the group centre's current position.
-    const command = this.command;
-    command.fill(NaN);
-    const events = this.events.map((e) => {
-      const at = e.centre * BIRD_STRIDE;
-      return {
-        e,
-        x: b[at],
-        y: b[at + 1],
-        z: b[at + 2],
-        r2: e.radius * e.radius,
-      };
-    });
-
-    // Social, area, event, escape and noise forces: once per reaction step.
+    // Count birds into the grids. Both grids shift by a random part of a
+    // cell every step: fixed cell walls are where forces jump, and level
+    // flying birds would line up along them.
+    const gc = this.gridCount,
+      gv = this.gridV,
+      gp = this.gridP,
+      gpn = this.gridPanic,
+      F = this.fine;
+    gc.fill(0);
+    gpn.fill(0);
+    gv.fill(0);
+    gp.fill(0);
+    F.fill(0);
+    const cox = GOX - random() * CELL,
+      coy = GOY - random() * CELL,
+      coz = GOZ - random() * CELL,
+      fox = GOX - CELL - random() * FCELL,
+      foy = GOY - CELL - random() * FCELL,
+      foz = GOZ - CELL - random() * FCELL;
+    let mx = 0,
+      my = 0,
+      mz = 0;
     for (let i = 0; i < count; i++) {
       const at = i * BIRD_STRIDE,
-        x = b[at],
-        y = b[at + 1],
-        z = b[at + 2],
-        vx = b[at + 3],
+        px = b[at],
+        py = b[at + 1],
+        pz = b[at + 2];
+      mx += px;
+      my += py;
+      mz += pz;
+      let ix = Math.floor((px - cox) / CELL),
+        iy = Math.floor((py - coy) / CELL),
+        iz = Math.floor((pz - coz) / CELL);
+      if (ix < 0 || ix >= GX || iy < 0 || iy >= GY || iz < 0 || iz >= GZ) {
+        this.cell[i] = -1;
+        continue;
+      }
+      ix = ix < 1 ? 1 : ix > GX - 2 ? GX - 2 : ix;
+      iy = iy < 1 ? 1 : iy > GY - 2 ? GY - 2 : iy;
+      iz = iz < 1 ? 1 : iz > GZ - 2 ? GZ - 2 : iz;
+      const c = (this.cell[i] = ix + iy * GX + iz * GXY);
+      gc[c]++;
+      gv[c * 3] += b[at + 3];
+      gv[c * 3 + 1] += b[at + 4];
+      gv[c * 3 + 2] += b[at + 5];
+      gp[c * 3] += px;
+      gp[c * 3 + 1] += py;
+      gp[c * 3 + 2] += pz;
+      gpn[c] += b[at + 6];
+      const jx = Math.max(0, Math.min(((px - fox) / FCELL + 0.5) | 0, FGX - 1)),
+        jy = Math.max(0, Math.min(((py - foy) / FCELL + 0.5) | 0, FGY - 1)),
+        jz = Math.max(0, Math.min(((pz - foz) / FCELL + 0.5) | 0, FGZ - 1));
+      F[jx + jy * FGX + jz * FGXY]++;
+    }
+    this.centre = [mx / count, my / count, mz / count];
+
+    // This step's density waves, measured from the flock's middle so the
+    // bands drift through the flock at their own pace.
+    const wd = this.waveData;
+    for (let k = 0; k < WAVES.length; k++) {
+      const w = WAVES[k],
+        a = w.angle + t * w.turn + (this.seed % 997) * 0.01,
+        l = Math.hypot(1, w.tilt),
+        n = (2 * Math.PI) / w.length,
+        dx = Math.cos(a) / l,
+        dy = w.tilt / l,
+        dz = Math.sin(a) / l;
+      wd[k * 8] = dx;
+      wd[k * 8 + 1] = dy;
+      wd[k * 8 + 2] = dz;
+      wd[k * 8 + 3] = dx * n;
+      wd[k * 8 + 4] = dy * n;
+      wd[k * 8 + 5] = dz * n;
+      wd[k * 8 + 6] =
+        n * w.speed * t +
+        dx * n * this.centre[0] +
+        dy * n * this.centre[1] +
+        dz * n * this.centre[2];
+      wd[k * 8 + 7] = 1 + T.waveSwell * Math.sin(t * w.swell + k * 2.4);
+    }
+    const fpx = t * T.flowDrift,
+      fpy = t * T.flowDrift * 0.7 + 1,
+      fpz = t * T.flowDrift * 1.3 + 2,
+      a0 = this.attractor(0, t),
+      a1 = this.attractor(1, t);
+
+    // A spontaneous startle now and then starts a panic band.
+    const startle = Math.floor(t / T.startleGap);
+    if (
+      variation > 0 &&
+      this.tick ===
+        Math.round(
+          (startle * T.startleGap +
+            T.startleGap * hash(this.seed * 9 + startle)) *
+            60,
+        )
+    )
+      this.scare(Math.floor(hash(this.seed * 23 + startle) * count), 3);
+
+    const damp = T.align + T.flow;
+    for (let i = 0; i < count; i++) {
+      const at = i * BIRD_STRIDE,
+        c = this.cell[i],
+        px = b[at],
+        py = b[at + 1],
+        pz = b[at + 2];
+      let vx = b[at + 3],
         vy = b[at + 4],
-        vz = b[at + 5],
-        v = Math.sqrt(vx * vx + vy * vy + vz * vz) || 1,
-        ex = vx / v,
-        ey = vy / v,
-        ez = vz / v;
-      let sx = -ez,
-        sz = ex;
-      const sl = Math.sqrt(sx * sx + sz * sz) || 1;
-      sx /= sl;
-      sz /= sl;
-      let fx = 0,
-        fy = 0,
-        fz = 0;
-      const n = this.counts[i];
+        vz = b[at + 5];
+      // Steering shared by every bird in a cell, worked out once per cell.
+      if (c >= 0 && this.cellStep[c] !== this.tick) {
+        this.cellStep[c] = this.tick;
+        const c0 = c - 1,
+          c1 = c + 1,
+          c2 = c - GX,
+          c3 = c + GX,
+          c4 = c - GXY,
+          c5 = c + GXY,
+          inv =
+            1 / (gc[c] + gc[c0] + gc[c1] + gc[c2] + gc[c3] + gc[c4] + gc[c5]),
+          sum = (g: Float32Array, k: number) =>
+            (g[c * 3 + k] +
+              g[c0 * 3 + k] +
+              g[c1 * 3 + k] +
+              g[c2 * 3 + k] +
+              g[c3 * 3 + k] +
+              g[c4 * 3 + k] +
+              g[c5 * 3 + k]) *
+            inv,
+          avx = sum(gv, 0),
+          avy = sum(gv, 1),
+          avz = sum(gv, 2),
+          apx = sum(gp, 0),
+          apy = sum(gp, 1),
+          apz = sum(gp, 2);
+        this.cellPanic[c] =
+          (gpn[c] + gpn[c0] + gpn[c1] + gpn[c2] + gpn[c3] + gpn[c4] + gpn[c5]) *
+          inv;
+        // The flow at the cell.
+        const qx = apx * T.flowScale + fpx,
+          qy = apy * T.flowScale * 1.5 + fpy,
+          qz = apz * T.flowScale + fpz,
+          ux = Math.sin(qz) + 0.7 * Math.cos(qy),
+          uy = 0.5 * (Math.sin(qx) + Math.cos(qz)),
+          uz = 0.7 * Math.sin(qy) + Math.cos(qx);
+        // Cohesion fades as the neighbourhood fills and turns outward past
+        // denseCount birds a cell.
+        const coh = (this.cellCohesion[c] =
+          T.cohesion * Math.max(-1, 1 - 1 / (inv * 7 * T.denseCount)));
+        // Up the waves' slope, toward the nearest crest; and how high the
+        // waves stand here (crests relax the spacing so birds pack tighter).
+        let wx = 0,
+          wy = 0,
+          wz = 0,
+          crest = 0;
+        for (let k = 0; k < WAVES.length * 8; k += 8) {
+          const ph =
+              apx * wd[k + 3] + apy * wd[k + 4] + apz * wd[k + 5] - wd[k + 6],
+            g = Math.cos(ph) * wd[k + 7] * T.wave;
+          wx += wd[k] * g;
+          wy += wd[k + 1] * g;
+          wz += wd[k + 2] * g;
+          crest += Math.sin(ph) * wd[k + 7];
+        }
+        this.cellSpread[c] =
+          T.spread * Math.max(0.1, 1 - (T.waveDepth * crest) / WAVES.length);
+        const p0 = gc[c0] * gc[c0],
+          p1 = gc[c1] * gc[c1],
+          p2 = gc[c2] * gc[c2],
+          p3 = gc[c3] * gc[c3],
+          p4 = gc[c4] * gc[c4],
+          p5 = gc[c5] * gc[c5];
+        this.cellA[c * 3] =
+          avx * T.align +
+          apx * coh -
+          (gc[c1] - gc[c0]) * T.separate -
+          (p1 - p0) * T.pressure +
+          ux * T.flowSpeed * T.flow +
+          wx;
+        this.cellA[c * 3 + 1] =
+          avy * T.align +
+          apy * coh -
+          (gc[c3] - gc[c2]) * T.separate -
+          (p3 - p2) * T.pressure +
+          uy * T.flowSpeed * 0.6 * T.flow +
+          wy;
+        this.cellA[c * 3 + 2] =
+          avz * T.align +
+          apz * coh -
+          (gc[c5] - gc[c4]) * T.separate -
+          (p5 - p4) * T.pressure +
+          uz * T.flowSpeed * T.flow +
+          wz;
+      }
       let ax = 0,
         ay = 0,
         az = 0,
-        cx = 0,
-        cy = 0,
-        cz = 0,
-        seen = 0,
-        ux = 0,
-        uy = 0,
-        uz = 0;
-      for (let k = 0; k < n; k++) {
-        const j = this.neighbours[i * NEIGHBOURS + k],
-          bt = j * BIRD_STRIDE,
-          dx = b[bt] - x,
-          dy = b[bt + 1] - y,
-          dz = b[bt + 2] - z,
-          d = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1e-6,
-          hx = dx / d,
-          hy = dy / d,
-          hz = dz / d;
-        ux += hx;
-        uy += hy;
-        uz += hz;
-        const g =
-          d <= HARD
-            ? 1
-            : Math.exp(-((d - HARD) ** 2) / TUNING.separationSigma2);
-        // Weaker apart vertically, so the flock spreads into a sheet (real
-        // flocks are much thinner than they are wide).
-        fx -= (TUNING.separation / n) * g * hx;
-        fy -= (TUNING.separation / n) * g * hy * TUNING.flatten;
-        fz -= (TUNING.separation / n) * g * hz;
-        if (hx * ex + hy * ey + hz * ez < BLIND) continue;
-        const bv =
-          Math.sqrt(
-            b[bt + 3] * b[bt + 3] +
-              b[bt + 4] * b[bt + 4] +
-              b[bt + 5] * b[bt + 5],
-          ) || 1;
-        ax += b[bt + 3] / bv;
-        ay += b[bt + 4] / bv;
-        az += b[bt + 5] / bv;
-        if (d > HARD) {
-          cx += hx;
-          cy += hy;
-          cz += hz;
-        }
-        seen++;
+        nearPanic = 0;
+      if (c >= 0) {
+        const coh = this.cellCohesion[c];
+        ax = this.cellA[c * 3] - vx * damp - px * coh;
+        ay = this.cellA[c * 3 + 1] - vy * damp - py * coh;
+        az = this.cellA[c * 3 + 2] - vz * damp - pz * coh;
+        nearPanic = this.cellPanic[c];
+        // Even spacing: down the fine density's slope at this bird.
+        const fx = (px - fox) / FCELL,
+          fy = (py - foy) / FCELL,
+          fz = (pz - foz) / FCELL,
+          jx = Math.max(0, Math.min(fx | 0, FGX - 2)),
+          jy = Math.max(0, Math.min(fy | 0, FGY - 2)),
+          jz = Math.max(0, Math.min(fz | 0, FGZ - 2)),
+          tx = fx - jx,
+          ty = fy - jy,
+          tz = fz - jz,
+          sx = 1 - tx,
+          sy = 1 - ty,
+          sz = 1 - tz,
+          f = jx + jy * FGX + jz * FGXY,
+          d000 = F[f],
+          d100 = F[f + 1],
+          d010 = F[f + FGX],
+          d110 = F[f + FGX + 1],
+          d001 = F[f + FGXY],
+          d101 = F[f + FGXY + 1],
+          d011 = F[f + FGXY + FGX],
+          d111 = F[f + FGXY + FGX + 1],
+          gx =
+            sy * sz * (d100 - d000) +
+            ty * sz * (d110 - d010) +
+            sy * tz * (d101 - d001) +
+            ty * tz * (d111 - d011),
+          gy =
+            sx * sz * (d010 - d000) +
+            tx * sz * (d110 - d100) +
+            sx * tz * (d011 - d001) +
+            tx * tz * (d111 - d101),
+          gz =
+            sx * sy * (d001 - d000) +
+            tx * sy * (d101 - d100) +
+            sx * ty * (d011 - d010) +
+            tx * ty * (d111 - d110),
+          g2 = gx * gx + gy * gy + gz * gz,
+          spread = this.cellSpread[c],
+          push =
+            g2 * spread * spread > T.spreadMax * T.spreadMax
+              ? T.spreadMax / Math.sqrt(g2)
+              : spread;
+        ax -= gx * push;
+        ay -= gy * push;
+        az -= gz * push;
       }
-      this.misalign[i] = 0;
-      if (seen) {
-        const al = Math.sqrt(ax * ax + ay * ay + az * az) || 1;
-        this.misalign[i] = (ax / al - ex) * sx + (az / al - ez) * sz;
-        fx += TUNING.alignment * (ax / al - ex);
-        fy += TUNING.alignment * (ay / al - ey);
-        fz += TUNING.alignment * (az / al - ez);
-        const centrality = n ? Math.sqrt(ux * ux + uy * uy + uz * uz) / n : 1;
-        fx += (centrality * cohesion * cx) / seen;
-        fy += (centrality * cohesion * cy) / seen / TUNING.flatten;
-        fz += (centrality * cohesion * cz) / seen;
+      ax += (random() - 0.5) * T.wander;
+      ay += (random() - 0.5) * T.wander * 0.5;
+      az += (random() - 0.5) * T.wander;
+      // Pull toward this bird's attractor once outside its radius.
+      const a = this.group[i] ? a1 : a0,
+        dx = a[0] - px,
+        dy = a[1] - py,
+        dz = a[2] - pz,
+        d = Math.sqrt(dx * dx + dy * dy + dz * dz) + 1e-3;
+      if (d > T.attractRadius) {
+        const f = (Math.min((d - T.attractRadius) * 0.3, 1) * T.attract) / d;
+        ax += dx * f;
+        ay += dy * f * 0.6;
+        az += dz * f;
       }
-      // Birds in a small stray cluster keep looking for the main body and
-      // head back to it; larger pieces wander on their own for a while.
-      if (this.pieceSize[i] < this.mainSize) {
-        const share = this.pieceSize[i] / count,
-          w =
-            share < STRAY
-              ? W_STRAY
-              : W_PIECE * (1 - Math.min(0.8, share / 0.5)),
-          tx = this.mainCentre[0] - x,
-          ty = this.mainCentre[1] - y,
-          tz = this.mainCentre[2] - z,
-          tl = Math.sqrt(tx * tx + ty * ty + tz * tz) || 1;
-        fx += w * (tx / tl - ex);
-        fy += w * 0.5 * (ty / tl - ey);
-        fz += w * (tz / tl - ez);
+      // Mostly level flight, between floor and ceiling.
+      ay -= vy * 0.8;
+      if (py < T.floor) ay += (T.floor - py) * 0.8;
+      if (py > T.ceiling) ay -= (py - T.ceiling) * 2;
+      // Panic: caught from panicking neighbours, then a refractory spell.
+      let panic = b[at + 6] * T.panicDecay,
+        cool = b[at + 7] - dt;
+      if (
+        cool <= 0 &&
+        nearPanic > T.panicThreshold &&
+        random() < T.panicCatch
+      ) {
+        panic = 1;
+        cool = T.panicRefractory;
       }
-
-      // The sky's limits act on single birds only far out, as a backstop;
-      // the flock is kept in view by the turns its members start.
-      const ox = Math.abs(x - HOME.x) - HOME.rx * OUTER,
-        oz = Math.abs(z - HOME.z) - HOME.rz * OUTER;
-      if (ox > 0) fx -= Math.sign(x - HOME.x) * Math.min(1, 0.02 * ox);
-      if (oz > 0) fz -= Math.sign(z - HOME.z) * Math.min(1, 0.02 * oz);
-      if (y < HOME.yLow) fy += Math.min(0.8, 0.03 * (HOME.yLow - y));
-      // The ceiling is what the wall can show: nearer birds appear higher,
-      // so the highest allowed altitude falls as a bird comes closer.
-      const ceiling = Math.min(
-        HOME.yHigh,
-        CAMERA.y +
-          ((CAMERA.horizon - TOP_MARGIN) * Math.max(1, z - CAMERA.z)) /
-            CAMERA.focal,
-      );
-      if (y > ceiling) fy -= Math.min(1.2, 0.06 * (y - ceiling));
-      if (y < FLOOR) fy += Math.min(1.5, 0.15 * (FLOOR - y));
-      fy -= LEVEL * vy; // level out after a climb or a dive
-      // Groups: hold a bank (turn), climb or dive, or head back to the flock.
-      for (const g of events) {
-        const gx = x - g.x,
-          gy = y - g.y,
-          gz = z - g.z,
-          d2 = gx * gx + gy * gy + gz * gz;
-        if (d2 > g.r2) continue;
-        const fade = 1 - d2 / g.r2;
-        if (g.e.kind === EVENT_TURN) {
-          if (
-            Number.isNaN(command[i]) ||
-            Math.abs(g.e.amount) > Math.abs(command[i])
-          )
-            command[i] = g.e.amount * Math.min(1, 1.6 * fade);
-        } else if (g.e.kind === EVENT_PITCH) {
-          // Climbs fade out near the ceiling, dives near the floor.
-          const room =
-            g.e.amount > 0 ? (ceiling - y) / 20 : (y - HOME.yLow) / 20;
-          fy += g.e.amount * fade * Math.max(0, Math.min(1, room));
-        } else {
-          const tx = g.e.target[0] - x,
-            ty = g.e.target[1] - y,
-            tz = g.e.target[2] - z,
-            tl = Math.hypot(tx, ty, tz) || 1;
-          fx += REJOIN_FORCE * (tx / tl - ex);
-          fy += REJOIN_FORCE * 0.5 * (ty / tl - ey);
-          fz += REJOIN_FORCE * (tz / tl - ez);
-        }
-      }
-      const escape = b[at + 7],
-        age = Math.abs(escape),
-        side = escape < 0 ? -1 : 1;
-      if (escape !== 0 && age < ZIG) {
-        const push = (age < ZIG_OUT ? 1 : -1) * ZIG_FORCE * side;
-        fx += push * sx;
-        fz += push * sz;
-        command[i] = (age < ZIG_OUT ? -1 : 1) * side * ZIG_BANK;
-      }
-      fx += (random() - 0.5) * 2 * W_NOISE;
-      fy += (random() - 0.5) * 2 * W_NOISE;
-      fz += (random() - 0.5) * 2 * W_NOISE;
-      if (escape === 0) {
-        const delay = CUE + REACTION + (hash(this.seed + i * 977) - 0.5) * 0.02;
-        for (let k = 0; k < Math.min(6, n); k++) {
-          const other =
-              b[this.neighbours[i * NEIGHBOURS + k] * BIRD_STRIDE + 7],
-            otherAge = Math.abs(other);
-          if (other !== 0 && otherAge >= delay && otherAge < delay + 0.1) {
-            this.startEscape(i, other);
-            break;
-          }
-        }
-      }
-      this.force[i * 3] = fx;
-      this.force[i * 3 + 1] = fy;
-      this.force[i * 3 + 2] = fz;
-    }
-
-    // Flight, in substeps. Social forces turn a bird mostly by banking it
-    // (see TORQUE above), so turns carry momentum and travel as waves.
-    const h = dt / SUBSTEPS;
-    for (let i = 0; i < count; i++) {
-      const at = i * BIRD_STRIDE,
-        Fx = this.force[i * 3],
-        Fy = this.force[i * 3 + 1],
-        Fz = this.force[i * 3 + 2],
-        cmd = command[i],
-        mis = this.misalign[i];
-      let vx = b[at + 3],
-        vy = b[at + 4],
-        vz = b[at + 5],
-        bank = b[at + 6];
-      for (let s = 0; s < SUBSTEPS; s++) {
-        const v = Math.sqrt(vx * vx + vy * vy + vz * vz) || 1,
-          ex = vx / v,
-          ey = vy / v,
-          ez = vz / v;
-        let sx = -ez,
-          sz = ex;
-        const sl = Math.sqrt(sx * sx + sz * sz) || 1;
-        sx /= sl;
-        sz /= sl;
-        let upx = -ey * ex,
-          upy = 1 - ey * ey,
-          upz = -ey * ez;
-        const ul = Math.sqrt(upx * upx + upy * upy + upz * upz) || 1;
-        upx /= ul;
-        upy /= ul;
-        upz /= ul;
-        // Positive bank turns toward the side axis (forward × up).
-        const side = Fx * sx + Fz * sz,
-          lateral = side / MASS;
-        const rate = Number.isNaN(cmd)
-          ? TUNING.torqueHeading * mis +
-            TUNING.torque * Math.atan(lateral / GRAVITY) -
-            TUNING.bankDecay * bank
-          : DRIVE * (cmd - bank);
-        // A bird rolls no faster than ROLL_MAX, so banking stays smooth.
-        bank += Math.max(-ROLL_MAX, Math.min(ROLL_MAX, rate)) * h;
-        bank = Math.max(-BANK_MAX, Math.min(BANK_MAX, bank));
-        const cb = Math.cos(bank),
-          sb = Math.sin(bank),
-          lx = cb * upx + sb * sx,
-          ly = cb * upy,
-          lz = cb * upz + sb * sz,
-          ratio = (v * v) / (cruise * cruise),
-          // More lift in a banked turn, so turning birds hold altitude.
-          lift = (ratio * MASS * GRAVITY) / Math.max(0.35, cb),
-          drag = (ratio * MASS * GRAVITY) / LIFT_DRAG,
-          thrust = (MASS * GRAVITY) / LIFT_DRAG,
-          speedControl = (MASS / SPEED_RELAX) * (cruise - v);
-        const keep = (1 - TUNING.sideDirect) * side,
-          dFx = Fx - keep * sx,
-          dFz = Fz - keep * sz;
-        const ax =
-            (dFx + lift * lx + (thrust - drag + speedControl) * ex) / MASS,
-          ay =
-            (Fy +
-              lift * ly +
-              (thrust - drag + speedControl) * ey -
-              MASS * GRAVITY) /
-            MASS,
-          az = (dFz + lift * lz + (thrust - drag + speedControl) * ez) / MASS;
-        vx += ax * h;
-        vy += ay * h;
-        vz += az * h;
-        b[at] += vx * h;
-        b[at + 1] += vy * h;
-        b[at + 2] += vz * h;
-      }
+      b[at + 6] = panic;
+      b[at + 7] = cool < 0 ? 0 : cool;
+      // A panicking bird jinks upward, so the band ripples the flock's shape.
+      ay += panic * T.jink;
+      vx += ax * dt;
+      vy += ay * dt;
+      vz += az * dt;
+      const speed = Math.sqrt(vx * vx + vy * vy + vz * vz) + 1e-3,
+        maxSpeed = T.speedMax + panic * T.speedPanic,
+        s =
+          speed < T.speedMin
+            ? T.speedMin / speed
+            : speed > maxSpeed
+              ? maxSpeed / speed
+              : 1;
+      vx *= s;
+      vy *= s;
+      vz *= s;
       b[at + 3] = vx;
       b[at + 4] = vy;
       b[at + 5] = vz;
-      b[at + 6] = bank;
-      const escape = b[at + 7];
-      if (escape !== 0) {
-        const age = Math.abs(escape) + dt;
-        b[at + 7] = age > ZIG + REFRACTORY ? 0 : escape < 0 ? -age : age;
-      }
+      b[at] = px + vx * dt;
+      b[at + 1] = py + vy * dt;
+      b[at + 2] = pz + vz * dt;
     }
   }
+  /** World position of bird i (metres). */
+  world(i: number) {
+    const at = i * BIRD_STRIDE,
+      b = this.birds;
+    return [
+      b[at] * WORLD_SCALE,
+      b[at + 1] * WORLD_SCALE + WORLD_Y,
+      b[at + 2] * WORLD_SCALE + WORLD_Z,
+    ];
+  }
+  /** The frame the renderer draws, in world metres: x y z vx vy vz panic cool. */
   captureFrame(previous?: RenderFrame) {
-    const frame = frameBuffer(
-      previous,
-      this.birds.length,
-      this.tick,
-      this.params,
-    );
-    frame.data.set(this.birds);
+    const b = this.birds,
+      frame = frameBuffer(previous, b.length, this.tick, this.params),
+      d = frame.data;
+    for (let at = 0; at < b.length; at += BIRD_STRIDE) {
+      d[at] = b[at] * WORLD_SCALE;
+      d[at + 1] = b[at + 1] * WORLD_SCALE + WORLD_Y;
+      d[at + 2] = b[at + 2] * WORLD_SCALE + WORLD_Z;
+      d[at + 3] = b[at + 3] * WORLD_SCALE;
+      d[at + 4] = b[at + 4] * WORLD_SCALE;
+      d[at + 5] = b[at + 5] * WORLD_SCALE;
+      d[at + 6] = b[at + 6];
+      d[at + 7] = b[at + 7];
+    }
     return frame;
   }
   snapshot(): Snapshot {
     return {
       tick: this.tick,
       data: Array.from(this.birds),
-      extra: {
-        schedule: this.schedule.snapshot(),
-        neighbours: Array.from(this.neighbours),
-        counts: Array.from(this.counts),
-        events: this.events.map((e) => [
-          e.kind,
-          e.centre,
-          e.radius,
-          e.end,
-          e.amount,
-          ...e.target,
-        ]),
-        // Piece sizes and the main body's centre are refreshed once a second
-        // and act on the birds in between, so they are part of the state.
-        pieceSize: Array.from(this.pieceSize),
-        main: [...this.mainCentre, this.mainSize],
-      },
+      extra: { schedule: this.schedule.snapshot() },
     };
   }
   restore(s: Snapshot) {
@@ -884,100 +561,46 @@ export class Murmuration implements Simulation {
     this.tick = s.tick;
     this.birds.set(s.data);
     this.schedule.restore(s.extra?.schedule as any, this.tick);
-    const count = this.birds.length / BIRD_STRIDE,
-      neighbours = s.extra?.neighbours as number[] | undefined,
-      counts = s.extra?.counts as number[] | undefined;
-    if (
-      Array.isArray(neighbours) &&
-      Array.isArray(counts) &&
-      neighbours.length === count * NEIGHBOURS &&
-      counts.length === count &&
-      neighbours.every((j) => Number.isInteger(j) && j >= 0 && j < count) &&
-      counts.every((c) => Number.isInteger(c) && c >= 0 && c <= NEIGHBOURS)
-    ) {
-      this.neighbours.set(neighbours);
-      this.counts.set(counts);
-      this.perceived = true;
-    } else this.perceived = false;
-    const pieceSize = s.extra?.pieceSize as number[] | undefined,
-      main = s.extra?.main as number[] | undefined;
-    if (
-      Array.isArray(pieceSize) &&
-      pieceSize.length === count &&
-      pieceSize.every((v) => Number.isInteger(v) && v >= 0 && v <= count) &&
-      Array.isArray(main) &&
-      main.length === 4 &&
-      main.every(Number.isFinite)
-    ) {
-      this.pieceSize.set(pieceSize);
-      this.mainCentre = main.slice(0, 3);
-      this.mainSize = main[3];
-    } else {
-      this.pieceSize.fill(count);
-      this.mainCentre = [HOME.x, HOME.y, HOME.z];
-      this.mainSize = count;
-    }
-    const events = s.extra?.events as number[][] | undefined;
-    this.events = Array.isArray(events)
-      ? events
-          .filter(
-            (e) =>
-              Array.isArray(e) &&
-              e.length === 8 &&
-              e.every(Number.isFinite) &&
-              Number.isInteger(e[1]) &&
-              e[1] >= 0 &&
-              e[1] < count,
-          )
-          .map((e) => ({
-            kind: e[0],
-            centre: e[1],
-            radius: e[2],
-            end: e[3],
-            amount: e[4],
-            target: [e[5], e[6], e[7]],
-          }))
-      : [];
+    // The per-cell cache is keyed by tick; clear it so nothing stale is reused.
+    this.cellStep.fill(-1e9);
   }
   intervene(action: EvolutionAction) {
     const b = this.birds,
-      count = b.length / BIRD_STRIDE,
-      random = rng(this.seed + action.serial * 997),
-      share = [0, 0.08, 0.25, 1][action.kind],
-      total = Math.max(1, Math.round(count * share)),
-      speed = this.cruise();
-    for (let k = 0; k < total; k++) {
-      const at = ((k + action.serial * 131) % count) * BIRD_STRIDE;
-      if (action.kind === 1) {
-        // A startle: a group escapes, and the wave spreads from it.
-        b[at + 7] = b[at + 7] || (random() < 0.5 ? -1e-6 : 1e-6);
-        continue;
-      }
-      // Rejoin the flock beside a bird in it, flying with it.
-      const host = Math.floor(random() * count) * BIRD_STRIDE,
-        v = Math.hypot(b[host + 3], b[host + 5]) || 1;
-      b[at] = b[host] + (random() - 0.5) * 8 * SPACING;
-      b[at + 1] = b[host + 1] + (random() - 0.5) * 2 * SPACING;
-      b[at + 2] = b[host + 2] + (random() - 0.5) * 8 * SPACING;
-      b[at + 3] = (b[host + 3] / v) * speed;
-      b[at + 4] = 0;
-      b[at + 5] = (b[host + 5] / v) * speed;
-      b[at + 6] = 0;
-      b[at + 7] = 0;
+      count = b.length / BIRD_STRIDE;
+    if (action.kind === 1) {
+      // A startle: a panic band starts at one bird.
+      this.scare((action.serial * 7919) % count, 4);
+      return;
+    }
+    // Strays (far from the flock) rejoin it beside a bird in it.
+    const random = rng(this.seed + action.serial * 997),
+      c = this.centre;
+    for (let j = 0; j < count; j++) {
+      const at = j * BIRD_STRIDE,
+        dx = b[at] - c[0],
+        dy = b[at + 1] - c[1],
+        dz = b[at + 2] - c[2];
+      if (dx * dx + dy * dy + dz * dz < 70 * 70) continue;
+      const host = Math.floor(random() * count) * BIRD_STRIDE;
+      for (let k = 0; k < BIRD_STRIDE; k++) b[at + k] = b[host + k];
+      b[at] += (random() - 0.5) * 2;
+      b[at + 1] += (random() - 0.5) * 2;
+      b[at + 2] += (random() - 0.5) * 2;
     }
   }
   activitySample() {
     const sample = new Float32Array(640),
-      b = this.birds;
-    for (let at = 0; at < b.length; at += BIRD_STRIDE) {
-      if (!Number.isFinite(b[at]) || !Number.isFinite(b[at + 1])) {
+      count = this.birds.length / BIRD_STRIDE;
+    for (let i = 0; i < count; i += 4) {
+      const [x, y, z] = this.world(i);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
         sample[0] = NaN;
         return sample;
       }
-      const [px, py] = project(b[at], b[at + 1], b[at + 2]),
+      const [px, py] = project(x, y, z),
         gx = Math.min(31, Math.max(0, Math.floor((px / 640) * 32))),
         gy = Math.min(19, Math.max(0, Math.floor((py / 400) * 20)));
-      sample[gy * 32 + gx] = Math.min(1, sample[gy * 32 + gx] + 0.05);
+      sample[gy * 32 + gx] = Math.min(1, sample[gy * 32 + gx] + 0.02);
     }
     return sample;
   }
@@ -985,11 +608,12 @@ export class Murmuration implements Simulation {
   paint(ctx: CanvasRenderingContext2D, w: number, h: number) {
     ctx.fillStyle = "#c9b6a8";
     ctx.fillRect(0, 0, w, h);
-    ctx.fillStyle = "rgba(10,12,20,.6)";
-    const b = this.birds;
-    for (let at = 0; at < b.length; at += BIRD_STRIDE) {
-      const [px, py] = project(b[at], b[at + 1], b[at + 2]);
-      ctx.fillRect((px / 640) * w, (py / 400) * h, 1.2, 1.2);
+    ctx.fillStyle = "rgba(10,12,20,.5)";
+    const count = this.birds.length / BIRD_STRIDE;
+    for (let i = 0; i < count; i++) {
+      const [x, y, z] = this.world(i),
+        [px, py] = project(x, y, z);
+      ctx.fillRect((px / 640) * w, (py / 400) * h, 1, 1);
     }
   }
   dispose() {}
