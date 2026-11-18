@@ -144,7 +144,7 @@ class MarkStream {
     this.prog = program(
       gl,
       `attribute vec3 p;attribute vec2 corner;uniform vec2 size;varying vec2 uv;varying float alpha;void main(){uv=corner;alpha=p.z;gl_Position=vec4(p.xy/size*2.-1.,0.,1.);}`,
-      `precision highp float;varying vec2 uv;varying float alpha;uniform sampler2D mark;uniform vec3 ink;void main(){gl_FragColor=vec4(ink,alpha*texture2D(mark,uv).a);}`,
+      `precision highp float;varying vec2 uv;varying float alpha;uniform sampler2D mark;uniform vec3 ink;void main(){vec2 q=uv*2.-1.;float g=max(0.,exp(-2.5*dot(q,q))-.082)/.918;gl_FragColor=vec4(ink,min(1.,alpha*g*1.64));}`,
     );
     this.buffer = gl.createBuffer()!;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
@@ -956,7 +956,12 @@ export class EntityGPU implements SceneRenderer {
         ? mixColor(roles.toneGround, [0, 0, 0], 0.6)
         : mixColor(a.colors[1], roles.toneHighlight, 0.6),
       pixel = 640 / Math.max(1, width),
-      minHalf = 1.0 * pixel,
+      // The shader's falloff carries less ink than a flat mark, so it is
+      // scaled by 1.64 to keep each bird as dark as before.
+      // Half-sizes never fall below 1.4 output pixels, so the smooth falloff
+      // drawn in the shader always spans a few pixels: tiny marks stay soft
+      // and move smoothly instead of stepping from pixel to pixel.
+      minHalf = 1.4 * pixel,
       focal = CAMERA.focal,
       half = BIRD_HALF_SPAN * (0.8 + 0.25 * detail),
       sweep = half * 0.3,
