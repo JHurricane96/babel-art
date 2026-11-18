@@ -172,7 +172,7 @@ registry.murmuration = {
     },
     population: {
       label: "Population · restart",
-      value: 30000,
+      value: 20000,
       min: 20,
       max: 40000,
       step: 500,

@@ -82,7 +82,7 @@ See [art direction](docs/art-direction.md) for the composition goals. `npm run t
 
 Platformer Terrarium traverses three biomes: Glasswood, Amber Ruins and Tidal Observatory. The explorer plans jumps over varied terrain, surveys landmarks once, and proceeds through seeded expeditions. Parallax scenery, vegetation, ambient creatures, weather and an articulated explorer add activity at several scales. Gameplay remains autonomous.
 
-Murmuration is a three-dimensional flock of 30,000 starlings by default (up to 40,000), every one drawn, wheeling above winter farmland and a low, misty treeline. Bands of tighter-packed birds roll through it as a shimmer, startles sweep across it as waves, and it folds, splits and rejoins. It is drawn at the wall's displayed resolution. Saved projects from the earlier two-dimensional flock keep it until they start a new variation; see [world implementation](docs/worlds.md).
+Murmuration is a three-dimensional flock of 20,000 starlings by default (up to 40,000), every one drawn, wheeling above winter farmland and a low, misty treeline. Bands of tighter-packed birds roll through it as a shimmer, startles sweep across it as waves, and it folds, splits and rejoins. It is drawn at the wall's displayed resolution. Saved projects from the earlier two-dimensional flock keep it until they start a new variation; see [world implementation](docs/worlds.md).
 
 Run `npm run test:worlds` for biome review images, exact replay and bounded live playback of both artworks. See [world implementation](docs/worlds.md) for behavior and save compatibility.
 

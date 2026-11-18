@@ -46,7 +46,7 @@ existing schedule metadata remain unchanged.
 
 ## Murmuration, revision 2
 
-New Murmuration projects use a three-dimensional flock of 30,000 starlings by
+New Murmuration projects use a three-dimensional flock of 20,000 starlings by
 default (up to 40,000), every one drawn (`engine/murmuration.ts`). The approach
 follows Frank Force's LittleJS murmuration demo (MIT licence): birds steer from
 averages kept on a coarse 3D grid (alignment and cohesion from a bird's cell and
@@ -65,9 +65,8 @@ for drawing (`WORLD_SCALE`).
 Every bird is drawn as one short dash, wing tip to wing tip, in the same ink:
 birds are not shaded one by one, so the flock's darkness comes only from how
 many overlap along the line of sight. Birds in a panic band are drawn slightly
-darker (`engine/murmuration-look.ts`). Each mark's soft falloff is computed per pixel and spans at least about three
-output pixels; smaller birds fade instead of shrinking, so they stay smooth and
-do not blink. The image is drawn at the displayed size of
+darker (`engine/murmuration-look.ts`). Marks never shrink below about two output
+pixels; they fade instead, so distant birds do not blink. The image is drawn at the displayed size of
 the wall (`wallResolution` on the renderer), not 640×400 times preview quality,
 so birds stay sharp on large panels. The scenery is a winter evening over
 farmland: woodland bands at several distances pale into the sky, with lacy
@@ -82,8 +81,8 @@ reused. Silhouette is the default
 style; luminous shows light birds against a night sky.
 
 Checkpoints hold eight values per bird (position, velocity, panic and its
-refractory clock) plus the evolution schedule; at 30,000 birds that is about
-4.1 MB of JSON, so shrinking it is a known follow-up. The hidden `flockVersion` parameter is 2 for new projects. Imported
+refractory clock) plus the evolution schedule; at 20,000 birds that is about
+2.8 MB of JSON, so shrinking it is a known follow-up. The hidden `flockVersion` parameter is 2 for new projects. Imported
 projects without it receive revision 1 and keep the original two-dimensional
 flock and its rendering until they start a new variation.
 
