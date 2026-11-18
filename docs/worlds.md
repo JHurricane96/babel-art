@@ -71,7 +71,7 @@ the wall (`wallResolution` on the renderer), not 640×400 times preview quality,
 so birds stay sharp on large panels. The scenery is a winter evening over
 farmland: woodland bands at several distances pale into the sky, with lacy
 tops of bare twigs over solid trunks; a poplar row, a hazy barn and a few
-large branching trees close by give scale; flood water across the middle
+nearer bare trees (lopsided, with bending limbs and lacy twig crowns) give scale; flood water across the middle
 distance mirrors the horizon glow and the treeline, with reeds on its near
 shore, in front of fields furrowed toward a vanishing point; a low mist
 softens the tree bases. The horizon sits low, so on the default staggered
