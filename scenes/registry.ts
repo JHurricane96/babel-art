@@ -92,7 +92,7 @@ export const registry: Record<string, Scene> = {
       },
       resolution: {
         label: "Grid width · restart",
-        value: 128,
+        value: 256,
         options: ["128", "256"],
         restart: true,
       },
@@ -126,7 +126,7 @@ registry.chemical = {
   parameters: {
     resolution: {
       label: "Grid width · restart",
-      value: 128,
+      value: 256,
       options: ["128", "256"],
       restart: true,
     },
