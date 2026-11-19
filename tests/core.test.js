@@ -8,3 +8,15 @@ test('jitter never replaces a newer frame with late older content',()=>{let prev
 test('clock drift accumulates and mixed refresh rates diverge',()=>{const t=3600000;assert.ok(Math.abs((frameAt(t,{...PERFECT,drift:100}).current-frameAt(t).current)-360)<.01);assert.notEqual(frameAt(1234,{...PERFECT,hz:50}).current,frameAt(1234).current);});
 test('scanout selects old and new rows in either direction',()=>{const f={current:100,previous:80,age:5,period:20,scan:'top-down'};assert.equal(sampleAtRow(f,.1),100);assert.equal(sampleAtRow(f,.9),80);assert.equal(sampleAtRow({...f,scan:'bottom-up'},.9),100);});
 test('project roundtrip is lossless; invalid versions, geometry and timings rejected',()=>{const p=makeProject();assert.deepEqual(validateProject(JSON.parse(JSON.stringify(p))),p);for(const change of [p=>p.schemaVersion=999,p=>p.layout[0].width=-2,p=>p.layout[0].timing.hz=0,p=>p.layout[1].id=p.layout[0].id,p=>p.scene.palette='__proto__']){const bad=structuredClone(p);change(bad);assert.throws(()=>validateProject(bad));}assert.equal(dailySeed(new Date('2026-11-10')),dailySeed(new Date('2026-11-10')));});
+
+test('every number control accepts its default and round values', async () => {
+  const { registry } = await import('../scenes/registry.ts');
+  const fits = (s, v) => Math.abs((v - s.min) / s.step - Math.round((v - s.min) / s.step)) < 1e-6;
+  for (const [id, def] of Object.entries(registry))
+    for (const [key, s] of Object.entries(def.parameters || {})) {
+      if (s.hidden || s.options || typeof s.value !== 'number') continue;
+      assert.ok(fits(s, s.value), `${id}.${key} default ${s.value} is off its step`);
+    }
+  const pop = registry.murmuration.parameters.population;
+  for (const v of [1000, 5000, 20000, 25000, 30000]) assert.ok(fits(pop, v), `population ${v}`);
+});

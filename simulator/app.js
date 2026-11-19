@@ -772,7 +772,10 @@ function syncParameters() {
     if (field.type === "checkbox") field.checked = project.scene.params[key];
     else field.value = project.scene.params[key];
     field.onchange = () => {
-      if (!field.checkValidity()) return;
+      if (!field.checkValidity()) {
+        field.reportValidity();
+        return;
+      }
       update((p) => {
         p.scene.params[key] =
           field.type === "checkbox"
