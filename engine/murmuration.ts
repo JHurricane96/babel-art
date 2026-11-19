@@ -3,7 +3,7 @@ import type { RenderFrame } from "./render-frame";
 import { EvolutionSchedule, variationOf } from "./evolution";
 import type { EvolutionAction } from "./evolution";
 import type { Params, Simulation, Snapshot } from "./types";
-import { rng } from "./types";
+import { PackedData, rng, unpackData } from "./types";
 
 /**
  * Murmuration, revision 2: tens of thousands of starlings, each one drawn.
@@ -110,7 +110,7 @@ export const TUNING = {
   jink: 6,
   startleGap: 9, // seconds between spontaneous startles, on average
   floor: 20,
-  ceiling: 46,
+  ceiling: 42,
 };
 /** The density waves: wavelength, speed, turning rate, start angle, tilt, swell rate. */
 const WAVES = [
@@ -124,7 +124,7 @@ const DT = 1 / 60;
 export class Murmuration implements Simulation {
   tick = 0;
   historyBudgetBytes = 32 * 1024 * 1024;
-  birds: Float64Array;
+  birds: Float32Array;
   schedule: EvolutionSchedule;
   /** Which attractor pulls each bird (fixed per bird). */
   group: Uint8Array;
@@ -147,7 +147,8 @@ export class Murmuration implements Simulation {
     public params: Params,
   ) {
     const count = Math.max(1, Math.round(Number(params.population)));
-    this.birds = new Float64Array(count * BIRD_STRIDE);
+    // Single precision: half the memory traffic, and half the size saved.
+    this.birds = new Float32Array(count * BIRD_STRIDE);
     this.group = new Uint8Array(count);
     this.cell = new Int32Array(count);
     this.schedule = new EvolutionSchedule(seed);
@@ -178,9 +179,9 @@ export class Murmuration implements Simulation {
   attractor(g: number, t: number) {
     const s = (this.seed % 9973) * 0.37 + g * 2.1;
     return [
-      30 * Math.sin(t * 0.05 + s) + 10 * Math.sin(t * 0.13 + g + s * 0.3),
-      29 + 4 * Math.sin(t * 0.09 + g * 1.3 + s),
-      18 * Math.sin(t * 0.07 + g * 3.7 + s * 0.7),
+      20 * Math.sin(t * 0.05 + s) + 7 * Math.sin(t * 0.13 + g + s * 0.3),
+      27 + 4 * Math.sin(t * 0.09 + g * 1.3 + s),
+      14 * Math.sin(t * 0.07 + g * 3.7 + s * 0.7),
     ];
   }
   /** Panic every bird within `radius` of bird i that is not refractory. */
@@ -313,10 +314,18 @@ export class Murmuration implements Simulation {
     )
       this.scare(Math.floor(hash(this.seed * 23 + startle) * count), 3);
 
-    const damp = T.align + T.flow;
+    const damp = T.align + T.flow,
+      tick = this.tick,
+      cell = this.cell,
+      cellStep = this.cellStep,
+      cellA = this.cellA,
+      cellPanic = this.cellPanic,
+      cellCohesion = this.cellCohesion,
+      cellSpread = this.cellSpread,
+      group = this.group;
     for (let i = 0; i < count; i++) {
       const at = i * BIRD_STRIDE,
-        c = this.cell[i],
+        c = cell[i],
         px = b[at],
         py = b[at + 1],
         pz = b[at + 2];
@@ -324,8 +333,8 @@ export class Murmuration implements Simulation {
         vy = b[at + 4],
         vz = b[at + 5];
       // Steering shared by every bird in a cell, worked out once per cell.
-      if (c >= 0 && this.cellStep[c] !== this.tick) {
-        this.cellStep[c] = this.tick;
+      if (c >= 0 && cellStep[c] !== tick) {
+        cellStep[c] = tick;
         const c0 = c - 1,
           c1 = c + 1,
           c2 = c - GX,
@@ -334,22 +343,68 @@ export class Murmuration implements Simulation {
           c5 = c + GXY,
           inv =
             1 / (gc[c] + gc[c0] + gc[c1] + gc[c2] + gc[c3] + gc[c4] + gc[c5]),
-          sum = (g: Float32Array, k: number) =>
-            (g[c * 3 + k] +
-              g[c0 * 3 + k] +
-              g[c1 * 3 + k] +
-              g[c2 * 3 + k] +
-              g[c3 * 3 + k] +
-              g[c4 * 3 + k] +
-              g[c5 * 3 + k]) *
+          c3x = c * 3,
+          c03 = c0 * 3,
+          c13 = c1 * 3,
+          c23 = c2 * 3,
+          c33 = c3 * 3,
+          c43 = c4 * 3,
+          c53 = c5 * 3,
+          avx =
+            (gv[c3x] +
+              gv[c03] +
+              gv[c13] +
+              gv[c23] +
+              gv[c33] +
+              gv[c43] +
+              gv[c53]) *
             inv,
-          avx = sum(gv, 0),
-          avy = sum(gv, 1),
-          avz = sum(gv, 2),
-          apx = sum(gp, 0),
-          apy = sum(gp, 1),
-          apz = sum(gp, 2);
-        this.cellPanic[c] =
+          avy =
+            (gv[c3x + 1] +
+              gv[c03 + 1] +
+              gv[c13 + 1] +
+              gv[c23 + 1] +
+              gv[c33 + 1] +
+              gv[c43 + 1] +
+              gv[c53 + 1]) *
+            inv,
+          avz =
+            (gv[c3x + 2] +
+              gv[c03 + 2] +
+              gv[c13 + 2] +
+              gv[c23 + 2] +
+              gv[c33 + 2] +
+              gv[c43 + 2] +
+              gv[c53 + 2]) *
+            inv,
+          apx =
+            (gp[c3x] +
+              gp[c03] +
+              gp[c13] +
+              gp[c23] +
+              gp[c33] +
+              gp[c43] +
+              gp[c53]) *
+            inv,
+          apy =
+            (gp[c3x + 1] +
+              gp[c03 + 1] +
+              gp[c13 + 1] +
+              gp[c23 + 1] +
+              gp[c33 + 1] +
+              gp[c43 + 1] +
+              gp[c53 + 1]) *
+            inv,
+          apz =
+            (gp[c3x + 2] +
+              gp[c03 + 2] +
+              gp[c13 + 2] +
+              gp[c23 + 2] +
+              gp[c33 + 2] +
+              gp[c43 + 2] +
+              gp[c53 + 2]) *
+            inv;
+        cellPanic[c] =
           (gpn[c] + gpn[c0] + gpn[c1] + gpn[c2] + gpn[c3] + gpn[c4] + gpn[c5]) *
           inv;
         // The flow at the cell.
@@ -361,7 +416,7 @@ export class Murmuration implements Simulation {
           uz = 0.7 * Math.sin(qy) + Math.cos(qx);
         // Cohesion fades as the neighbourhood fills and turns outward past
         // denseCount birds a cell.
-        const coh = (this.cellCohesion[c] =
+        const coh = (cellCohesion[c] =
           T.cohesion * Math.max(-1, 1 - 1 / (inv * 7 * T.denseCount)));
         // Up the waves' slope, toward the nearest crest; and how high the
         // waves stand here (crests relax the spacing so birds pack tighter).
@@ -378,7 +433,7 @@ export class Murmuration implements Simulation {
           wz += wd[k + 2] * g;
           crest += Math.sin(ph) * wd[k + 7];
         }
-        this.cellSpread[c] =
+        cellSpread[c] =
           T.spread * Math.max(0.1, 1 - (T.waveDepth * crest) / WAVES.length);
         const p0 = gc[c0] * gc[c0],
           p1 = gc[c1] * gc[c1],
@@ -386,21 +441,21 @@ export class Murmuration implements Simulation {
           p3 = gc[c3] * gc[c3],
           p4 = gc[c4] * gc[c4],
           p5 = gc[c5] * gc[c5];
-        this.cellA[c * 3] =
+        cellA[c * 3] =
           avx * T.align +
           apx * coh -
           (gc[c1] - gc[c0]) * T.separate -
           (p1 - p0) * T.pressure +
           ux * T.flowSpeed * T.flow +
           wx;
-        this.cellA[c * 3 + 1] =
+        cellA[c * 3 + 1] =
           avy * T.align +
           apy * coh -
           (gc[c3] - gc[c2]) * T.separate -
           (p3 - p2) * T.pressure +
           uy * T.flowSpeed * 0.6 * T.flow +
           wy;
-        this.cellA[c * 3 + 2] =
+        cellA[c * 3 + 2] =
           avz * T.align +
           apz * coh -
           (gc[c5] - gc[c4]) * T.separate -
@@ -413,11 +468,11 @@ export class Murmuration implements Simulation {
         az = 0,
         nearPanic = 0;
       if (c >= 0) {
-        const coh = this.cellCohesion[c];
-        ax = this.cellA[c * 3] - vx * damp - px * coh;
-        ay = this.cellA[c * 3 + 1] - vy * damp - py * coh;
-        az = this.cellA[c * 3 + 2] - vz * damp - pz * coh;
-        nearPanic = this.cellPanic[c];
+        const coh = cellCohesion[c];
+        ax = cellA[c * 3] - vx * damp - px * coh;
+        ay = cellA[c * 3 + 1] - vy * damp - py * coh;
+        az = cellA[c * 3 + 2] - vz * damp - pz * coh;
+        nearPanic = cellPanic[c];
         // Even spacing: down the fine density's slope at this bird.
         const fx = (px - fox) / FCELL,
           fy = (py - foy) / FCELL,
@@ -456,7 +511,7 @@ export class Murmuration implements Simulation {
             sx * ty * (d011 - d010) +
             tx * ty * (d111 - d110),
           g2 = gx * gx + gy * gy + gz * gz,
-          spread = this.cellSpread[c],
+          spread = cellSpread[c],
           push =
             g2 * spread * spread > T.spreadMax * T.spreadMax
               ? T.spreadMax / Math.sqrt(g2)
@@ -469,7 +524,7 @@ export class Murmuration implements Simulation {
       ay += (random() - 0.5) * T.wander * 0.5;
       az += (random() - 0.5) * T.wander;
       // Pull toward this bird's attractor once outside its radius.
-      const a = this.group[i] ? a1 : a0,
+      const a = group[i] ? a1 : a0,
         dx = a[0] - px,
         dy = a[1] - py,
         dz = a[2] - pz,
@@ -551,15 +606,22 @@ export class Murmuration implements Simulation {
   snapshot(): Snapshot {
     return {
       tick: this.tick,
-      data: Array.from(this.birds),
+      // A single memory copy; it becomes compact text only when saved.
+      data: [],
+      packed: new PackedData(this.birds.slice()),
       extra: { schedule: this.schedule.snapshot() },
     };
   }
   restore(s: Snapshot) {
-    if (s.data.length !== this.birds.length || !s.data.every(Number.isFinite))
+    // Packed (current) or plain numbers (checkpoints saved before packing).
+    const values = s.packed ? unpackData(s.packed) : unpackData(s.data);
+    if (!values || values.length !== this.birds.length)
       throw new Error("Invalid murmuration checkpoint");
+    for (let i = 0; i < values.length; i++)
+      if (!Number.isFinite(values[i]))
+        throw new Error("Invalid murmuration checkpoint");
     this.tick = s.tick;
-    this.birds.set(s.data);
+    this.birds.set(values);
     this.schedule.restore(s.extra?.schedule as any, this.tick);
     // The per-cell cache is keyed by tick; clear it so nothing stale is reused.
     this.cellStep.fill(-1e9);

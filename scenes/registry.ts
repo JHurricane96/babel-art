@@ -172,10 +172,10 @@ registry.murmuration = {
     },
     population: {
       label: "Population · restart",
-      value: 20000,
+      value: 30000,
       min: 20,
       max: 40000,
-      step: 500,
+      step: 10,
       restart: true,
     },
     cohesion: { label: "Cohesion", value: 0.4, min: 0.05, max: 1, step: 0.05 },

@@ -4,6 +4,7 @@ import { validateSchedule, validateAction } from "../engine/evolution.ts";
 import { PARTICLE_STRIDE } from "../engine/particles.ts";
 import { SLIME_CELLS } from "../engine/slime.ts";
 import { BIRD_STRIDE } from "../engine/murmuration.ts";
+import { storedPacked } from "../engine/types.ts";
 import { PERFECT } from "./timing.js";
 
 import { registry, defaults, parameters } from "../scenes/registry.ts";
@@ -207,6 +208,10 @@ export function validateProject(input) {
 }
 
 function validateCheckpoint(c, scene) {
+  // Large states keep their numbers in a packed block (see engine/types.ts);
+  // it may arrive as the block, its JSON text, or IndexedDB's plain copy.
+  const packed = c?.packed === undefined ? undefined : storedPacked(c.packed);
+  if (c?.packed !== undefined && !packed) throw new Error("Invalid checkpoint");
   if (
     !c ||
     !Number.isInteger(c.tick) ||
@@ -234,20 +239,19 @@ function validateCheckpoint(c, scene) {
     )
       throw new Error("Invalid grid checkpoint");
   }
-  if (
-    scene.id === "murmuration" &&
-    Number(params.flockVersion) >= 2 &&
-    (c.data.length !== Number(params.population) * BIRD_STRIDE ||
-      !c.data.every((v, i) => {
-        const k = i % BIRD_STRIDE;
-        // metres, metres per second, bank (rad), escape clock (s)
-        return (
-          Number.isFinite(v) &&
-          Math.abs(v) <= [5000, 5000, 5000, 200, 200, 200, 3.2, 10][k]
-        );
-      }))
-  )
-    throw new Error("Invalid flock checkpoint");
+  if (scene.id === "murmuration" && Number(params.flockVersion) >= 2) {
+    const values = packed ? packed.values : c.data,
+      limits = [5000, 5000, 5000, 200, 200, 200, 3.2, 10];
+    if (values.length !== Number(params.population) * BIRD_STRIDE)
+      throw new Error("Invalid flock checkpoint");
+    // position, velocity, panic and its refractory clock
+    for (let i = 0; i < values.length; i++)
+      if (
+        !Number.isFinite(values[i]) ||
+        Math.abs(values[i]) > limits[i % BIRD_STRIDE]
+      )
+        throw new Error("Invalid flock checkpoint");
+  } else if (packed) throw new Error("Invalid checkpoint");
   if (
     scene.id === "murmuration" &&
     Number(params.flockVersion) < 2 &&
@@ -300,6 +304,7 @@ function validateCheckpoint(c, scene) {
   return {
     tick: c.tick,
     data: c.data,
+    ...(packed ? { packed } : {}),
     ...(c.extra
       ? {
           extra: {
