@@ -263,7 +263,7 @@ class RibbonGPU {
     gl.bufferData(gl.ARRAY_BUFFER, this.instances.byteLength, gl.DYNAMIC_DRAW);
     this.prog = program(
       gl,
-      `attribute vec2 p;attribute vec4 endpoints;attribute float warmth;uniform float width;varying float warm;varying float edge;void main(){vec2 delta=endpoints.zw-endpoints.xy;vec2 n=vec2(-delta.y,delta.x)/max(.001,length(delta));vec2 q=mix(endpoints.xy,endpoints.zw,p.x)+n*p.y*width*.5;warm=warmth;edge=p.y;gl_Position=vec4(q/vec2(640.,400.)*2.-1.,0.,1.);}`,
+      `attribute vec2 p;attribute vec4 endpoints;attribute float warmth;uniform float width;uniform vec2 size;varying float warm;varying float edge;void main(){vec2 delta=endpoints.zw-endpoints.xy;vec2 n=vec2(-delta.y,delta.x)/max(.001,length(delta));vec2 q=mix(endpoints.xy,endpoints.zw,p.x)+n*p.y*width*.5;warm=warmth;edge=p.y;gl_Position=vec4(q/size*2.-1.,0.,1.);}`,
       `precision highp float;varying float warm,edge;uniform vec3 c1,c2;uniform float opacity;void main(){gl_FragColor=vec4(mix(c1,c2,warm),opacity*(1.-smoothstep(.65,1.,abs(edge))));}`,
     );
   }
@@ -271,19 +271,20 @@ class RibbonGPU {
     if (this.gl2) this.gl2.vertexAttribDivisor(at, n);
     else this.extension!.vertexAttribDivisorANGLE(at, n);
   }
-  draw(d: Float32Array, colors: number[][], detail: number) {
+  draw(d: Float32Array, colors: number[][], detail: number, height = 400) {
     const gl = this.gl,
       p = this.prog;
     let n = 0;
     for (let i = 0; i < d.length; i += PARTICLE_STRIDE)
       for (let j = 0; j < PARTICLE_STRIDE - 2; j += 2) {
         this.instances[n++] = d[i + j] * 640;
-        this.instances[n++] = d[i + j + 1] * 400;
+        this.instances[n++] = d[i + j + 1] * height;
         this.instances[n++] = d[i + j + 2] * 640;
-        this.instances[n++] = d[i + j + 3] * 400;
+        this.instances[n++] = d[i + j + 3] * height;
         this.instances[n++] = ((i / PARTICLE_STRIDE) % 6) / 5;
       }
     gl.useProgram(p);
+    gl.uniform2f(gl.getUniformLocation(p, "size"), 640, height);
     const pos = gl.getAttribLocation(p, "p"),
       ends = gl.getAttribLocation(p, "endpoints"),
       warm = gl.getAttribLocation(p, "warmth");
@@ -567,6 +568,11 @@ export class EntityGPU implements SceneRenderer {
   sceneryProgram?: WebGLProgram;
   speck?: WebGLTexture;
   wallResolution: boolean;
+  maxScale?: number;
+  setAspect(aspect: number) {
+    if (this.kind === "murmuration" || !(aspect > 0)) return;
+    this.height = Math.max(160, Math.min(1280, Math.round(640 / aspect)));
+  }
   constructor(
     public gl: WebGLRenderingContext,
     public kind: "rivers" | "slime" | "murmuration",
@@ -580,7 +586,13 @@ export class EntityGPU implements SceneRenderer {
       gl.STATIC_DRAW,
     );
     this.bg = program(gl, vertex, background);
-    this.wallResolution = kind === "murmuration";
+    // Every kind draws at the wall's displayed resolution. Murmuration keeps
+    // its 640×400 frame (its camera and scenery are composed for it); rivers
+    // and slime take the wall's shape so their marks stay round.
+    this.wallResolution = true;
+    // Slime's veins come from a 192×120 field: past 1920 pixels across only
+    // the agent marks gain, and every extra pixel is shaded each tick.
+    if (kind === "slime") this.maxScale = 3;
     const info = gl.getExtension("WEBGL_debug_renderer_info");
     const software =
       info &&
@@ -696,9 +708,10 @@ export class EntityGPU implements SceneRenderer {
       b.rect(0, 0, 640, 400, [1, 1, 1, 1], [0, 0, 1, 1]);
       b.draw(640, 400, this.staticSky(a, width, height));
     } else gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    const [c0, c1, c2] = a.colors;
+    const [c0, c1, c2] = a.colors,
+      H = this.height;
     if (this.kind === "rivers") {
-      if (this.ribbons) this.ribbons.draw(d, a.colors, detail);
+      if (this.ribbons) this.ribbons.draw(d, a.colors, detail, H);
       else
         for (let pass = 0; pass < 2; pass++)
           for (let i = 0; i < d.length; i += PARTICLE_STRIDE) {
@@ -712,20 +725,20 @@ export class EntityGPU implements SceneRenderer {
             for (let j = 0; j < PARTICLE_STRIDE - 2; j += 2)
               b.line(
                 d[i + j] * 640,
-                d[i + j + 1] * 400,
+                d[i + j + 1] * H,
                 d[i + j + 2] * 640,
-                d[i + j + 3] * 400,
+                d[i + j + 3] * H,
                 pass === 0 ? 3.5 + detail * 3 : 0.55 + warm * 0.7,
                 c,
               );
           }
       for (let i = 0; i < d.length; i += PARTICLE_STRIDE * 7)
-        b.rect(d[i] * 640 - 0.7, d[i + 1] * 400 - 0.7, 1.4, 1.4, [...c2, 0.8]);
+        b.rect(d[i] * 640 - 0.7, d[i + 1] * H - 0.7, 1.4, 1.4, [...c2, 0.8]);
     } else if (this.kind === "slime") {
       const slimeRoles = paletteRoles(a.colors);
       for (let i = SLIME_CELLS; i < d.length; i += 3) {
         const x = d[i] * 640,
-          y = d[i + 1] * 400,
+          y = d[i + 1] * H,
           dx = Math.cos(d[i + 2]) * 2.5,
           dy = Math.sin(d[i + 2]) * 2.5,
           // Agents wandering through empty space stay faint; agents riding
@@ -823,7 +836,7 @@ export class EntityGPU implements SceneRenderer {
         b.line(x + Math.sin(t * 0.8 + i) * 4, y, x + 6, y - 8, 1, reed);
       }
     }
-    b.draw(640, 400);
+    b.draw(640, H);
   }
   /** The scenery, rendered once per appearance and image size. */
   staticSky(a: Appearance, width: number, height: number) {
