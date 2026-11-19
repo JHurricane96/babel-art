@@ -131,13 +131,31 @@ test("projects migrate and validate flock revisions", () => {
   for (let i = 0; i < 30; i++) sim.step();
   current.checkpoint = sim.snapshot();
   current.time = sim.tick / 60;
-  assert.equal(
-    validateProject(current).checkpoint.data.length,
-    1000 * BIRD_STRIDE,
-  );
-  current.checkpoint = {
-    ...current.checkpoint,
-    data: current.checkpoint.data.slice(BIRD_STRIDE),
-  };
-  assert.throws(() => validateProject(current));
+  // Packed: the flock's numbers travel as a binary block, and as compact
+  // text in JSON; every stored form restores the exact same flock.
+  const valid = validateProject(current);
+  assert.equal(valid.checkpoint.packed.length, 1000 * BIRD_STRIDE);
+  const json = JSON.parse(JSON.stringify(current));
+  assert.match(json.checkpoint.packed, /^f(32|64):/);
+  assert.ok(JSON.stringify(current).length < 1000 * BIRD_STRIDE * 12);
+  const fromIndexedDb = structuredClone(current), // the block loses its class
+    plain = {
+      ...current,
+      checkpoint: {
+        ...current.checkpoint,
+        data: Array.from(current.checkpoint.packed.values),
+      },
+    };
+  delete plain.checkpoint.packed;
+  for (const stored of [json, fromIndexedDb, plain]) {
+    const restored = new Murmuration(1, current.scene.params);
+    restored.restore(validateProject(stored).checkpoint);
+    assert.deepEqual(Array.from(restored.birds), Array.from(sim.birds));
+  }
+  // A truncated or garbled block is refused.
+  const broken = JSON.parse(JSON.stringify(current));
+  broken.checkpoint.packed = broken.checkpoint.packed.slice(0, -40);
+  assert.throws(() => validateProject(broken));
+  broken.checkpoint.packed = "f64:not base64!";
+  assert.throws(() => validateProject(broken));
 });

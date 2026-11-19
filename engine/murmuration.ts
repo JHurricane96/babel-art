@@ -3,7 +3,7 @@ import type { RenderFrame } from "./render-frame";
 import { EvolutionSchedule, variationOf } from "./evolution";
 import type { EvolutionAction } from "./evolution";
 import type { Params, Simulation, Snapshot } from "./types";
-import { rng } from "./types";
+import { PackedData, rng, unpackData } from "./types";
 
 /**
  * Murmuration, revision 2: tens of thousands of starlings, each one drawn.
@@ -551,15 +551,22 @@ export class Murmuration implements Simulation {
   snapshot(): Snapshot {
     return {
       tick: this.tick,
-      data: Array.from(this.birds),
+      // A single memory copy; it becomes compact text only when saved.
+      data: [],
+      packed: new PackedData(this.birds.slice()),
       extra: { schedule: this.schedule.snapshot() },
     };
   }
   restore(s: Snapshot) {
-    if (s.data.length !== this.birds.length || !s.data.every(Number.isFinite))
+    // Packed (current) or plain numbers (checkpoints saved before packing).
+    const values = s.packed ? unpackData(s.packed) : unpackData(s.data);
+    if (!values || values.length !== this.birds.length)
       throw new Error("Invalid murmuration checkpoint");
+    for (let i = 0; i < values.length; i++)
+      if (!Number.isFinite(values[i]))
+        throw new Error("Invalid murmuration checkpoint");
     this.tick = s.tick;
-    this.birds.set(s.data);
+    this.birds.set(values);
     this.schedule.restore(s.extra?.schedule as any, this.tick);
     // The per-cell cache is keyed by tick; clear it so nothing stale is reused.
     this.cellStep.fill(-1e9);

@@ -38,7 +38,70 @@ export interface Scene {
 export interface Snapshot {
   tick: number;
   data: number[];
+  /**
+   * Large states (Murmuration) keep their numbers here instead, as a packed
+   * binary block, and leave `data` empty.
+   */
+  packed?: PackedData;
   extra?: Record<string, unknown>;
+}
+
+/**
+ * A large snapshot's numbers, kept as a binary copy. Taking one is a single
+ * memory copy, and it is stored as is in IndexedDB. Written to JSON (saves in
+ * localStorage, exports) it becomes "f32:" or "f64:" followed by base64 of
+ * the little-endian bytes, which restores the exact same values.
+ */
+export class PackedData {
+  constructor(public values: Float32Array | Float64Array) {}
+  get length() {
+    return this.values.length;
+  }
+  toJSON() {
+    const v = this.values,
+      bytes = new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+    let text = "";
+    for (let i = 0; i < bytes.length; i += 0x8000)
+      text += String.fromCharCode.apply(
+        null,
+        bytes.subarray(i, i + 0x8000) as unknown as number[],
+      );
+    return (v instanceof Float32Array ? "f32:" : "f64:") + btoa(text);
+  }
+}
+/**
+ * The numbers of a snapshot's data in any stored form: a plain array, a
+ * PackedData, its JSON text, or the plain object IndexedDB returns for it.
+ * Returns undefined for anything else.
+ */
+export function unpackData(data: unknown): ArrayLike<number> | undefined {
+  if (Array.isArray(data)) return data;
+  if (data instanceof PackedData) return data.values;
+  const values = (data as { values?: unknown } | null)?.values;
+  if (values instanceof Float32Array || values instanceof Float64Array)
+    return values;
+  if (typeof data === "string" && /^f(32|64):/.test(data)) {
+    let text: string;
+    try {
+      text = atob(data.slice(4));
+    } catch {
+      return undefined;
+    }
+    const size = data.startsWith("f32") ? 4 : 8;
+    if (text.length % size) return undefined;
+    const bytes = new Uint8Array(text.length);
+    for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i);
+    return size === 4
+      ? new Float32Array(bytes.buffer)
+      : new Float64Array(bytes.buffer);
+  }
+  return undefined;
+}
+/** Normalises a stored packed block (any of its forms) to a PackedData. */
+export function storedPacked(data: unknown): PackedData | undefined {
+  if (data == null || Array.isArray(data)) return undefined;
+  const v = unpackData(data);
+  return v ? new PackedData(v as Float32Array | Float64Array) : undefined;
 }
 export interface World {
   x: number;
