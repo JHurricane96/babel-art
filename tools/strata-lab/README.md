@@ -5,6 +5,8 @@ session). Write outputs to a scratch folder, not into the repository.
 
 | Tool | What it does |
 | --- | --- |
+| `pi-budget/` | Estimates Raspberry Pi 5 cost from this machine: CPU time scaled by a calibration factor from benchmarks with published Pi 5 results, GPU time from a cost model. Spikes for the material simulation and the light flood. See its README. |
+| `sketches/motion.py` | A 20-second motion test of the cavern panel, with light options (stepped, steady, calm, banded, smooth) and a count of pixels the light alone changes per frame. |
 | `sketches/mockup.py` | A static mock-up of one dusk tableau on the default four-screen wall, used to settle the look: pixel size, light, palette. Needs numpy and Pillow. |
 
 ```sh
