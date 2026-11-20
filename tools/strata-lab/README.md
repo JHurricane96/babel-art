@@ -1,0 +1,16 @@
+# Strata lab
+
+Tools for developing Strata, a new artwork (see the vision doc linked from the
+session). Write outputs to a scratch folder, not into the repository.
+
+| Tool | What it does |
+| --- | --- |
+| `sketches/mockup.py` | A static mock-up of one dusk tableau on the default four-screen wall, used to settle the look: pixel size, light, palette. Needs numpy and Pillow. |
+
+```sh
+python tools/strata-lab/sketches/mockup.py /tmp/strata 320 480 640
+```
+
+Each size is the pixel-art width of one 531 mm panel (480 = 4×4 screen pixels
+per art pixel on a 1080p panel). It writes the full wall at screen resolution,
+a 1600-pixel preview, and a 1:1 crop around the camp.
