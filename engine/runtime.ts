@@ -19,6 +19,11 @@ const positioned = vertex
     "gl_Position=vec4(p,0.,1.);",
     "vec2 a=p*outputRect.zw*.5;a.y=-a.y;vec2 b=outputRect.xy+mat2(cos(rotation),sin(rotation),-sin(rotation),cos(rotation))*a;gl_Position=vec4(b.x/view.x*2.-1.,1.-b.y/view.y*2.,0.,1.);",
   );
+/**
+ * The wall the procedural artworks are composed for: the default staggered
+ * arrangement's bounds in millimetres (shared/model.js makeLayout + layoutBounds).
+ */
+export const PROCEDURAL_WALL = { x: -6, y: -6, width: 1096, height: 717 };
 export class Runtime {
   gl: WebGLRenderingContext;
   canvas: HTMLCanvasElement;
@@ -134,6 +139,18 @@ export class Runtime {
           .map((key) => [key, scene.params?.[key]]),
       );
     if (this.key === key) {
+      // A new arrangement can give the same artwork a new world rectangle.
+      // Simulations work in normalised coordinates, so only drawing changes.
+      if (
+        world &&
+        (world.x !== this.world.x ||
+          world.y !== this.world.y ||
+          world.width !== this.world.width ||
+          world.height !== this.world.height)
+      ) {
+        this.world = world;
+        this.clearImages();
+      }
       if (this.sim && JSON.stringify(scene.params) !== this.requestedParams) {
         this.events = this.events.filter((e) => e.tick < this.sim!.tick);
         this.recordEvent({
@@ -627,7 +644,23 @@ export class Runtime {
     const u = (n: string) => this.uniform(p!, n);
     gl.uniform4fv(u("outputRect"), output);
     gl.uniform2f(u("view"), this.canvas.width, this.canvas.height);
-    gl.uniform4f(u("rect"), panel.x, panel.y, panel.width, panel.height);
+    if (key !== "entity" && key !== "grid") {
+      // Procedural artworks are composed in millimetres for the default wall.
+      // Map this arrangement's world onto it, centred and uniformly scaled, so
+      // any arrangement (a single monitor too) shows the whole composition.
+      const W = PROCEDURAL_WALL,
+        w = this.world,
+        s = Math.min(W.width / w.width, W.height / w.height),
+        cx = W.x + W.width / 2 + (panel.x + panel.width / 2 - w.x - w.width / 2) * s,
+        cy = W.y + W.height / 2 + (panel.y + panel.height / 2 - w.y - w.height / 2) * s;
+      gl.uniform4f(
+        u("rect"),
+        cx - (panel.width * s) / 2,
+        cy - (panel.height * s) / 2,
+        panel.width * s,
+        panel.height * s,
+      );
+    } else gl.uniform4f(u("rect"), panel.x, panel.y, panel.width, panel.height);
     gl.uniform1f(u("rotation"), (panel.rotation * Math.PI) / 180);
     gl.uniform2f(u("times"), frame.current / 1000, frame.previous / 1000);
     gl.uniform1f(u("seed"), scene.seed % 100000);

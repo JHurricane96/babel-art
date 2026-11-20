@@ -104,7 +104,7 @@ function update(fn) {
   sync();
   changed();
 }
-const panels = project.layout.map((p, i) => {
+function makePanel(p, i) {
   const node = document.createElement("div");
   node.className = "panel";
   node.tabIndex = 0;
@@ -159,20 +159,44 @@ const panels = project.layout.map((p, i) => {
     node.addEventListener("pointercancel", stop);
   });
   return { node, canvas, renderer };
-});
+}
+let panels = [];
+/** Panel elements follow the arrangement: one for a single monitor, four for a wall. */
+function buildPanels() {
+  panels.forEach((p) => p.node.remove());
+  panels = project.layout.map(makePanel);
+  selected = Math.min(selected, panels.length - 1);
+  for (const picker of document.querySelectorAll(".panel-picker"))
+    picker.replaceChildren(
+      ...project.layout.map((_, i) => {
+        const b = document.createElement("button");
+        b.textContent = `0${i + 1}`;
+        b.onclick = () => {
+          selected = i;
+          syncInspectors();
+        };
+        return b;
+      }),
+    );
+}
+buildPanels();
+let presenting = false;
 function position(refit = true) {
   const bounds = layoutBounds(project.layout),
     wall = $("wall");
   if (refit) {
-    const scale =
-      Math.min(
-        wall.clientWidth / bounds.width,
-        wall.clientHeight / bounds.height,
-      ) * 0.91;
+    // Fullscreen fits the lit image areas edge to edge; bezels fall outside
+    // or into the black between screens.
+    const area = presenting
+        ? layoutBounds(project.layout.map((p) => ({ ...p, bezel: 0 })))
+        : bounds,
+      scale =
+        Math.min(wall.clientWidth / area.width, wall.clientHeight / area.height) *
+        (presenting ? 1 : 0.91);
     fit = {
       scale,
-      x: (wall.clientWidth - bounds.width * scale) / 2 - bounds.x * scale,
-      y: (wall.clientHeight - bounds.height * scale) / 2 - bounds.y * scale,
+      x: (wall.clientWidth - area.width * scale) / 2 - area.x * scale,
+      y: (wall.clientHeight - area.height * scale) / 2 - area.y * scale,
     };
   }
   project.layout.forEach((p, i) => {
@@ -188,9 +212,36 @@ function position(refit = true) {
     });
   });
   $("wall-size").textContent =
-    `${Math.round(bounds.width)} × ${Math.round(bounds.height)} mm · 4 PANELS`;
+    `${Math.round(bounds.width)} × ${Math.round(bounds.height)} mm · ${project.layout.length} PANEL${project.layout.length === 1 ? "" : "S"}`;
 }
 new ResizeObserver(() => position()).observe($("wall"));
+function setPresenting(on) {
+  if (presenting === on) return;
+  presenting = on;
+  document.body.classList.toggle("presenting", on);
+  position();
+}
+$("present").onclick = async () => {
+  setPresenting(true);
+  // The browser may refuse fullscreen (an embedded preview, for example); the
+  // page still shows only the artwork, filling the window.
+  try {
+    await document.documentElement.requestFullscreen?.();
+  } catch {}
+};
+document.addEventListener("fullscreenchange", () => {
+  if (!document.fullscreenElement) setPresenting(false);
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || !presenting) return;
+  if (document.fullscreenElement) document.exitFullscreen?.();
+  setPresenting(false);
+});
+$("stage").addEventListener("dblclick", () => {
+  if (!presenting) return;
+  if (document.fullscreenElement) document.exitFullscreen?.();
+  else setPresenting(false);
+});
 for (const [id, s] of Object.entries(SCENES)) {
   if ((stages[id] || 0) > RELEASE) continue;
   const b = document.createElement("button");
@@ -213,16 +264,6 @@ for (const [id, s] of Object.entries(SCENES)) {
 }
 for (const [id, p] of Object.entries(PALETTES))
   $("palette").add(new Option(p.name, id));
-for (const picker of document.querySelectorAll(".panel-picker"))
-  for (let i = 0; i < 4; i++) {
-    const b = document.createElement("button");
-    b.textContent = `0${i + 1}`;
-    b.onclick = () => {
-      selected = i;
-      syncInspectors();
-    };
-    picker.append(b);
-  }
 const geometry = {
   x: ["X · mm", -5000, 5000, 1],
   y: ["Y · mm", -5000, 5000, 1],
@@ -280,7 +321,8 @@ function syncInspectors() {
   syncFields();
 }
 function sync() {
-  if (!project.world && SCENES[project.scene.id].kind !== "procedural") {
+  if (panels.length !== project.layout.length) buildPanels();
+  if (!project.world) {
     const b = layoutBounds(project.layout);
     project.world = { x: b.x, y: b.y, width: b.width, height: b.height };
   }
@@ -367,7 +409,10 @@ $("apply-layout").onclick = () => {
   update((p) => {
     const old = p.layout;
     p.layout = makeLayout($("layout-preset").value, gap);
-    p.layout.forEach((v, i) => (v.timing = old[i].timing));
+    p.layout.forEach((v, i) => (v.timing = old[i]?.timing ?? v.timing));
+    // The artwork is refitted to the new arrangement (drawing only: the
+    // simulations work in normalised coordinates).
+    delete p.world;
   });
 };
 $("apply-timing").onclick = () =>

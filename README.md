@@ -33,7 +33,8 @@ The hosted app uses browser storage at its hosting origin. Localhost saves do no
 ## Explore
 
 - Choose Tidal Ribbons, Julia Garden, Gap Travelers, Sync Study, Living Tapestry, Chemical Garden, Murmuration, or Platformer Terrarium. Change palettes, speed, and seeds. The daily seed uses the date displayed in the inspector.
-- Drag panels or use Layout to edit their active dimensions, position, rotation, and bezel in millimeters. Preset gaps measure housing-to-housing distance; two bezels add to the hidden image distance.
+- Drag panels or use Layout to edit their active dimensions, position, rotation, and bezel in millimeters. Preset gaps measure housing-to-housing distance; two bezels add to the hidden image distance. Arrangements are Staggered, Grid and Cascade (four panels) and Single monitor (one); applying one fits the artwork to it.
+- **Fullscreen ⤢** (under the wall) shows only the artwork on the screens, with black between them; with Single monitor that is the artwork alone, edge to edge. Esc or a double-click leaves it. If the browser refuses fullscreen (some embedded previews), the artwork still fills the window.
 - Pause, enter a time, scrub, or step by 1/60 second. Time is an unscaled simulation clock; scene speed applies after timing calculations.
 - In Timing, apply an illustrative preset, select a panel, and tune delay, Hz, refresh phase, delivery jitter, drift, and scanout direction. Switch A/B to compare configured timing against a common 60 Hz aligned reference. Pause first for exact comparisons.
 - Type simple commands such as “show chemical garden”, “show flocking”, “show platformer”, “geometric”, or the existing commands: calmer/slower, faster, fireflies/particles, ribbons/waves, fractal/Julia, warmer, cooler. Commands are rule-based; Undo restores the previous project edit.
