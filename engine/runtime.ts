@@ -456,7 +456,7 @@ export class Runtime {
         4096,
         Number(this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE)) || 4096,
       ),
-      cap = Math.min(limit / r.width, limit / r.height);
+      cap = Math.min(limit / r.width, limit / r.height, r.maxScale ?? 99);
     return Math.min(cap, Math.max(this.entityScale, Math.ceil(wanted * 4) / 4));
   }
   prepareFrames(frames: any[], scene: any, colors: number[][]) {
@@ -483,6 +483,7 @@ export class Runtime {
       selected = tick;
     }
     const gl = this.gl;
+    this.renderer?.setAspect?.(this.world.width / this.world.height);
     const scale = this.imageScale();
     const width = Math.round((this.renderer?.width ?? 640) * scale);
     const height = Math.round((this.renderer?.height ?? 400) * scale);

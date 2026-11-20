@@ -21,6 +21,14 @@ export interface SceneRenderer {
    * quality, for scenes whose detail is finer than a 640-wide pixel.
    */
   wallResolution?: boolean;
+  /**
+   * Called with the wall's width ÷ height before each image is sized. A
+   * renderer that adopts it draws in a 640-wide space of that shape, so marks
+   * stay round instead of being stretched to fit the wall.
+   */
+  setAspect?(aspect: number): void;
+  /** Largest wall-resolution image, as a multiple of width × height. */
+  maxScale?: number;
   /** Sub-pixel offset (source pixels) to apply when sampling a pixelated image. */
   sourceOffset?(frame: RenderFrame): number[];
   render(
