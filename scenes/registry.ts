@@ -212,7 +212,9 @@ registry.rivers = {
   version: 1,
   kind: "entities",
   create: (gl, seed, params) => new ParticleRivers(seed, params),
-  styles: ["silk"],
+  // "gliding silk" (default): tails slide smoothly with the heads.
+  // "silk": the original look, tails step forward six times a second.
+  styles: ["gliding silk", "silk"],
   parameters: {
     population: {
       label: "Particles · restart",

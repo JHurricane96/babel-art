@@ -243,8 +243,17 @@ class MarkStream {
  * those of the original straight segments.
  */
 const RIBBON_STEPS = 4;
+/**
+ * How much of a river trail's last segment to draw at a given tick, for the
+ * "gliding silk" style. A trail keeps its head every tick but its other
+ * points only every sixth tick, so a fully drawn last segment makes the tail
+ * step forward every sixth tick while the head glides (plain "silk"). Drawing
+ * the last segment only back to a fixed age (31 ticks behind the head) makes
+ * the tail slide smoothly instead.
+ */
+export const riverTailExtent = (tick: number) => (6 - (tick % 6)) / 6;
 class RibbonGPU {
-  instances = new Float32Array(1800 * 6 * 9);
+  instances = new Float32Array(1800 * 6 * 10);
   mesh: WebGLBuffer;
   buffer: WebGLBuffer;
   prog: WebGLProgram;
@@ -274,10 +283,10 @@ class RibbonGPU {
     gl.bufferData(gl.ARRAY_BUFFER, this.instances.byteLength, gl.DYNAMIC_DRAW);
     this.prog = program(
       gl,
-      `attribute vec2 p;attribute vec4 before;attribute vec4 after;attribute float warmth;uniform float width;uniform vec2 size;varying float warm;varying float edge;
+      `attribute vec2 p;attribute vec4 before;attribute vec4 after;attribute float warmth;attribute float extent;uniform float width;uniform vec2 size;varying float warm;varying float edge;
 vec2 curve(vec2 a,vec2 b,vec2 c,vec2 d,float t){return .5*(2.*b+(c-a)*t+(2.*a-5.*b+4.*c-d)*t*t+(3.*b-a-3.*c+d)*t*t*t);}
 vec2 slope(vec2 a,vec2 b,vec2 c,vec2 d,float t){return .5*((c-a)+2.*(2.*a-5.*b+4.*c-d)*t+3.*(3.*b-a-3.*c+d)*t*t);}
-void main(){vec2 a=before.xy,b=before.zw,c=after.xy,d=after.zw;vec2 q=curve(a,b,c,d,p.x);vec2 s=slope(a,b,c,d,p.x);float l=length(s);if(l<1e-4){s=c-b;l=length(s);}vec2 n=l<1e-4?vec2(0.):vec2(-s.y,s.x)/l;q+=n*p.y*width*.5;warm=warmth;edge=p.y;gl_Position=vec4(q/size*2.-1.,0.,1.);}`,
+void main(){vec2 a=before.xy,b=before.zw,c=after.xy,d=after.zw;float t=p.x*extent;vec2 q=curve(a,b,c,d,t);vec2 s=slope(a,b,c,d,t);float l=length(s);if(l<1e-4){s=c-b;l=length(s);}vec2 n=l<1e-4?vec2(0.):vec2(-s.y,s.x)/l;q+=n*p.y*width*.5;warm=warmth;edge=p.y;gl_Position=vec4(q/size*2.-1.,0.,1.);}`,
       `precision highp float;varying float warm,edge;uniform vec3 c1,c2;uniform float opacity;void main(){gl_FragColor=vec4(mix(c1,c2,warm),opacity*(1.-smoothstep(.65,1.,abs(edge))));}`,
     );
   }
@@ -285,7 +294,13 @@ void main(){vec2 a=before.xy,b=before.zw,c=after.xy,d=after.zw;vec2 q=curve(a,b,
     if (this.gl2) this.gl2.vertexAttribDivisor(at, n);
     else this.extension!.vertexAttribDivisorANGLE(at, n);
   }
-  draw(d: Float32Array, colors: number[][], detail: number, height = 400) {
+  draw(
+    d: Float32Array,
+    colors: number[][],
+    detail: number,
+    height: number,
+    tail: number,
+  ) {
     const gl = this.gl,
       p = this.prog,
       last = PARTICLE_STRIDE / 2 - 1;
@@ -299,13 +314,15 @@ void main(){vec2 a=before.xy,b=before.zw,c=after.xy,d=after.zw;vec2 q=curve(a,b,
           this.instances[n++] = d[i + 2 * k + 1] * height;
         }
         this.instances[n++] = warmth;
+        this.instances[n++] = j === last - 1 ? tail : 1;
       }
     }
     gl.useProgram(p);
     const pos = gl.getAttribLocation(p, "p"),
       before = gl.getAttribLocation(p, "before"),
       after = gl.getAttribLocation(p, "after"),
-      warm = gl.getAttribLocation(p, "warmth");
+      warm = gl.getAttribLocation(p, "warmth"),
+      extent = gl.getAttribLocation(p, "extent");
     gl.bindBuffer(gl.ARRAY_BUFFER, this.mesh);
     gl.enableVertexAttribArray(pos);
     gl.vertexAttribPointer(pos, 2, gl.FLOAT, false, 0, 0);
@@ -315,9 +332,10 @@ void main(){vec2 a=before.xy,b=before.zw,c=after.xy,d=after.zw;vec2 q=curve(a,b,
       [before, 4, 0],
       [after, 4, 16],
       [warm, 1, 32],
+      [extent, 1, 36],
     ]) {
       gl.enableVertexAttribArray(at);
-      gl.vertexAttribPointer(at, size, gl.FLOAT, false, 36, offset);
+      gl.vertexAttribPointer(at, size, gl.FLOAT, false, 40, offset);
       this.divisor(at, 1);
     }
     gl.uniform2f(gl.getUniformLocation(p, "size"), 640, height);
@@ -326,7 +344,7 @@ void main(){vec2 a=before.xy,b=before.zw,c=after.xy,d=after.zw;vec2 q=curve(a,b,
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     const vertices = RIBBON_STEPS * 6,
-      count = n / 9;
+      count = n / 10;
     for (let pass = 0; pass < 2; pass++) {
       gl.uniform1f(
         gl.getUniformLocation(p, "width"),
@@ -340,7 +358,7 @@ void main(){vec2 a=before.xy,b=before.zw,c=after.xy,d=after.zw;vec2 q=curve(a,b,
       else
         this.extension!.drawArraysInstancedANGLE(gl.TRIANGLES, 0, vertices, count);
     }
-    for (const at of [before, after, warm]) {
+    for (const at of [before, after, warm, extent]) {
       this.divisor(at, 0);
       gl.disableVertexAttribArray(at);
     }
@@ -736,7 +754,10 @@ export class EntityGPU implements SceneRenderer {
     const [c0, c1, c2] = a.colors,
       H = this.height;
     if (this.kind === "rivers") {
-      if (this.ribbons) this.ribbons.draw(d, a.colors, detail, H);
+      // Plain silk keeps the original stepping tails; gliding silk trims the
+      // last segment so tails slide with the heads.
+      const tail = a.style === "gliding silk" ? riverTailExtent(f.tick) : 1;
+      if (this.ribbons) this.ribbons.draw(d, a.colors, detail, H, tail);
       else
         for (let pass = 0; pass < 2; pass++)
           for (let i = 0; i < d.length; i += PARTICLE_STRIDE) {
@@ -747,15 +768,17 @@ export class EntityGPU implements SceneRenderer {
                 warm,
                 pass === 0 ? 0.08 + detail * 0.08 : 0.36 + detail * 0.36,
               );
-            for (let j = 0; j < PARTICLE_STRIDE - 2; j += 2)
+            for (let j = 0; j < PARTICLE_STRIDE - 2; j += 2) {
+              const k = j === PARTICLE_STRIDE - 4 ? tail : 1;
               b.line(
                 d[i + j] * 640,
                 d[i + j + 1] * H,
-                d[i + j + 2] * 640,
-                d[i + j + 3] * H,
+                (d[i + j] + (d[i + j + 2] - d[i + j]) * k) * 640,
+                (d[i + j + 1] + (d[i + j + 3] - d[i + j + 1]) * k) * H,
                 pass === 0 ? 3.5 + detail * 3 : 0.55 + warm * 0.7,
                 c,
               );
+            }
           }
       for (let i = 0; i < d.length; i += PARTICLE_STRIDE * 7)
         b.rect(d[i] * 640 - 0.7, d[i + 1] * H - 0.7, 1.4, 1.4, [...c2, 0.8]);
