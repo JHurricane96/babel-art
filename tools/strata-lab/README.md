@@ -8,8 +8,13 @@ session). Write outputs to a scratch folder, not into the repository.
 | `sketches/mockup.py` | A static mock-up of one dusk tableau on the default four-screen wall, used to settle the look: pixel size, light, palette. Needs numpy and Pillow. |
 
 ```sh
-python tools/strata-lab/sketches/mockup.py /tmp/strata 320 480 640
+python tools/strata-lab/sketches/mockup.py /tmp/strata 320 480 640   # pixel sizes
+python tools/strata-lab/sketches/mockup.py /tmp/strata --variants   # looks at 480
 ```
+
+The look variants (`VARIANTS` in the script) are a dark cut-away with pools of
+light, a brighter illustrated cross-section, smooth instead of stepped light,
+a warm sandstone day, and a cold granite night.
 
 Each size is the pixel-art width of one 531 mm panel (480 = 4×4 screen pixels
 per art pixel on a 1080p panel). It writes the full wall at screen resolution,

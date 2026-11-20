@@ -62,7 +62,36 @@ def smooth(e0, e1, x):
     return t * t * (3 - 2 * t)
 
 
-def render(D, out, seed=7):
+ROCKS = {
+    "dusk": ("#b98a5e", "#a26f4c", "#8c5a44", "#7a5a52", "#5f5560", "#4d4a5c", "#3e3d52", "#353246"),
+    "warm": ("#d9a36a", "#c98a55", "#b06e45", "#9a5a3e", "#84503c", "#6f4538", "#5a3a32", "#47302c"),
+    "cold": ("#9aa3ad", "#848f9c", "#6f7b8b", "#5d6878", "#4c5666", "#3e4656", "#323947", "#282e3a"),
+}
+SKIES = {
+    "dusk": dict(stops=("#191c3c", "#5a3f78", "#f0a060"), sun=(930, 236, 15, "#ffe3a8", "#ffb070", 0.5), stars=0.9975,
+                 ridges=(("#6b4f86", 0.55), ("#3f2f5a", 0.3)), cloud=("#a77aa8", "#f4b39a"), water=("#2f6f86", "#0d2233"),
+                 surf="#ffd9a8", skylight=("#ffd2b0", 1.15), ambient="#9aa0d0"),
+    "day": dict(stops=("#2f6db5", "#6fa8dc", "#e6e2c6"), sun=(820, 60, 11, "#fffbe8", "#fff2c0", 0.35), stars=None,
+                ridges=(("#8fa6c4", 0.5), ("#6f86a8", 0.35)), cloud=("#f4f6fa", "#c3c8d6"), water=("#3f8fb0", "#123a55"),
+                surf="#e8f6ff", skylight=("#fff6e6", 1.45), ambient="#b8bcc8"),
+    "night": dict(stops=("#04050c", "#0d1430", "#263060"), sun=(880, 80, 10, "#e8ecff", "#9fb0ff", 0.25), stars=0.993,
+                  ridges=(("#1c2244", 0.5), ("#121734", 0.35)), cloud=("#1f2850", "#56608f"), water=("#14304a", "#050d18"),
+                  surf="#9fb0e0", skylight=("#8ea0e0", 0.7), ambient="#6870a8"),
+}
+DEFAULTS = dict(sky="dusk", rock="dusk", cut_top=0.66, cut_bottom=0.40, cave_back=0.2, levels=5)
+VARIANTS = {
+    "a-dark": {},
+    "b-bright": dict(cut_top=0.95, cut_bottom=0.7, cave_back=0.34),
+    "c-smooth": dict(levels=0),
+    "e-day-warm": dict(sky="day", rock="warm", cut_top=0.9, cut_bottom=0.6, cave_back=0.28),
+    "f-night-cold": dict(sky="night", rock="cold", cut_top=0.55, cut_bottom=0.32, cave_back=0.16),
+}
+
+
+def render(D, out, seed=7, name=None, **opt):
+    V = {**DEFAULTS, **opt}
+    SK = SKIES[V["sky"]]
+    name = name or str(D)
     k = D / PW  # art px per mm
     W, H = int(round(WW * k)), int(round(WH * k))
     xs = (np.arange(W) + 0.5) / k + WX0  # mm at pixel centres
@@ -99,7 +128,7 @@ def render(D, out, seed=7):
     sky = (~solid) & (~cave_air) & (~water)
 
     # ---- Albedo of rock: strata bands, textured, darker with depth ----
-    strata = [hex3(h) for h in ("#b98a5e", "#a26f4c", "#8c5a44", "#7a5a52", "#5f5560", "#4d4a5c", "#3e3d52", "#353246")]
+    strata = [hex3(h) for h in ROCKS[V["rock"]]]
     band = np.floor((Y + 14 * np.sin(X / 75) + 8 * fbm(X / 50, Y / 50, 8) - 150) / 24).astype(int)
     band = np.clip(band, 0, len(strata) - 1)
     rock = np.stack([np.choose(band, [c[i] for c in strata]) for i in range(3)], -1)
@@ -183,22 +212,22 @@ def render(D, out, seed=7):
     t = np.clip((Y + 6) / 260, 0, 1)
     skyc = np.where(
         (t < 0.55)[..., None],
-        hex3("#191c3c")[None, None] * (1 - t[..., None] / 0.55) + hex3("#5a3f78") * (t[..., None] / 0.55),
-        hex3("#5a3f78") * (1 - (t[..., None] - 0.55) / 0.45) + hex3("#f0a060") * ((t[..., None] - 0.55) / 0.45),
+        hex3(SK["stops"][0])[None, None] * (1 - t[..., None] / 0.55) + hex3(SK["stops"][1]) * (t[..., None] / 0.55),
+        hex3(SK["stops"][1]) * (1 - (t[..., None] - 0.55) / 0.45) + hex3(SK["stops"][2]) * ((t[..., None] - 0.55) / 0.45),
     )
-    sunx, suny = 930, 236
+    sunx, suny, sunr, sun_col, glow_col, glow_amt = SK["sun"]
     glow = np.exp(-((X - sunx) ** 2 + ((Y - suny) * 1.8) ** 2) / (2 * 70 ** 2))
-    skyc = skyc + hex3("#ffb070") * 0.5 * glow[..., None]
+    skyc = skyc + hex3(glow_col) * glow_amt * glow[..., None]
     # Dither the gradient into bands, as pixel skies are.
     skyc = np.floor(skyc * 18 + bayer[..., None]) / 18
-    stars = (hash2(xx, yy, 3) > 0.9975) & (Y < 120)
+    stars = (hash2(xx, yy, 3) > (SK["stars"] or 2)) & (Y < (200 if V["sky"] == "night" else 120))
     skyc[stars] = hex3("#e8e4ff") * (0.6 + 0.4 * hash2(xx, yy, 4)[stars])[:, None]
-    for i, (base, amp, col, mix) in enumerate(((200, 26, "#6b4f86", 0.55), (222, 16, "#3f2f5a", 0.3))):
+    for i, (base, amp, col, mix) in enumerate(((200, 26) + SK["ridges"][0], (222, 16) + SK["ridges"][1])):
         ridge = base + amp * (fbm(X / (60 + 30 * i), 1.3 + i, 20 + i) - 0.5) * 2
         mask = sky & (Y > ridge) & (X > 300)
         skyc[mask] = skyc[mask] * mix + hex3(col) * (1 - mix)
-    sun = ((X - sunx) ** 2 + (Y - suny) ** 2 < 15 ** 2) & (Y < LEVEL)
-    skyc[sun] = hex3("#ffe3a8")
+    sun = ((X - sunx) ** 2 + (Y - suny) ** 2 < sunr ** 2) & (Y < LEVEL) & sky
+    skyc[sun] = hex3(sun_col)
     clouds = np.zeros_like(sky)
     for cx_, cy_, cw_ in ((180, 60, 70), (420, 40, 50), (640, 85, 90), (820, 55, 60), (1000, 110, 45)):
         for j, (ox, oy, sc) in enumerate(((0, 0, 1.0), (-0.45, 0.25, 0.6), (0.5, 0.2, 0.55), (0.15, -0.35, 0.5))):
@@ -206,16 +235,16 @@ def render(D, out, seed=7):
             ww = cw_ * sc
             clouds |= (((X - cx_ - ox * cw_) / ww) ** 2 + ((Y - cy_ - oy * cw_ * 0.3) / (ww * 0.32)) ** 2 < lump) & sky
     under_lit = np.roll(clouds, -3, 0) & ~clouds
-    skyc[clouds] = skyc[clouds] * 0.45 + hex3("#a77aa8") * 0.55
+    skyc[clouds] = skyc[clouds] * 0.45 + hex3(SK["cloud"][0]) * 0.55
     belly = clouds & ~np.roll(clouds, -2, 0)
-    skyc[belly] = hex3("#f4b39a")
+    skyc[belly] = hex3(SK["cloud"][1])
 
     # ---- Water: reflection near the surface, depth tint below ----
     refl_y = np.clip(2 * LEVEL - Y + 3 * np.sin(X / 9 + Y / 3), WY0, LEVEL - 1)
     ry_px = np.clip(((refl_y - WY0) * k).astype(int), 0, H - 1)
     refl = skyc[ry_px, xx]
     depth = np.clip((Y - LEVEL) / 220, 0, 1)
-    waterc = hex3("#2f6f86") * (1 - depth[..., None]) + hex3("#0d2233") * depth[..., None]
+    waterc = hex3(SK["water"][0]) * (1 - depth[..., None]) + hex3(SK["water"][1]) * depth[..., None]
     near = np.clip(1 - (Y - LEVEL) / 45, 0, 1) ** 1.5
     surf_line = water & (Y < LEVEL + 1.2 / k + 0.5)
 
@@ -471,7 +500,7 @@ def render(D, out, seed=7):
             L[y0:y1, x0:x1] = np.maximum(L[y0:y1, x0:x1], f)
         return L * reach
 
-    sky_src = np.where(sky, 1.15, 0.0)
+    sky_src = np.where(sky, SK["skylight"][1], 0.0)
     Ls = flood(sky_src, 120, water_decay_mm=420)
     warm_src = np.zeros((H, W))
     for y_, x_, a in lights + warm:
@@ -488,15 +517,18 @@ def render(D, out, seed=7):
         violet_src[y_, x_] = a
     Lv = point_lights(crystals, 30, flood(violet_src, 30) > 0.02)
 
-    def step(L, levels=5):
+    def step(L, levels=None):
+        levels = V["levels"] if levels is None else levels
+        if not levels:
+            return np.clip(L, 0, 1.6)
         return np.floor(np.clip(L, 0, 1.6) * levels + bayer) / levels
 
     # The cross-section is cut open toward the viewer: the rock body carries a
     # faint, cool cut-away light so its strata stay readable, fading with depth.
-    cut = np.where(solid, 0.66 - 0.26 * np.clip((Y - 170) / 520, 0, 1), 0.2)
-    light = (step(Ls)[..., None] * hex3("#ffd2b0") + step(Lw)[..., None] * hex3("#ffae5a") * 1.1
+    cut = np.where(solid, V["cut_top"] - (V["cut_top"] - V["cut_bottom"]) * np.clip((Y - 170) / 520, 0, 1), V["cave_back"])
+    light = (step(Ls)[..., None] * hex3(SK["skylight"][0]) + step(Lw)[..., None] * hex3("#ffae5a") * 1.1
              + step(Lc)[..., None] * hex3("#5ff0e0") * 0.9 + step(Lv)[..., None] * hex3("#c08cff") * 0.9
-             + cut[..., None] * hex3("#9aa0d0"))
+             + cut[..., None] * hex3(SK["ambient"]))
     img = alb * light
 
     # Water and ruins seen through it.
@@ -509,7 +541,7 @@ def render(D, out, seed=7):
     under = under + rays[..., None] * hex3("#9fe0d0")
     wimg = under * (1 - near[..., None] * 0.75) + refl * near[..., None] * 0.75
     img = np.where(water[..., None], wimg, img)
-    img[surf_line] = hex3("#ffd9a8") * 0.85
+    img[surf_line] = hex3(SK["surf"]) * 0.85
     img = np.where(sky[..., None], skyc, img)
     for xm, ym in ((600, 300), (612, 306), (700, 370), (880, 330), (893, 336), (905, 330), (960, 450)):
         fx_, fy_ = px(xm), py(ym)
@@ -547,12 +579,12 @@ def render(D, out, seed=7):
     out_img[~mask] = 0.02
     final = Image.fromarray((out_img * 255).astype(np.uint8))
     os.makedirs(out, exist_ok=True)
-    final.save(f"{out}/wall-{D}.png")
-    final.resize((1600, int(1600 * SH / SW)), Image.LANCZOS).save(f"{out}/preview-{D}.png")
+    final.save(f"{out}/wall-{name}.png")
+    final.resize((1600, int(1600 * SH / SW)), Image.LANCZOS).save(f"{out}/preview-{name}.png")
     # A 1:1 crop of screen pixels around the camp, as on a real 1080p panel.
     cxs, cys = int((camp - WX0) * SCREEN_PX_PER_MM), int((600 - WY0) * SCREEN_PX_PER_MM)
-    final.crop((cxs - 700, cys - 420, cxs + 700, cys + 280)).save(f"{out}/crop-{D}.png")
-    print(D, "art", W, "x", H, "screen", SW, "x", SH)
+    final.crop((cxs - 700, cys - 420, cxs + 700, cys + 280)).save(f"{out}/crop-{name}.png")
+    print(name, "art", W, "x", H, "screen", SW, "x", SH)
 
 
 def sky_above(sky, n):
@@ -562,6 +594,12 @@ def sky_above(sky, n):
 
 
 if __name__ == "__main__":
+    # mockup.py OUT 320 480 640      pixel sizes, default look
+    # mockup.py OUT --variants       the look variants at 480
     out = sys.argv[1]
-    for D in [int(v) for v in sys.argv[2:]] or [480]:
-        render(D, out)
+    if "--variants" in sys.argv:
+        for name, opt in VARIANTS.items():
+            render(480, out, name=name, **opt)
+    else:
+        for D in [int(v) for v in sys.argv[2:]] or [480]:
+            render(D, out)
