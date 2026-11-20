@@ -4,7 +4,9 @@ and whether stepped, dithered light shimmers when lights flicker or move.
     python tools/strata-lab/sketches/motion.py OUT_DIR [seconds] [--smooth | --calm] [--tag NAME]
 
 --smooth draws light without steps; --calm keeps the steps but changes the
-fire's light only 4 times a second, so stepped edges jump instead of crawl.
+fire's light only 4 times a second, so stepped edges jump instead of crawl;
+--steady holds the stepped light still and shows the flicker only in the
+flames and their bloom; --banded steps the light without dither.
 
 Renders one 1080p panel (480 x 270 art pixels, 4 x 4 screen pixels each) at
 30 fps into OUT_DIR/frames-NAME/, encodes OUT_DIR/cavern-NAME.mp4 with ffmpeg,
@@ -117,7 +119,10 @@ def main():
     secs = float(sys.argv[2]) if len(sys.argv) > 2 and not sys.argv[2].startswith("--") else 20
     smooth = "--smooth" in sys.argv
     calm = "--calm" in sys.argv
-    tag = sys.argv[sys.argv.index("--tag") + 1] if "--tag" in sys.argv else ("smooth" if smooth else "calm" if calm else "stepped")
+    steady = "--steady" in sys.argv
+    banded = "--banded" in sys.argv
+    tag = sys.argv[sys.argv.index("--tag") + 1] if "--tag" in sys.argv else (
+        "smooth" if smooth else "calm" if calm else "steady" if steady else "banded" if banded else "stepped")
     B = build()
     rng, X, Y, xx, yy, open_, alb, bay, floor = B["rng"], B["X"], B["Y"], B["xx"], B["yy"], B["open"], B["alb"], B["bay"], B["floor"]
     reach = np.asarray(Image.fromarray(open_.astype(np.uint8) * 255).filter(ImageFilter.MaxFilter(9)), bool)
@@ -171,6 +176,8 @@ def main():
     def step(L, levels=5):
         if smooth:
             return np.clip(L, 0, 1.6)
+        if banded:
+            return np.floor(np.clip(L, 0, 1.6) * levels + 0.5) / levels
         return np.floor(np.clip(L, 0, 1.6) * levels + bay) / levels
 
     cut = np.where(~open_, 0.66 - 0.26 * np.clip(Y / 270, 0, 1) * 0.6, 0.2)
@@ -191,10 +198,12 @@ def main():
         # Fire: flicker as a smooth sum of three slow waves.
         tf = math.floor(t * 4) / 4 if calm else t  # calm: the fire's light changes 4 times a second
         flick = 0.82 + 0.1 * math.sin(tf * 7.3) + 0.06 * math.sin(tf * 13.1 + 1) + 0.04 * math.sin(tf * 23.7 + 2)
-        point(warm, reach, yy, xx, fy0 - 3, camp, 1.6 * flick, 60)
-        em[fy0 - 3:fy0 - 1, camp - 2:camp + 2] = hex3("#ff9a3c")
+        # Steady: the stepped light holds still; the flicker lives in the flames and their bloom.
+        point(warm, reach, yy, xx, fy0 - 3, camp, 1.6 * (0.86 if steady else flick), 60)
+        glow_k = flick / 0.86 if steady else 1.0
+        em[fy0 - 3:fy0 - 1, camp - 2:camp + 2] = hex3("#ff9a3c") * glow_k
         tip = 2 + int(1.5 + 1.5 * math.sin(t * 11))
-        em[fy0 - 3 - tip:fy0 - 3, camp - 1:camp + 1] = hex3("#ffd36b")
+        em[fy0 - 3 - tip:fy0 - 3, camp - 1:camp + 1] = hex3("#ffd36b") * glow_k
         spr[fy0 - 1, camp - 3:camp + 3] = hex3("#5b3a22")
         spr_a[fy0 - 1, camp - 3:camp + 3] = True
         for j in range(5):  # sparks
