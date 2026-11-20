@@ -216,9 +216,20 @@ registry.rivers = {
   // "silk": the original look, tails step forward six times a second.
   styles: ["gliding silk", "silk"],
   parameters: {
+    // Revision 2: particles flow fully off the wall before wrapping. Saved
+    // revision-1 projects keep wrapping as soon as a head leaves.
+    edgeVersion: {
+      label: "Edge revision",
+      value: 2,
+      options: ["1", "2"],
+      restart: true,
+      hidden: true,
+    },
     population: {
       label: "Particles · restart",
-      value: 960,
+      // About 9% of particles are off the wall at any moment with edge
+      // revision 2, so 1080 keeps about as many on the wall as 960 did.
+      value: 1080,
       min: 240,
       max: 1800,
       step: 120,

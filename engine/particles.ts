@@ -10,6 +10,20 @@ import { ground, ink } from "./art";
 // Six stored trail points per particle. No accumulating canvas history: any
 // frame can be reconstructed exactly from its checkpoint, including scanout.
 export const PARTICLE_STRIDE = 14;
+/**
+ * Edge revision 2: a particle whose head leaves the field keeps flowing until
+ * its whole trail (plus this margin, for the glow) is off the wall, then
+ * wraps to the opposite edge. Revision 1 wrapped as soon as the head left, so
+ * the trail vanished at the edge.
+ */
+export const RIVER_EDGE_MARGIN = 0.012;
+/** How far outside the field a point may be stored (revision 2). */
+export const RIVER_OUTSIDE = 0.35;
+const hidden = (x: number, y: number) =>
+  x < -RIVER_EDGE_MARGIN ||
+  x > 1 + RIVER_EDGE_MARGIN ||
+  y < -RIVER_EDGE_MARGIN ||
+  y > 1 + RIVER_EDGE_MARGIN;
 export class ParticleRivers implements EntitySimulation {
   tick = 0;
   points: Float64Array;
@@ -36,6 +50,7 @@ export class ParticleRivers implements EntitySimulation {
       chapter = choreography(t, this.seed),
       speed = Number(this.params.velocity),
       scale = Number(this.params.turbulence),
+      exits = Number(this.params.edgeVersion) >= 2,
       cx = 0.5 + 0.2 * Math.sin(t * 0.037 + phase),
       cy = 0.5 + 0.16 * Math.cos(t * 0.029 + phase);
     for (let i = 0; i < this.points.length; i += PARTICLE_STRIDE) {
@@ -66,7 +81,23 @@ export class ParticleRivers implements EntitySimulation {
       const breathing = 0.8 + 0.2 * Math.sin(i * 0.07 + t * 0.13);
       const nx = x + ((vx / length) * speed * breathing) / 60,
         ny = y + ((vy / length) * speed * breathing) / 60;
-      if (nx < 0 || nx >= 1 || ny < 0 || ny >= 1)
+      if (exits) {
+        this.points[i] = nx;
+        this.points[i + 1] = ny;
+        if (nx < 0 || nx >= 1 || ny < 0 || ny >= 1) {
+          let gone =
+            nx < -RIVER_OUTSIDE + 0.05 ||
+            nx > 1 + RIVER_OUTSIDE - 0.05 ||
+            ny < -RIVER_OUTSIDE + 0.05 ||
+            ny > 1 + RIVER_OUTSIDE - 0.05;
+          if (!gone) {
+            gone = true;
+            for (let j = 0; j < PARTICLE_STRIDE && gone; j += 2)
+              gone = hidden(this.points[i + j], this.points[i + j + 1]);
+          }
+          if (gone) this.place(i, nx - Math.floor(nx), ny - Math.floor(ny));
+        }
+      } else if (nx < 0 || nx >= 1 || ny < 0 || ny >= 1)
         this.place(i, (nx + 1) % 1, (ny + 1) % 1);
       else {
         this.points[i] = nx;
@@ -113,6 +144,7 @@ export class ParticleRivers implements EntitySimulation {
         sample[0] = NaN;
         break;
       }
+      if (x < 0 || x >= 1 || y < 0 || y >= 1) continue;
       const at =
         Math.min(19, Math.floor(y * 20)) * 32 +
         Math.min(31, Math.floor(x * 32));

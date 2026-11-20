@@ -49,7 +49,8 @@ test("actual particle simulation stays bounded and moving across seeds and flow 
     for (let i = 0; i < 18000; i++) river.step();
     const end = river.snapshot().data;
     assert.equal(end.length, 240 * PARTICLE_STRIDE);
-    assert.ok(end.every((v) => Number.isFinite(v) && v >= 0 && v <= 1));
+    // Edge revision 2 lets trails flow up to 0.35 off the wall before wrapping.
+    assert.ok(end.every((v) => Number.isFinite(v) && v >= -0.35 && v <= 1.35));
     assert.ok(end.some((v, i) => Math.abs(v - start[i]) > 0.1));
     const before = [...river.points];
     for (let i = 0; i < 60; i++) river.step();
@@ -134,4 +135,56 @@ test("gliding silk river tails slide smoothly instead of stepping every sixth ti
   // times its average step; a sliding tail stays close to its average.
   assert.ok(jumping > 4, `stored tails should jump (ratio ${jumping})`);
   assert.ok(sliding < 2, `drawn tails should slide (ratio ${sliding})`);
+});
+
+test("river particles leave the wall fully before wrapping (edge revision 2)", async () => {
+  const { RIVER_EDGE_MARGIN } = await import("../engine/particles.ts");
+  const { riverTailExtent } = await import("../engine/gpu-art.ts");
+  // A drawn point lights pixels up to its glow's half-width beyond it: about
+  // 0.005 of the wall's width and 0.007 of its height. The simulation waits
+  // for a wider margin before wrapping.
+  const reach = 0.009;
+  assert.ok(RIVER_EDGE_MARGIN > reach);
+  const visible = (x, y) => x >= -reach && x <= 1 + reach && y >= -reach && y <= 1 + reach;
+  const run = (edgeVersion) => {
+    const sim = new ParticleRivers(42, { ...defaults("rivers"), edgeVersion });
+    const count = sim.points.length / PARTICLE_STRIDE,
+      emission = Math.ceil(count / 720);
+    let cutVisible = 0, exits = 0;
+    for (let t = 0; t < 1800; t++) {
+      const before = sim.points.slice();
+      sim.step();
+      const emitted = new Set();
+      for (let i = 0; i < emission; i++) emitted.add((sim.tick * emission + i) % count);
+      for (let k = 0; k < count; k++) {
+        const at = k * PARTICLE_STRIDE;
+        // A relocation collapses the whole trail onto one point.
+        const collapsed = sim.points[at + PARTICLE_STRIDE - 2] === sim.points[at] && sim.points[at + PARTICLE_STRIDE - 1] === sim.points[at + 1];
+        const moved = Math.hypot(sim.points[at] - before[at], sim.points[at + 1] - before[at + 1]) > 0.05;
+        if (!collapsed || !moved || emitted.has(k)) continue;
+        exits++;
+        // The trail as gliding silk drew it on the previous tick.
+        let shown = false;
+        for (let j = 0; j < PARTICLE_STRIDE - 2; j += 2) shown ||= visible(before[at + j], before[at + j + 1]);
+        const e = riverTailExtent(sim.tick - 1), T = at + PARTICLE_STRIDE - 4;
+        shown ||= visible(before[T] + (before[T + 2] - before[T]) * e, before[T + 1] + (before[T + 3] - before[T + 1]) * e);
+        if (shown) cutVisible++;
+      }
+    }
+    return { exits, cutVisible, sim };
+  };
+  const old = run(1), now = run(2);
+  assert.ok(old.exits > 50 && old.cutVisible > old.exits * 0.9, "revision 1 cuts trails off at the edge");
+  assert.ok(now.exits > 50, `particles still recirculate through the edges (${now.exits})`);
+  assert.equal(now.cutVisible, 0, "revision 2 never removes a trail that is still on the wall");
+  assert.ok(now.sim.points.every((v) => v > -0.35 && v < 1.35));
+});
+
+test("saved rivers projects without an edge revision keep the original edges", () => {
+  const p = makeProject();
+  p.scene.id = "rivers";
+  p.scene.style = "silk";
+  p.scene.params = { population: 960, velocity: 0.14, turbulence: 1.1 };
+  assert.equal(validateProject(p).scene.params.edgeVersion, 1);
+  assert.equal(defaults("rivers").edgeVersion, 2);
 });

@@ -1,7 +1,7 @@
 import { validateWorldSave } from "../engine/terrarium.ts";
 import { validateLifeDirector } from "../engine/life.ts";
 import { validateSchedule, validateAction } from "../engine/evolution.ts";
-import { PARTICLE_STRIDE } from "../engine/particles.ts";
+import { PARTICLE_STRIDE, RIVER_OUTSIDE } from "../engine/particles.ts";
 import { SLIME_CELLS } from "../engine/slime.ts";
 import { BIRD_STRIDE } from "../engine/murmuration.ts";
 import { storedPacked } from "../engine/types.ts";
@@ -16,7 +16,9 @@ const importParameters = (id, value = {}) =>
       ? { ...value, ecologyVersion: 1 }
       : id === "murmuration" && value.flockVersion === undefined
         ? { ...value, flockVersion: 1 }
-        : value,
+        : id === "rivers" && value.edgeVersion === undefined
+          ? { ...value, edgeVersion: 1 }
+          : value,
   );
 export { PALETTES } from "../engine/palettes.ts";
 import { PALETTES } from "../engine/palettes.ts";
@@ -264,7 +266,11 @@ function validateCheckpoint(c, scene) {
   if (
     scene.id === "rivers" &&
     (c.data.length !== Number(params.population) * PARTICLE_STRIDE ||
-      !c.data.every((v) => v >= 0 && v <= 1))
+      !c.data.every((v) =>
+        Number(params.edgeVersion) >= 2
+          ? v >= -RIVER_OUTSIDE && v <= 1 + RIVER_OUTSIDE
+          : v >= 0 && v <= 1,
+      ))
   )
     throw new Error("Invalid particle checkpoint");
   if (
