@@ -234,10 +234,18 @@ class MarkStream {
     this.gl.deleteProgram(this.prog);
   }
 }
-/** Endpoint instances avoid expanding every trail segment into colored vertices. */
+/**
+ * River trails as smooth continuous bands. Each instance is one segment of a
+ * trail with its neighbouring points, so the vertex shader can bend it along
+ * a Catmull-Rom curve through the stored points. Neighbouring segments meet
+ * with the same tangent, so a trail's glow neither doubles where segments
+ * overlap nor kinks at the stored points. Widths, colours and opacities are
+ * those of the original straight segments.
+ */
+const RIBBON_STEPS = 4;
 class RibbonGPU {
-  instances = new Float32Array(1800 * 6 * 5);
-  quad: WebGLBuffer;
+  instances = new Float32Array(1800 * 6 * 9);
+  mesh: WebGLBuffer;
   buffer: WebGLBuffer;
   prog: WebGLProgram;
   extension: ANGLE_instanced_arrays | null;
@@ -251,19 +259,25 @@ class RibbonGPU {
     this.extension = this.gl2
       ? null
       : gl.getExtension("ANGLE_instanced_arrays");
-    this.quad = gl.createBuffer()!;
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
-    gl.bufferData(
-      gl.ARRAY_BUFFER,
-      new Float32Array([0, -1, 1, -1, 0, 1, 0, 1, 1, -1, 1, 1]),
-      gl.STATIC_DRAW,
-    );
+    // Along (0..1) and across (-1..1) for RIBBON_STEPS quads per segment.
+    const mesh: number[] = [];
+    for (let k = 0; k < RIBBON_STEPS; k++) {
+      const a = k / RIBBON_STEPS,
+        b = (k + 1) / RIBBON_STEPS;
+      mesh.push(a, -1, b, -1, a, 1, a, 1, b, -1, b, 1);
+    }
+    this.mesh = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.mesh);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(mesh), gl.STATIC_DRAW);
     this.buffer = gl.createBuffer()!;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
     gl.bufferData(gl.ARRAY_BUFFER, this.instances.byteLength, gl.DYNAMIC_DRAW);
     this.prog = program(
       gl,
-      `attribute vec2 p;attribute vec4 endpoints;attribute float warmth;uniform float width;uniform vec2 size;varying float warm;varying float edge;void main(){vec2 delta=endpoints.zw-endpoints.xy;vec2 n=vec2(-delta.y,delta.x)/max(.001,length(delta));vec2 q=mix(endpoints.xy,endpoints.zw,p.x)+n*p.y*width*.5;warm=warmth;edge=p.y;gl_Position=vec4(q/size*2.-1.,0.,1.);}`,
+      `attribute vec2 p;attribute vec4 before;attribute vec4 after;attribute float warmth;uniform float width;uniform vec2 size;varying float warm;varying float edge;
+vec2 curve(vec2 a,vec2 b,vec2 c,vec2 d,float t){return .5*(2.*b+(c-a)*t+(2.*a-5.*b+4.*c-d)*t*t+(3.*b-a-3.*c+d)*t*t*t);}
+vec2 slope(vec2 a,vec2 b,vec2 c,vec2 d,float t){return .5*((c-a)+2.*(2.*a-5.*b+4.*c-d)*t+3.*(3.*b-a-3.*c+d)*t*t);}
+void main(){vec2 a=before.xy,b=before.zw,c=after.xy,d=after.zw;vec2 q=curve(a,b,c,d,p.x);vec2 s=slope(a,b,c,d,p.x);float l=length(s);if(l<1e-4){s=c-b;l=length(s);}vec2 n=l<1e-4?vec2(0.):vec2(-s.y,s.x)/l;q+=n*p.y*width*.5;warm=warmth;edge=p.y;gl_Position=vec4(q/size*2.-1.,0.,1.);}`,
       `precision highp float;varying float warm,edge;uniform vec3 c1,c2;uniform float opacity;void main(){gl_FragColor=vec4(mix(c1,c2,warm),opacity*(1.-smoothstep(.65,1.,abs(edge))));}`,
     );
   }
@@ -273,36 +287,46 @@ class RibbonGPU {
   }
   draw(d: Float32Array, colors: number[][], detail: number, height = 400) {
     const gl = this.gl,
-      p = this.prog;
+      p = this.prog,
+      last = PARTICLE_STRIDE / 2 - 1;
     let n = 0;
-    for (let i = 0; i < d.length; i += PARTICLE_STRIDE)
-      for (let j = 0; j < PARTICLE_STRIDE - 2; j += 2) {
-        this.instances[n++] = d[i + j] * 640;
-        this.instances[n++] = d[i + j + 1] * height;
-        this.instances[n++] = d[i + j + 2] * 640;
-        this.instances[n++] = d[i + j + 3] * height;
-        this.instances[n++] = ((i / PARTICLE_STRIDE) % 6) / 5;
+    for (let i = 0; i < d.length; i += PARTICLE_STRIDE) {
+      const warmth = ((i / PARTICLE_STRIDE) % 6) / 5;
+      for (let j = 0; j < last; j++) {
+        // Points j-1, j, j+1, j+2 of the trail, repeating the end points.
+        for (const k of [Math.max(0, j - 1), j, j + 1, Math.min(last, j + 2)]) {
+          this.instances[n++] = d[i + 2 * k] * 640;
+          this.instances[n++] = d[i + 2 * k + 1] * height;
+        }
+        this.instances[n++] = warmth;
       }
+    }
     gl.useProgram(p);
-    gl.uniform2f(gl.getUniformLocation(p, "size"), 640, height);
     const pos = gl.getAttribLocation(p, "p"),
-      ends = gl.getAttribLocation(p, "endpoints"),
+      before = gl.getAttribLocation(p, "before"),
+      after = gl.getAttribLocation(p, "after"),
       warm = gl.getAttribLocation(p, "warmth");
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.mesh);
     gl.enableVertexAttribArray(pos);
     gl.vertexAttribPointer(pos, 2, gl.FLOAT, false, 0, 0);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.instances.subarray(0, n));
-    gl.enableVertexAttribArray(ends);
-    gl.vertexAttribPointer(ends, 4, gl.FLOAT, false, 20, 0);
-    this.divisor(ends, 1);
-    gl.enableVertexAttribArray(warm);
-    gl.vertexAttribPointer(warm, 1, gl.FLOAT, false, 20, 16);
-    this.divisor(warm, 1);
+    for (const [at, size, offset] of [
+      [before, 4, 0],
+      [after, 4, 16],
+      [warm, 1, 32],
+    ]) {
+      gl.enableVertexAttribArray(at);
+      gl.vertexAttribPointer(at, size, gl.FLOAT, false, 36, offset);
+      this.divisor(at, 1);
+    }
+    gl.uniform2f(gl.getUniformLocation(p, "size"), 640, height);
     gl.uniform3fv(gl.getUniformLocation(p, "c1"), colors[1]);
     gl.uniform3fv(gl.getUniformLocation(p, "c2"), colors[2]);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    const vertices = RIBBON_STEPS * 6,
+      count = n / 9;
     for (let pass = 0; pass < 2; pass++) {
       gl.uniform1f(
         gl.getUniformLocation(p, "width"),
@@ -312,18 +336,19 @@ class RibbonGPU {
         gl.getUniformLocation(p, "opacity"),
         pass === 0 ? 0.08 + detail * 0.08 : 0.36 + detail * 0.36,
       );
-      if (this.gl2) this.gl2.drawArraysInstanced(gl.TRIANGLES, 0, 6, n / 5);
-      else this.extension!.drawArraysInstancedANGLE(gl.TRIANGLES, 0, 6, n / 5);
+      if (this.gl2) this.gl2.drawArraysInstanced(gl.TRIANGLES, 0, vertices, count);
+      else
+        this.extension!.drawArraysInstancedANGLE(gl.TRIANGLES, 0, vertices, count);
     }
-    this.divisor(ends, 0);
-    this.divisor(warm, 0);
-    gl.disableVertexAttribArray(ends);
-    gl.disableVertexAttribArray(warm);
+    for (const at of [before, after, warm]) {
+      this.divisor(at, 0);
+      gl.disableVertexAttribArray(at);
+    }
     gl.disableVertexAttribArray(pos);
     gl.disable(gl.BLEND);
   }
   dispose() {
-    this.gl.deleteBuffer(this.quad);
+    this.gl.deleteBuffer(this.mesh);
     this.gl.deleteBuffer(this.buffer);
     this.gl.deleteProgram(this.prog);
   }
