@@ -91,3 +91,47 @@ test("all palettes work through both commands and saved projects", () => {
     applyCommand(makeProject(), { type: "palette", value: "__proto__" }),
   );
 });
+
+test("gliding silk river tails slide smoothly instead of stepping every sixth tick", async () => {
+  const { riverTailExtent } = await import("../engine/gpu-art.ts");
+  const sim = new ParticleRivers(42, defaults("rivers"));
+  for (let i = 0; i < 600; i++) sim.step();
+  const n = sim.points.length / PARTICLE_STRIDE,
+    T = PARTICLE_STRIDE - 2;
+  const tails = (extent) => {
+    const out = new Float64Array(n * 2);
+    for (let i = 0, k = 0; i < sim.points.length; i += PARTICLE_STRIDE, k++) {
+      const x5 = sim.points[i + T - 2], y5 = sim.points[i + T - 1];
+      out[k * 2] = x5 + (sim.points[i + T] - x5) * extent;
+      out[k * 2 + 1] = y5 + (sim.points[i + T + 1] - y5) * extent;
+    }
+    return out;
+  };
+  const ratio = (useExtent) => {
+    const worst = [];
+    let prev = tails(useExtent ? riverTailExtent(sim.tick) : 1);
+    const moves = Array.from({ length: n }, () => []);
+    const saved = sim.snapshot();
+    for (let t = 0; t < 36; t++) {
+      sim.step();
+      const now = tails(useExtent ? riverTailExtent(sim.tick) : 1);
+      for (let k = 0; k < n; k++) moves[k].push(Math.hypot(now[k * 2] - prev[k * 2], now[k * 2 + 1] - prev[k * 2 + 1]));
+      prev = now;
+    }
+    sim.restore(saved);
+    for (const m of moves) {
+      // Skip trails that were re-emitted elsewhere during the window.
+      if (Math.max(...m) > 0.05) continue;
+      const mean = m.reduce((a, b) => a + b, 0) / m.length;
+      if (mean > 1e-4) worst.push(Math.max(...m) / mean);
+    }
+    worst.sort((a, b) => a - b);
+    return worst[Math.floor(worst.length / 2)];
+  };
+  const jumping = ratio(false),
+    sliding = ratio(true);
+  // A tail that only moves every sixth tick has its largest step about six
+  // times its average step; a sliding tail stays close to its average.
+  assert.ok(jumping > 4, `stored tails should jump (ratio ${jumping})`);
+  assert.ok(sliding < 2, `drawn tails should slide (ratio ${sliding})`);
+});
