@@ -34,6 +34,38 @@ each item below on its own and compare side by side before keeping it.
   stretched to the wall's shape, so currents run slightly faster across than
   up and down. Correcting it changes the simulation (needs a revision).
 
+## Slime agent pops
+
+Like Rivers, `SlimeNetworks.step` moves `ceil(population / 1200)` agents per
+tick (2 at the default 2,400) to random places, so their marks blink out and
+reappear elsewhere. Agent marks are already faint away from veins (the
+renderer scales them by the local trail), which hides most of it. A
+render-time fade derived from the deterministic schedule would hide the rest
+without changing the simulation.
+
+## Composition field
+
+A slow, drifting focus area and quiet area across all four panels (in the
+original review as S4), so the wall reads as one composed picture rather than
+an even texture. Tried as mock-ups in 2026-11 and set aside; the user was not
+a fan. What is known:
+
+- The field itself would be a pure function of wall position, time and seed
+  (no stored state, exact replay). The mock used two soft blobs on slow
+  Lissajous paths (periods of 7 to 13 minutes) that run continuously through
+  the gaps.
+- Two ways to use it:
+  - Shared: every artwork's colour already passes through the shared finish
+    (`FINISH_GLSL`), so the field could dim and desaturate the quiet area of
+    every artwork with no per-artwork code. It reads as a moving dimmer or
+    cloud shadow, and as "the screens are dimming" when strong.
+  - Per artwork: each artwork reads the field and changes its own content,
+    for example fewer Rivers trails or thinner Slime veins in the quiet area.
+    It reads as composition rather than lighting, but each artwork needs its
+    own code and tuning, and a revision setting if it changes the simulation.
+- Murmuration and Terrarium compose themselves (sky, camera) and would opt
+  out.
+
 ## Motion between simulation steps
 
 Entity scenes show the latest whole simulation tick on each display frame,
