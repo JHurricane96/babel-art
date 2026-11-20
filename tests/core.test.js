@@ -20,3 +20,19 @@ test('every number control accepts its default and round values', async () => {
   const pop = registry.murmuration.parameters.population;
   for (const v of [1000, 5000, 20000, 25000, 30000]) assert.ok(fits(pop, v), `population ${v}`);
 });
+
+test('a single-monitor arrangement is one panel and survives validation', async () => {
+  const single = makeLayout('single');
+  assert.equal(single.length, 1);
+  const p = makeProject();
+  p.layout = single;
+  assert.equal(validateProject(p).layout.length, 1);
+  p.layout = makeLayout().slice(0, 2);
+  assert.throws(() => validateProject(p), /one panel or four/);
+});
+
+test('procedural artworks are composed for the default wall', async () => {
+  const { PROCEDURAL_WALL } = await import('../engine/runtime.ts');
+  const b = layoutBounds(makeLayout());
+  for (const k of ['x', 'y', 'width', 'height']) assert.ok(Math.abs(b[k] - PROCEDURAL_WALL[k]) < 1e-9, k);
+});

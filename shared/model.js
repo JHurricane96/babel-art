@@ -38,7 +38,9 @@ export function makeLayout(kind = "staggered", gap = 10) {
     stepX = width + 2 * bezel + gap,
     stepY = height + 2 * bezel + gap;
   const points =
-    kind === "grid"
+    kind === "single"
+      ? [[0, 0]]
+      : kind === "grid"
       ? [
           [0, 0],
           [stepX, 0],
@@ -133,8 +135,11 @@ export function validateProject(input) {
     !Object.hasOwn(PALETTES, scene.palette)
   )
     throw new Error("Unknown scene version or palette.");
-  if (!Array.isArray(input.layout) || input.layout.length !== 4)
-    throw new Error("This prototype requires four panels.");
+  if (
+    !Array.isArray(input.layout) ||
+    ![1, 4].includes(input.layout.length)
+  )
+    throw new Error("A wall needs one panel or four.");
   const ids = new Set();
   const layout = input.layout.map((p) => {
     if (

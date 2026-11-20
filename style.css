@@ -3,3 +3,5 @@
 .panel{background:transparent}.panel canvas[hidden]{display:none!important}.panel-tag{z-index:4}#scene-parameters input[type=checkbox]{width:auto}
 
 #replay-status{position:absolute;bottom:42px;left:20px;z-index:8}.panel-tag{z-index:5}#scene-parameters{border-bottom:1px solid var(--line);padding-bottom:10px}
+/* Fullscreen: only the artwork on the screens, black everywhere else. */
+body.presenting{overflow:hidden;background:#000}body.presenting header,body.presenting aside,body.presenting footer,body.presenting .intro,body.presenting .playback,body.presenting .diagnostics,body.presenting #evolution-status,body.presenting #command-form,body.presenting .caption,body.presenting .stage-top,body.presenting .stage-bottom,body.presenting #replay-status,body.presenting .panel-tag{display:none!important}body.presenting .stage{position:fixed;inset:0;height:auto;border:0;border-radius:0;background:#000;box-shadow:none;z-index:30;cursor:none}body.presenting #wall{inset:0}body.presenting .panel{box-shadow:none;outline:0;border-color:#000;pointer-events:none}
