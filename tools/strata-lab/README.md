@@ -5,6 +5,8 @@ session). Write outputs to a scratch folder, not into the repository.
 
 | Tool | What it does |
 | --- | --- |
+| `viewer/` | A self-contained HTML viewer for the land: regions generated and lit in web workers, drawn at a whole number of screen pixels per art pixel (4 by default, as on the TVs) so it looks crisp on any monitor. Pan, zoom, change seeds, jump between biome edges, drift, and mask to the four-screen wall. Build with `node tools/strata-lab/viewer/build.mjs OUT.html --standalone`. |
+| `land-render.ts` | The lab's land renderer (sky, strata, cave light), shared by the viewer and `regions.ts`. |
 | `regions.ts` | Renders land from the region generator (`engine/strata/generate.ts`): a four-region panorama, wall-sized close-ups of each region edge, and a 12-seed contact sheet (skip it with `--quick`). Prints generation time, scaled to the mini PC. |
 | `pi-budget/` | Estimates frame cost on the target machine from this one (`--target 780m` for the Ryzen 7 / Radeon 780M mini PC, `pi5` for a Raspberry Pi 5): CPU time scaled by a calibration factor from published benchmarks, GPU time from a cost model. Spikes for the material simulation and the light flood. See its README. |
 | `sketches/motion.py` | A 20-second motion test of the cavern panel, with light options (stepped, steady, calm, banded, smooth) and a count of pixels the light alone changes per frame. |
