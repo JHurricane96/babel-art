@@ -465,9 +465,10 @@ function frame(now: number) {
 
 // For scripted checks: jump to a seed and world column.
 Object.assign(window, {
-  strataGo(seed: number, x: number) {
+  strataGo(seed: number, x: number, y?: number) {
     view.x = x;
     setSeed(seed);
+    if (y !== undefined) view.y = y;
   },
 });
 $<HTMLInputElement>("seed").value = String(view.seed);

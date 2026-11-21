@@ -38,6 +38,11 @@ for (const [m, c] of [
   [M.VINE, "#2f6f66"],
   [M.FOSSIL, "#cdbb94"],
   [M.ASH, "#55505a"],
+  [M.SHROOM, "#9a7656"],
+  [M.CORAL, "#c8583a"],
+  [M.SHELF, "#a86ab8"],
+  [M.TOADSTOOL, "#a8382e"],
+  [M.SPOT, "#e8dccb"],
 ] as [number, string][])
   SOLID[m] = hex(c);
 const LEAF = [
@@ -71,7 +76,11 @@ const CYAN = hex("#5ff0e0"),
   DEEP = hex("#123049"),
   BACK_TINT = [0.11, 0.1, 0.18];
 
-const isOpen = (m: number) => m === M.AIR || m === M.WATER;
+const isOpen = (m: number) =>
+  m === M.AIR || m === M.WATER || m === M.STREAM || m === M.FALLS;
+const STREAM = ["#4f9ab4", "#cfe9f2", "#e0f4fa"].map(hex),
+  FALLS = ["#bfe3f0", "#7fb8d0", "#f4fbfd"].map(hex),
+  ICE = ["#e8f6fb", "#a6d4e6", "#7fb3cc", "#f2fbff"].map(hex);
 
 const DX = [-1, 1, 0, 0, -1, 1, -1, 1],
   DY = [0, 0, -1, 1, -1, -1, 1, 1],
@@ -258,7 +267,12 @@ export function renderLand({ W, H, cells, state, surface, x0 }: Land) {
   for (let i = 0; i < N; i++) {
     const m = cells[i];
     if (!(state[i] & GLOW) && m !== M.LAVA) continue;
-    const kind = m === M.LAVA ? 2 : m === M.CRYSTAL ? 1 : 0,
+    const kind =
+        m === M.LAVA || m === M.CORAL
+          ? 2
+          : m === M.CRYSTAL || m === M.SHELF
+            ? 1
+            : 0,
       bit = 1 << kind,
       x = i % W;
     for (const j of [x > 0 ? i - 1 : -1, x < W - 1 ? i + 1 : -1, i - W, i + W])
@@ -277,11 +291,17 @@ export function renderLand({ W, H, cells, state, surface, x0 }: Land) {
   // Mottling in the rock: two value noises on lattices that never line up
   // (6 x 4 and 13 x 7 cells), so no grid shows through.
   const fine = new RowNoise(x0, W, 6, 4, 991),
-    coarse = new RowNoise(x0, W, 13, 7, 992);
+    coarse = new RowNoise(x0, W, 13, 7, 992),
+    // Streaks in moving water: long sideways in streams, long downward in falls.
+    flow = new RowNoise(x0, W, 11, 2, 993),
+    fall = new RowNoise(x0, W, 2, 13, 994),
+    iceAbove = new Int16Array(W);
   for (let y = 0; y < H; y++) {
     const cut = 0.6 - 0.24 * Math.min(1, Math.max(0, (y - 400) / 900));
     fine.row(y);
     coarse.row(y);
+    flow.row(y);
+    fall.row(y);
     for (let x = 0; x < W; x++) {
       const i = y * W + x,
         wx = x0 + x,
@@ -293,6 +313,8 @@ export function renderLand({ W, H, cells, state, surface, x0 }: Land) {
       let cr: number, cg: number, cb: number;
       const wd = m === M.WATER ? waterAbove[x] : 0;
       waterAbove[x] = m === M.WATER ? wd + 1 : 0;
+      const id = m === M.ICE ? iceAbove[x] : 0;
+      iceAbove[x] = m === M.ICE ? id + 1 : 0;
       if (m === M.AIR && skyCell) {
         // Open sky: a dusk gradient, dithered into bands.
         const t = Math.min(1, y / 600),
@@ -333,6 +355,34 @@ export function renderLand({ W, H, cells, state, surface, x0 }: Land) {
         lr = 0.25 + 0.75 * Math.min(1.2, lr + 0.3 * AMB[0]);
         lg = 0.25 + 0.75 * Math.min(1.2, lg + 0.3 * AMB[1]);
         lb = 0.25 + 0.75 * Math.min(1.2, lb + 0.3 * AMB[2]);
+      } else if (m === M.STREAM || m === M.FALLS) {
+        // Moving water: a stream streaked along its flow with a bright skin;
+        // a waterfall streaked downward, foaming where it lands.
+        let c: number[];
+        if (m === M.STREAM)
+          c =
+            y > 0 && cells[i - W] === M.AIR
+              ? STREAM[2]
+              : flow.at(wx) > 0.66
+                ? STREAM[1]
+                : STREAM[0];
+        else {
+          const landing = y + 3 < H && cells[i + 3 * W] !== M.FALLS;
+          c = landing ? FALLS[2] : fall.at(wx) < 0.42 ? FALLS[1] : FALLS[0];
+        }
+        cr = c[0];
+        cg = c[1];
+        cb = c[2];
+        if (skyCell) {
+          lr = 0.5 + 0.5 * SKYL[0];
+          lg = 0.5 + 0.5 * SKYL[1];
+          lb = 0.5 + 0.5 * SKYL[2];
+        } else {
+          lightAt(Ls[i], Lc[i], Lv[i], Lw[i], bay);
+          lr += 0.4 * AMB[0];
+          lg += 0.4 * AMB[1];
+          lb += 0.4 * AMB[2];
+        }
       } else if (m === M.LAVA) {
         // Lava: dark red with an orange crust where it meets the air, and a few hot specks.
         // Dark red melt with brighter veins (smooth noise, not per-cell
@@ -394,8 +444,28 @@ export function renderLand({ W, H, cells, state, surface, x0 }: Land) {
           cr = c ? c[0] : rock[0] * tex;
           cg = c ? c[1] : rock[1] * tex;
           cb = c ? c[2] : rock[2] * tex;
+          if (m === M.ICE) {
+            // Ice: pale at its top, bluer deeper in, with white cracks and bubbles.
+            const c2 =
+              id === 0 && y > 0 && isOpen(cells[i - W])
+                ? ICE[0]
+                : (id < 10 && Math.abs(coarse.at(wx) - 0.5) < 0.008) ||
+                    (h & 127) === 0
+                  ? ICE[3]
+                  : id < 5
+                    ? ICE[1]
+                    : ICE[2];
+            cr = c2[0];
+            cg = c2[1];
+            cb = c2[2];
+          }
           if (st & GLOW) lr = lg = lb = 1.25;
-          else {
+          else if (m === M.ICE && skyCell) {
+            // A frozen lake catches the sky.
+            lr = 0.45 + 0.55 * SKYL[0];
+            lg = 0.45 + 0.55 * SKYL[1];
+            lb = 0.45 + 0.55 * SKYL[2];
+          } else {
             // Cut-away light on the body, fading with depth, plus light from
             // open space beside it; faces that meet open space catch more,
             // floors (open above) most.

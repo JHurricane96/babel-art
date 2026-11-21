@@ -32,7 +32,15 @@ test("region edges are seamless: a window across an edge matches both regions", 
           x < half
             ? left.cells[y * REGION_W + REGION_W - half + x]
             : right.cells[y * REGION_W + x - half];
-        if (w.cells[y * 2 * half + x] !== fromRegion) mismatched++;
+        const stateFromRegion =
+          x < half
+            ? left.state[y * REGION_W + REGION_W - half + x]
+            : right.state[y * REGION_W + x - half];
+        if (
+          w.cells[y * 2 * half + x] !== fromRegion ||
+          w.state[y * 2 * half + x] !== stateFromRegion
+        )
+          mismatched++;
       }
     assert.equal(
       mismatched,

@@ -32,6 +32,13 @@ export const M = {
   VINE: 17,
   FOSSIL: 18,
   ASH: 19,
+  STREAM: 20,
+  FALLS: 21,
+  SHROOM: 22,
+  CORAL: 23,
+  SHELF: 24,
+  TOADSTOOL: 25,
+  SPOT: 26,
 } as const;
 export type Material = (typeof M)[keyof typeof M];
 
