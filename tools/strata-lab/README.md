@@ -5,11 +5,13 @@ session). Write outputs to a scratch folder, not into the repository.
 
 | Tool | What it does |
 | --- | --- |
-| `pi-budget/` | Estimates Raspberry Pi 5 cost from this machine: CPU time scaled by a calibration factor from benchmarks with published Pi 5 results, GPU time from a cost model. Spikes for the material simulation and the light flood. See its README. |
+| `regions.ts` | Renders land from the region generator (`engine/strata/generate.ts`): a four-region panorama, wall-sized close-ups of each region edge, and a 12-seed contact sheet (skip it with `--quick`). Prints generation time, scaled to the mini PC. |
+| `pi-budget/` | Estimates frame cost on the target machine from this one (`--target 780m` for the Ryzen 7 / Radeon 780M mini PC, `pi5` for a Raspberry Pi 5): CPU time scaled by a calibration factor from published benchmarks, GPU time from a cost model. Spikes for the material simulation and the light flood. See its README. |
 | `sketches/motion.py` | A 20-second motion test of the cavern panel, with light options (stepped, steady, calm, banded, smooth) and a count of pixels the light alone changes per frame. |
 | `sketches/mockup.py` | A static mock-up of one dusk tableau on the default four-screen wall, used to settle the look: pixel size, light, palette. Needs numpy and Pillow. |
 
 ```sh
+node --import tsx tools/strata-lab/regions.ts /tmp/strata-land 7 --quick   # seed 7
 python tools/strata-lab/sketches/mockup.py /tmp/strata 320 480 640   # pixel sizes
 python tools/strata-lab/sketches/mockup.py /tmp/strata --variants   # looks at 480
 ```

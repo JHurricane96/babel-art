@@ -233,21 +233,23 @@ export interface Region {
 
 /** Strata: thickness varies from thin seams to thick beds, the same everywhere for a seed. */
 function strataTable(seed: number) {
-  const top = new Int32Array(2400),
+  const band = new Int32Array(2400),
+    /** How far through its stratum each depth is, 0 at the top to 1 at the bottom. */
+    within = new Float32Array(2400),
     R = walkRandom(Math.floor(hash3(seed, 5, 5) * 4294967296));
   let k = 0,
-    left = 0;
-  for (let u = 0; u < top.length; u++) {
-    if (left <= 0) {
-      k++;
-      const r = R();
-      left =
+    u = 0;
+  while (u < band.length) {
+    k++;
+    const r = R(),
+      thick =
         r < 0.25 ? 4 + Math.floor(R() * 6) : 12 + Math.floor(R() * R() * 46);
+    for (let j = 0; j < thick && u < band.length; j++, u++) {
+      band[u] = k;
+      within[u] = (j + 0.5) / thick;
     }
-    top[u] = k;
-    left--;
   }
-  return top;
+  return { band, within };
 }
 
 /** Cavern openness at a world point: positive inside a cavern. */
@@ -449,7 +451,7 @@ export function generateWindow(seed: number, x0: number, width: number) {
         u = Math.max(
           0,
           Math.min(
-            table.length - 1,
+            table.band.length - 1,
             Math.round(
               y +
                 300 +
@@ -458,12 +460,19 @@ export function generateWindow(seed: number, x0: number, width: number) {
             ),
           ),
         ),
-        k = table[u];
+        k = table.band[u];
       let biome = past > 0 ? br : bl;
       if (bl !== br && Math.abs(past) < BLEND) {
-        const shift = (hash3(k, left, seed + 23) - 0.5) * 1.5 * BLEND,
+        // Each layer's end is lens-shaped: it reaches furthest at mid-layer and
+        // pinches out toward its top and bottom, like a bed thinning away.
+        const shift = (hash3(k, left, seed + 23) - 0.5) * 1.2 * BLEND,
+          f = table.within[u] - 0.5,
+          tongue = hash3(k, left, seed + 24) < 0.5 ? 1 : -1,
           wob =
-            past + shift + 50 * (fbm2(wx / 70, y / 50, seed + 21, 2) - 0.5) * 2;
+            past +
+            shift -
+            tongue * (140 * (1 - 4 * f * f) - 70) +
+            50 * (fbm2(wx / 70, y / 50, seed + 21, 2) - 0.5) * 2;
         biome = wob > 0 ? br : bl;
       }
       state[i] = stateOf(k & 15, biome);
@@ -918,7 +927,7 @@ function mushroom(
       for (let dx = -cap; dx <= cap; dx += 2)
         if (cells[yy * WW + x + dx] !== M.AIR) clear = false;
     if (clear) {
-      const thick = stalk > 26 ? 2 : 1;
+      const thick = Math.max(1, Math.min(3, Math.round(stalk / 20)));
       for (let k = 0; k < stalk; k++)
         for (let t = 0; t < thick; t++) cells[(y - k) * WW + x + t] = M.STALK;
       for (let r = 0; r < ch; r++) {
@@ -929,7 +938,7 @@ function mushroom(
           if (cells[i] !== M.AIR) continue;
           cells[i] = M.CAP;
           // A glowing rim under the cap and a few glowing spots on top.
-          if (r === ch - 1 || hash3(wx + dx, top - ch + r, seed + 64) < 0.04)
+          if (r === ch - 1 || hash3(wx + dx, top - ch + r, seed + 64) < 0.015)
             state[i] |= GLOW;
         }
       }

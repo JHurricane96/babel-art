@@ -27,6 +27,7 @@ import {
   WORLD_H,
   bandOf,
   biomeOf,
+  hash3,
   noise2,
 } from "../../engine/strata/world.ts";
 
@@ -183,7 +184,7 @@ function render(world: ReturnType<typeof stitch>) {
     skyl = hex("#ffd2b0"),
     amb = hex("#9aa0d0"),
     water = hex("#2f6f86"),
-    deep = hex("#0d2233");
+    deep = hex("#123049");
   for (let i = 0; i < W * H; i++) {
     const x = i % W,
       y = (i - x) / W,
@@ -236,7 +237,7 @@ function render(world: ReturnType<typeof stitch>) {
     } else if (m === M.LAVA) {
       // Lava: dark red with an orange crust where it meets the air, and a few hot specks.
       const top = cells[i - W] === M.AIR,
-        h = (x * 2654435761 + y * 40503) >>> 0;
+        h = Math.floor(hash3(x, y, 77) * 64);
       c = hex(
         top
           ? "#ff8a3a"
