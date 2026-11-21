@@ -1,17 +1,19 @@
-// CPU calibration: runs benchmarks that have published Raspberry Pi 5 results on this machine and
-// derives "Pi 5 time / this machine's time" factors from them.
+// CPU calibration: runs benchmarks that have published results for the target machines (lib/targets.mjs)
+// on this machine and derives "target time / this machine's time" factors from them.
 //   node tools/strata-lab/pi-budget/calibrate.mjs --tools DIR --out DIR [--only a,b] [--port 4621]
-// DIR for --tools is where setup.sh put p7zip 16.02, CoreMark, Speedometer 2.1, JetStream 2.1 and
-// Octane 2.0. Each benchmark is skipped if its tool is missing. --only runs a subset (sevenZip,
-// coremark, sysbench, js, speedometer21, jetstream21, octane2) and keeps earlier results from
-// OUT/calibration.json for the others; each browser suite takes 2-6 minutes. Writes OUT/calibration.json.
+// DIR for --tools is where setup.sh put p7zip 16.02, CoreMark, Speedometer 2.1 and 3.0, JetStream 2.0
+// and 2.1, and Octane 2.0; 7-Zip 23.01 is the system `7z` (apt package 7zip). Each benchmark is skipped
+// if its tool is missing. --only runs a subset (sevenZip, sevenZip23, coremark, sysbench, js,
+// speedometer21, speedometer30, jetstream20, jetstream21, octane2) and adds to the earlier results in
+// OUT/calibration.json; each browser suite takes 2-6 minutes. Writes OUT/calibration.json with the
+// scores measured here and the factors for every target.
 import { execFileSync, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "./lib/server.mjs";
 import { launch } from "./lib/browser.mjs";
-import { CPU_REFS, CPU_CONTEXT, MEMORY } from "./lib/pi5.mjs";
+import { TARGETS, cpuFactors } from "./lib/targets.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const arg = (k, d) => { const i = process.argv.indexOf("--" + k); return i > 0 ? process.argv[i + 1] : d; };
@@ -45,6 +47,18 @@ if (want("sevenZip") && fs.existsSync(z)) {
   }
   results.sevenZip = { here: Math.max(...runs), runs, note: "best of runs (noise from the shared machine only slows it down)" };
 }
+// 7-Zip 23.01 (Ubuntu/Debian package 7zip), to bracket published results from other 7-Zip versions.
+if (want("sevenZip23")) try {
+  const runs = [];
+  for (let i = 0; i < 2; i++) {
+    log("7-Zip (system 7z) single-thread run", i + 1);
+    const txt = execFileSync("7z", ["b", "-mmt1"], { encoding: "utf8", maxBuffer: 1 << 24 });
+    const ver = /7-Zip (\d+\.\d+)/.exec(txt)?.[1];
+    if (!ver || parseFloat(ver) < 21) { log("system 7z is", ver, "- skipped (want 7-Zip 21 or later)"); break; }
+    runs.push(+txt.split("\n").find((l) => l.startsWith("Tot:")).trim().split(/\s+/).pop());
+    results.sevenZip23 = { here: Math.max(...runs), runs, note: "7-Zip " + ver };
+  }
+} catch { log("system 7z not available, skipped"); }
 const cm = path.join(tools, "coremark/coremark.exe");
 if (want("coremark") && fs.existsSync(cm)) {
   const runs = [];
@@ -66,7 +80,7 @@ if (want("sysbench")) try {
 } catch { log("sysbench not available, skipped"); }
 
 // Browser: JS probes, Speedometer 2.1, JetStream 2.1, Octane 2.0 (each from its own checkout).
-const suites = { speedometer21: "speedometer21", jetstream21: "jetstream21", octane2: "octane" };
+const suites = { speedometer21: "speedometer21", speedometer30: "speedometer30", jetstream20: "jetstream20", jetstream21: "jetstream21", octane2: "octane" };
 const mounts = { "/": path.join(here, "web") };
 for (const [k, dir] of Object.entries(suites)) if (want(k) && fs.existsSync(path.join(tools, dir))) mounts[`/${k}/`] = path.join(tools, dir);
 const server = await serve(port, mounts);
@@ -99,8 +113,13 @@ try {
     await p.waitForFunction(() => document.getElementById("result-number").textContent.length > 0, null, T);
     return +(await p.evaluate(() => document.getElementById("result-number").textContent));
   });
-  if (mounts["/jetstream21/"]) await suite("jetstream21", async (p) => {
-    await p.goto(`http://127.0.0.1:${port}/jetstream21/index.html`);
+  if (mounts["/speedometer30/"]) await suite("speedometer30", async (p) => {
+    await p.goto(`http://127.0.0.1:${port}/speedometer30/index.html?startAutomatically=true`);
+    await p.waitForFunction(() => document.getElementById("result-number").textContent.length > 0, null, T);
+    return +(await p.evaluate(() => document.getElementById("result-number").textContent));
+  });
+  for (const js of ["jetstream20", "jetstream21"]) if (mounts[`/${js}/`]) await suite(js, async (p) => {
+    await p.goto(`http://127.0.0.1:${port}/${js}/index.html`);
     await p.waitForFunction(() => !document.getElementById("status").classList.contains("loading"), null, T);
     await p.evaluate(() => JetStream.start());
     await p.waitForFunction(() => document.querySelector("#result-summary .score"), null, T);
@@ -125,35 +144,12 @@ for (const [k, r] of Object.entries(results)) {
   results[k] = { ...r, runs, here: Math.max(...runs) };
 }
 
-// Factors: Pi 5 time / time here = (score here) / (score on Pi 5), for higher-is-better scores.
-const factors = {};
-for (const [k, ref] of Object.entries(CPU_REFS)) {
-  if (!results[k]) continue;
-  const pis = ref.pi5.map((p) => p.value);
-  const f = pis.map((v) => results[k].here / v);
-  factors[k] = { what: ref.what, here: results[k].here, pi5: ref.pi5, factor: median(f), factorRange: [Math.min(...f), Math.max(...f)] };
-}
-const inRange = Object.entries(factors).filter(([k]) => !CPU_REFS[k].outlier).map(([, f]) => f);
-const fv = inRange.map((f) => f.factor);
-// JS-engine suites (JetStream, Octane) are the closest published browser figures to typed-array kernels.
-const jsKernel = ["jetstream21", "octane2"].filter((k) => factors[k]).map((k) => factors[k].factor);
-const summary = {
-  // Central: median over all benchmarks run (outliers included). Range: lowest and highest factor of
-  // the benchmarks not marked as outliers; `highAll` includes them.
-  central: median(Object.values(factors).map((f) => f.factor)),
-  low: Math.min(...inRange.map((f) => f.factorRange[0])), high: Math.max(...inRange.map((f) => f.factorRange[1])),
-  highAll: Math.max(...Object.values(factors).map((f) => f.factorRange[1])),
-  native: median(["sevenZip", "coremark", "sysbench"].filter((k) => factors[k]).map((k) => factors[k].factor)),
-  jsKernel: jsKernel.length ? median(jsKernel) : null,
-  speedometer: factors.speedometer21 ? factors.speedometer21.factor : null,
-  memory: results.js ? {
-    jsReadGBs: results.js.mem.readGBs, jsMemcpyGBs: results.js.mem.setCopyTinymembenchGBs,
-    pi5MemcpyGBs: MEMORY.memcpy.map((m) => m.gbs), pi5ReadGBs: MEMORY.read.map((m) => m.gbs),
-    memcpyFactor: median(MEMORY.memcpy.map((m) => m.gbs)) ? results.js.mem.setCopyTinymembenchGBs / median(MEMORY.memcpy.map((m) => m.gbs)) : null,
-  } : null,
-};
+// Factors for every target; the top-level `factors`/`summary` are the Raspberry Pi 5's (default target).
+const targets = Object.fromEntries(Object.entries(TARGETS).map(([id, t]) => [id, cpuFactors(results, t)]));
+const { factors, summary } = targets.pi5;
+const jsMemory = results.js ? { jsReadGBs: results.js.mem.readGBs, jsMemcpyGBs: results.js.mem.setCopyTinymembenchGBs } : null;
 machine.loadavgAfter = fs.readFileSync("/proc/loadavg", "utf8").trim();
-const doc = { machine, results, factors, summary, context: CPU_CONTEXT };
+const doc = { machine, results, factors, summary, targets, jsMemory };
 fs.writeFileSync(path.join(out, "calibration.json"), JSON.stringify(doc, null, 2));
-console.log(JSON.stringify({ factors: Object.fromEntries(Object.entries(factors).map(([k, v]) => [k, { here: v.here, factor: +v.factor.toFixed(3), range: v.factorRange.map((x) => +x.toFixed(3)) }])), summary }, null, 2));
+for (const [id, t] of Object.entries(targets)) console.log(id, JSON.stringify({ factors: Object.fromEntries(Object.entries(t.factors).map(([k, v]) => [k, { here: v.here, factor: +v.factor.toFixed(3), range: v.factorRange.map((x) => +x.toFixed(3)) }])), summary: t.summary }, null, 1));
 log("wrote", path.join(out, "calibration.json"));

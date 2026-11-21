@@ -5,12 +5,18 @@
 //                    be opened from this container. Treat as unverified until someone opens the URL.
 //   "assumption"     not a published Pi 5 figure: an engineering assumption, stated as such
 // Pi 5 = Raspberry Pi 5 Model B, BCM2712, 4x Cortex-A76 at 2.4 GHz, VideoCore VII.
+// Same shape as every target profile (see targets.mjs): CPU_REFS, MEMORY, GPU, SCENARIOS, SANITY.
+
+export const id = "pi5";
+export const label = "Raspberry Pi 5";
+// Fragments shaded together (VideoCore: 16-lane threads, taken here as 4x4 pixel groups).
+export const GROUP_LANES = 16;
 
 export const CPU_REFS = {
   sevenZip: {
     what: "7-Zip (p7zip 16.02) `7zr b -mmt1` total rating, MIPS, single thread (as sbc-bench runs it)",
-    higherIsBetter: true,
-    pi5: [
+    higherIsBetter: true, group: "native",
+    refs: [
       { value: 3160, note: "2400 MHz, kernel 6.1, Bookworm", url: "https://gist.github.com/arkadijs/117934b6a3f011dc7024193bcb0b82a8", seen: "opened" },
       { value: 3196, note: "2400 MHz, kernel 6.1 (sbc-bench result Au3jaA)", url: "https://github.com/ThomasKaiser/sbc-bench/blob/master/Results.md", seen: "opened" },
       { value: 3305, note: "2400 MHz, kernel 6.6, firmware 2025-01 (sbc-bench result 8-NK); RAM timing improvements in later firmware", url: "https://github.com/ThomasKaiser/sbc-bench/blob/master/results/8-NK.txt", seen: "opened" },
@@ -19,25 +25,25 @@ export const CPU_REFS = {
   },
   speedometer21: {
     what: "Speedometer 2.1 runs/min in Chromium (JavaScript + DOM)",
-    higherIsBetter: true,
+    higherIsBetter: true, group: "dom",
     // Dominated by DOM, style and layout, run here headless with software compositing, and the Pi figure
     // is from 2023 Chromium: kept in the record but left out of the range for typed-array kernels.
     outlier: true,
-    pi5: [
+    refs: [
       { value: 62.5, note: "Raspberry Pi's own benchmark post (data credited to Core Electronics); Pi 4: 20.5", url: "https://www.raspberrypi.com/news/benchmarking-raspberry-pi-5/", seen: "search-extract" },
     ],
   },
   jetstream21: {
     what: "JetStream 2.1 score in Chromium (JavaScript and WebAssembly engine workloads)",
-    higherIsBetter: true,
-    pi5: [
+    higherIsBetter: true, group: "js",
+    refs: [
       { value: 87.873, note: "default Chromium on Raspberry Pi OS; Pi 4: 37.868", url: "https://www.hackster.io/news/raspberry-pi-5-review-hands-on-with-the-most-powerful-raspberry-pi-yet-57efaf61b10f", seen: "search-extract" },
     ],
   },
   octane2: {
     what: "Octane 2.0 score in Chromium (JavaScript engine kernels)",
-    higherIsBetter: true,
-    pi5: [
+    higherIsBetter: true, group: "js",
+    refs: [
       { value: 26334, note: "Pi 4B quoted at ~8000", url: "https://magazinmehatronika.com/en/raspberry-pi-5-model-b-review/", seen: "search-extract" },
       { value: 27542, note: "forum post comparing two Pi 5 configurations (lower of the two)", url: "https://forums.raspberrypi.com/viewtopic.php?t=356922&start=850", seen: "search-extract" },
       { value: 28517, note: "same forum post (higher of the two)", url: "https://forums.raspberrypi.com/viewtopic.php?t=356922&start=850", seen: "search-extract" },
@@ -45,15 +51,15 @@ export const CPU_REFS = {
   },
   coremark: {
     what: "CoreMark 1.0 iterations/s per core (Pi value = Phoronix Test Suite all-core result / 4, assuming one thread per core and linear scaling)",
-    higherIsBetter: true,
-    pi5: [
+    higherIsBetter: true, group: "native",
+    refs: [
       { value: 96550 / 4, note: "pts/coremark size 666: ~96,500-96,600 it/s on the whole Pi 5 (Pi 4: ~37,400)", url: "https://openbenchmarking.org/result/2404260-NE-2312204WL79", seen: "search-extract" },
     ],
   },
   sysbench: {
     what: "sysbench 1.0.20 cpu, 1 thread, default max prime 10000, events/s (integer division heavy: least representative)",
-    higherIsBetter: true,
-    pi5: [
+    higherIsBetter: true, group: "native",
+    refs: [
       { value: 2730.5, note: "Pi 4: ~1471", url: "https://elektronicavoorjou.nl/en/blog/benchmark-raspberry-pi-5", seen: "search-extract" },
     ],
   },
@@ -98,3 +104,36 @@ export const GPU = {
     { what: "WebGL Aquarium in Chromium on Raspberry Pi OS: 60 fps with 1,000 fish", url: "https://mvysny.github.io/rpi5-ubuntu-disaster", seen: "search-extract" },
   ],
 };
+
+// GPU model limits (lib/gpu-model.mjs) for the optimistic (low) and pessimistic (high) bounds.
+//   shader ALU   12 QPUs x 4 lanes x 800 MHz = 38.4 G lane-ops/s peak (76.8 GFLOPS counting add+mul)
+//   texture      3-6 texels/clock (assumption: no published VideoCore VII texture rate)
+//   fill         2-4 pixels/clock written (assumption: no published VideoCore VII fill rate)
+//   memory       4-8 GB/s for the GPU out of LPDDR4X-4267 (17 GB/s theoretical, 14-15 GB/s measured CPU
+//                streaming read, 5-6 GB/s memcpy), shared with the CPU, Chromium's compositor and the
+//                scanout of four 1080p screens (about 2 GB/s on its own)
+//   passes       tile-based: every framebuffer change is a full binning and tile load/store cycle
+const VC_ALU = 12 * 4 * 800e6;
+export const SCENARIOS = {
+  low: {
+    label: "optimistic", aluPeak: VC_ALU, aluEff: 0.7, dualIssue: 1.3, pathFrac: 0.75,
+    texPeak: 6 * 800e6, tmuEff: 0.8, wideTexelCost: 1, fillPeak: 4 * 800e6, bwGBs: 8, readReuse: 1.0, farTapPenalty: 0,
+    passMs: 0.02, drawCpuMs: 0.005, uploadCopies: 2, memcpyGBs: 6.0,
+  },
+  high: {
+    label: "pessimistic", aluPeak: VC_ALU, aluEff: 0.4, dualIssue: 1.0, pathFrac: 1.0,
+    texPeak: 3 * 800e6, tmuEff: 0.5, wideTexelCost: 2, fillPeak: 2 * 800e6, bwGBs: 4, readReuse: 1.25, farTapPenalty: 1,
+    passMs: 0.1, drawCpuMs: 0.02, uploadCopies: 3, memcpyGBs: 5.2,
+  },
+};
+
+// Published GPU results the model is checked against (lib/gpu-model.mjs sanityChecks).
+// glmark2 (score ~190 at 1920x1080, i.e. ~5.3 ms per frame averaged over its scenes) against one
+// full-screen 1080p draw with a 60-op shader and 2 fetches.
+export const SANITY = [
+  {
+    name: "glmark2 at 1920x1080: score ~190, i.e. ~5.3 ms per frame averaged over its scenes, vs a full-screen 60-op, 2-fetch draw",
+    measuredMs: 1000 / 190, url: "https://openbenchmarking.org/result/2407270-NE-RPI5GLMAR05", seen: "search-extract",
+    draws: [{ frags: 1920 * 1080, ops: 60, fetches: 2, uniqueReadBytes: 2, writeBytes: 4 }],
+  },
+];

@@ -146,7 +146,7 @@ export class SandGPU {
   }
 }
 
-// Fraction of blocks, and of 4x4-fragment groups (16 lanes), that take the shader's full path rather
+// Fraction of blocks, and of fragment groups (16 and 64 lanes), that take the shader's full path rather
 // than the early-out, for both block partitions. Used by the GPU cost model for divergence.
 export function sandActivity(mat, w, h) {
   const inert = (m) => m === M.EMPTY || m === M.ROCK || m === M.WOOD;
@@ -165,18 +165,24 @@ export function sandActivity(mat, w, h) {
       const triv = same || ms.every(inert);
       if (!triv) { act[j * bw + i] = 1; nAct++; }
     }
-    let groups = 0, gAct = 0;
-    for (let gy = 0; gy < bh; gy += 4) for (let gx = 0; gx < bw; gx += 4) {
-      groups++;
-      let any = 0;
-      for (let y = gy; y < Math.min(bh, gy + 4); y++) for (let x = gx; x < Math.min(bw, gx + 4); x++) any |= act[y * bw + x];
-      gAct += any;
+    // Groups of 4x4 (16 lanes, VideoCore) and 8x8 (64 lanes, a wave64 on RDNA) fragments.
+    const groupFrac = {};
+    for (const g of [4, 8]) {
+      let groups = 0, gAct = 0;
+      for (let gy = 0; gy < bh; gy += g) for (let gx = 0; gx < bw; gx += g) {
+        groups++;
+        let any = 0;
+        for (let y = gy; y < Math.min(bh, gy + g); y++) for (let x = gx; x < Math.min(bw, gx + g); x++) any |= act[y * bw + x];
+        gAct += any;
+      }
+      groupFrac[g * g] = gAct / groups;
     }
-    out[off ? "odd" : "even"] = { blockFrac: nAct / (bw * bh), groupFrac: gAct / groups };
+    out[off ? "odd" : "even"] = { blockFrac: nAct / (bw * bh), groupFrac };
   }
+  const mean = (k) => (out.even.groupFrac[k] + out.odd.groupFrac[k]) / 2;
   return {
     blockFrac: (out.even.blockFrac + out.odd.blockFrac) / 2,
-    groupFrac: (out.even.groupFrac + out.odd.groupFrac) / 2,
+    groupFrac: mean(16), groupFracByLanes: { 16: mean(16), 64: mean(64) },
     ...out,
   };
 }

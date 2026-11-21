@@ -198,22 +198,28 @@ window.bench = {
     lg.upload(world, mat, sources); lg.run();
     const counts = { draws: glStats.draws.length, passes: glStats.passes, uploadBytes: glStats.uploadBytes, bufferBytes: glStats.bufferBytes, frags: glStats.draws.reduce((a, d) => a + d.frags, 0) };
     const draws = glStats.draws.slice();
-    // Fraction of 4x4 fragment groups at the working resolution that hold any open cell, i.e. that
-    // run the propagation shader's full path rather than its early-out for rock.
+    // Fraction of 4x4 and 8x8 fragment groups (16 and 64 lanes) at the working resolution that hold
+    // any open cell, i.e. that run the propagation shader's full path rather than its rock early-out.
     const S = lg.S, { view, w } = world;
-    let groups = 0, open = 0;
     const isOpaque = (x, y) => { const m = mat[(Math.min(y, ART_H - 1) + view.y0) * w + Math.min(x, ART_W - 1) + view.x0]; return !(m === 0 || m === 3 || m === 4 || m === 5); };
-    for (let gy = 0; gy < lg.lh; gy += 4) for (let gx = 0; gx < lg.lw; gx += 4) {
-      groups++;
-      let any = false;
-      for (let j = gy; j < Math.min(lg.lh, gy + 4) && !any; j++) for (let i = gx; i < Math.min(lg.lw, gx + 4) && !any; i++) {
-        let op = 0;
-        for (let b = 0; b < S; b++) for (let a = 0; a < S; a++) op += isOpaque(i * S + a, j * S + b) ? 1 : 0;
-        if (op * 2 < S * S) any = true;
-      }
-      if (any) open++;
+    const openCell = new Uint8Array(lg.lw * lg.lh);
+    for (let j = 0; j < lg.lh; j++) for (let i = 0; i < lg.lw; i++) {
+      let op = 0;
+      for (let b = 0; b < S; b++) for (let a = 0; a < S; a++) op += isOpaque(i * S + a, j * S + b) ? 1 : 0;
+      openCell[j * lg.lw + i] = op * 2 < S * S ? 1 : 0;
     }
-    const openGroupFrac = open / groups;
+    const openGroupFracByLanes = {};
+    for (const gsz of [4, 8]) {
+      let groups = 0, open = 0;
+      for (let gy = 0; gy < lg.lh; gy += gsz) for (let gx = 0; gx < lg.lw; gx += gsz) {
+        groups++;
+        let any = 0;
+        for (let j = gy; j < Math.min(lg.lh, gy + gsz); j++) for (let i = gx; i < Math.min(lg.lw, gx + gsz); i++) any |= openCell[j * lg.lw + i];
+        open += any;
+      }
+      openGroupFracByLanes[gsz * gsz] = open / groups;
+    }
+    const openGroupFrac = openGroupFracByLanes[16];
     const out = lg.readOut();
     // Reference: the CPU flood run to convergence on the same input.
     const L = new LightCPU(ART_W, ART_H);
@@ -231,7 +237,7 @@ window.bench = {
       if (ref[i] > 0 && out[i] === 0) dark++;
     }
     return {
-      variant, ...VARIANTS[variant], workRes: [lg.lw, lg.lh], counts, draws, swiftshaderMs, openGroupFrac,
+      variant, ...VARIANTS[variant], workRes: [lg.lw, lg.lh], counts, draws, swiftshaderMs, openGroupFrac, openGroupFracByLanes,
       vsCPU: { differFrac: differ / ref.length, meanAbsLevels: absSum / ref.length, leakFrac: leak / ref.length, darkFracOfLit: dark / Math.max(1, lit) },
       outHash: hashArr(out),
     };
