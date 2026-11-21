@@ -463,6 +463,13 @@ function frame(now: number) {
   requestAnimationFrame(frame);
 }
 
+// For scripted checks: jump to a seed and world column.
+Object.assign(window, {
+  strataGo(seed: number, x: number) {
+    view.x = x;
+    setSeed(seed);
+  },
+});
 $<HTMLInputElement>("seed").value = String(view.seed);
 $("workers").textContent = mainThread
   ? "on the page"

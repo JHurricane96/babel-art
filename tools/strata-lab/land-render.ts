@@ -12,10 +12,16 @@ import { GLOW, M, bandOf, biomeOf, hash3 } from "../../engine/strata/world.ts";
 
 const hex = (h: string) =>
   [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+// Rock strata per biome, in BIOMES order: highlands sandstone, fungal violet
+// shale, canyon red beds, forest limestone, peaks granite, basalt.
 const ROCK = [
-  ["#b98a5e", "#a8784f", "#c29a6a", "#9c6c4a", "#b08560", "#8f6448"].map(hex),
-  ["#6f5f86", "#5f5578", "#7a6a90", "#574d6e", "#6a5c80", "#4f4766"].map(hex),
-];
+  ["#b98a5e", "#a8784f", "#c29a6a", "#9c6c4a", "#b08560", "#8f6448"],
+  ["#6f5f86", "#5f5578", "#7a6a90", "#574d6e", "#6a5c80", "#4f4766"],
+  ["#c8643c", "#d98a4e", "#b5523a", "#e0a066", "#a84a32", "#cf7a48"],
+  ["#b4ad90", "#a29c80", "#c2bb9e", "#958f76", "#aca68a", "#8a846c"],
+  ["#9aa3b2", "#8a93a3", "#a9b1bf", "#7c8596", "#949db0", "#6f7889"],
+  ["#6e6670", "#7d7280", "#625b68", "#8a7068", "#5a5462", "#94746a"],
+].map((p) => p.map(hex));
 const SOLID: number[][] = [];
 for (const [m, c] of [
   [M.SOIL, "#6b4a34"],
@@ -30,10 +36,26 @@ for (const [m, c] of [
   [M.BEDROCK, "#1c1a24"],
   [M.MOSS, "#3f6a52"],
   [M.VINE, "#2f6f66"],
+  [M.FOSSIL, "#cdbb94"],
+  [M.ASH, "#55505a"],
 ] as [number, string][])
   SOLID[m] = hex(c);
-const LEAF = [hex("#2f4a35"), hex("#4f6b3a")];
-const CAP = [hex("#5a4a8a"), hex("#3d6f7a")];
+const LEAF = [
+  "#2f4a35",
+  "#4f6b3a",
+  "#5f7d3a",
+  "#2f5a2c",
+  "#2a4638",
+  "#4a4a32",
+].map(hex);
+const CAP = [
+  "#5a4a8a",
+  "#3d6f7a",
+  "#7a4a5a",
+  "#6a5a3a",
+  "#4a6a8a",
+  "#7a3a2a",
+].map(hex);
 const VINE_GLOW = hex("#7ff5e6");
 const LAVA = [hex("#ff8a3a"), hex("#ffb04a"), hex("#c23e1c"), hex("#8a2416")];
 const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map(
@@ -265,7 +287,7 @@ export function renderLand({ W, H, cells, state, surface, x0 }: Land) {
         wx = x0 + x,
         m = cells[i],
         st = state[i],
-        biome = biomeOf(st) % 2,
+        biome = biomeOf(st) % ROCK.length,
         bay = BAYER[(y & 3) * 4 + (wx & 3)];
       const skyCell = y < surface[x];
       let cr: number, cg: number, cb: number;
@@ -313,13 +335,15 @@ export function renderLand({ W, H, cells, state, surface, x0 }: Land) {
         lb = 0.25 + 0.75 * Math.min(1.2, lb + 0.3 * AMB[2]);
       } else if (m === M.LAVA) {
         // Lava: dark red with an orange crust where it meets the air, and a few hot specks.
-        const h = Math.floor(hash3(wx, y, 77) * 64),
+        // Dark red melt with brighter veins (smooth noise, not per-cell
+        // speckle) and an orange skin where it meets the air.
+        const n = 0.6 * fine.at(wx) + 0.4 * coarse.at(wx),
           c =
             y > 0 && cells[i - W] === M.AIR
               ? LAVA[0]
-              : h === 0
+              : n > 0.68
                 ? LAVA[1]
-                : (h & 7) < 3
+                : n > 0.52
                   ? LAVA[2]
                   : LAVA[3];
         cr = c[0];
@@ -335,10 +359,18 @@ export function renderLand({ W, H, cells, state, surface, x0 }: Land) {
             y > 0 &&
             cells[i - W] === M.ROCK &&
             bandOf(state[i - W]) !== bandOf(st),
+          // Basalt cools into columns: in some flows (strata), dark joints every
+          // 4 to 8 cells, spaced and offset by the flow.
+          bnd = bandOf(st),
+          joint =
+            biome === 5 &&
+            (bnd * 7) % 5 < 3 &&
+            (wx + bnd * 13) % (4 + ((bnd * 5) % 5)) === 0,
           tex =
             (1 + (0.05 * ((h & 3) - 1.5)) / 1.5 + 0.12 * (mottle - 0.5)) *
             ((h >>> 8) % 97 === 0 ? 1.25 : 1) *
-            (seam ? 0.8 : 1);
+            (seam ? 0.8 : 1) *
+            (joint ? 0.78 : 1);
         if (m === M.AIR) {
           // The cave's back wall: the same rock, set back and in shadow.
           cr = rock[0] * 0.42 * tex + BACK_TINT[0] * 0.25;

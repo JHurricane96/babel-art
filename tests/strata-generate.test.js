@@ -67,39 +67,61 @@ test("water never stands as a wall: no water cell has open air beside it", () =>
   }
 });
 
-test("each biome shows its character, and the edge band holds both", () => {
-  const seed = 5;
-  for (const r of [0, 1]) {
-    const g = generateRegion(seed, r),
-      b = BIOMES[regionBiome(seed, r)];
-    let caves = 0,
-      water = 0,
-      glow = 0,
-      plants = 0;
-    for (let x = 0; x < REGION_W; x++)
-      for (let y = g.surface[x] + 20; y < WORLD_H; y++)
-        if (g.cells[y * REGION_W + x] === M.AIR) caves++;
-    for (let i = 0; i < g.cells.length; i++) {
-      if (g.cells[i] === M.WATER) water++;
-      if (g.state[i] & GLOW) glow++;
-      if (g.cells[i] === M.LEAF || g.cells[i] === M.CAP) plants++;
-    }
-    assert.ok(caves > 20000, `${b.id}: caves ${caves}`);
-    assert.ok(plants > 500, `${b.id}: plants ${plants}`);
-    if (b.basin)
-      assert.ok(
-        g.lake > 0 && water > 5000,
-        `${b.id}: lake ${g.lake}, water ${water}`,
+test("neighbouring regions always have different biomes", () => {
+  for (let seed = 1; seed <= 6; seed++)
+    for (let r = -30; r < 30; r++)
+      assert.notEqual(
+        regionBiome(seed, r),
+        regionBiome(seed, r + 1),
+        `seed ${seed}, regions ${r} and ${r + 1}`,
       );
-    if (b.id === "fungal") assert.ok(glow > 1000, `fungal glow ${glow}`);
-  }
-  // Rock on both sides of the shared edge mixes the two biomes' strata.
-  const right = generateRegion(seed, 1),
-    seen = new Set();
+});
+
+test("each biome shows its character, and an edge band holds both biomes", () => {
+  const count = (g, pred) => {
+    let n = 0;
+    for (let i = 0; i < g.cells.length; i++)
+      if (pred(g.cells[i], g.state[i])) n++;
+    return n;
+  };
+  const checks = {
+    highlands: (g) =>
+      count(g, (m) => m === M.WATER) > 5000 &&
+      count(g, (m) => m === M.LEAF) > 300,
+    fungal: (g) =>
+      count(g, (m, s) => s & GLOW) > 1000 && count(g, (m) => m === M.CAP) > 200,
+    canyon: (g) =>
+      count(g, (m) => m === M.SAND) > 5000 &&
+      count(g, (m) => m === M.FOSSIL) > 20,
+    forest: (g) =>
+      count(g, (m) => m === M.LEAF) > 3000 &&
+      count(g, (m) => m === M.WATER) > 1000,
+    peaks: (g) =>
+      count(g, (m) => m === M.SNOW) > 3000 &&
+      count(g, (m) => m === M.ICE) > 100,
+    basalt: (g) =>
+      count(g, (m) => m === M.LAVA) > 500 &&
+      count(g, (m) => m === M.ASH) > 1000,
+  };
+  const seen = new Set();
+  for (let seed = 1; seed <= 4 && seen.size < BIOMES.length; seed++)
+    for (let r = 0; r < 6 && seen.size < BIOMES.length; r++) {
+      const b = BIOMES[regionBiome(seed, r)];
+      if (seen.has(b.id)) continue;
+      seen.add(b.id);
+      assert.ok(
+        checks[b.id](generateRegion(seed, r)),
+        `${b.id} (seed ${seed}, region ${r})`,
+      );
+    }
+  assert.equal(seen.size, BIOMES.length);
+  // Rock just past an edge mixes the two biomes' strata.
+  const right = generateRegion(5, 1),
+    mixed = new Set();
   for (let y = 700; y < 1400; y++)
     for (let x = 0; x < 200; x++)
-      seen.add(biomeOf(right.state[y * REGION_W + x]));
-  assert.equal(seen.size, 2);
+      mixed.add(biomeOf(right.state[y * REGION_W + x]));
+  assert.equal(mixed.size, 2);
 });
 
 test("a region generates well inside the mini PC budget", () => {

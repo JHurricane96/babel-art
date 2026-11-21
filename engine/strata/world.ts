@@ -30,6 +30,8 @@ export const M = {
   BEDROCK: 15,
   MOSS: 16,
   VINE: 17,
+  FOSSIL: 18,
+  ASH: 19,
 } as const;
 export type Material = (typeof M)[keyof typeof M];
 

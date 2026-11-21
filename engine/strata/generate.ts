@@ -1,4 +1,4 @@
-// Strata region generator, loop 1: two biomes and the transition between them.
+// Strata region generator: six biomes and the transitions between them.
 //
 // A region is REGION_W x WORLD_H cells generated from (seed, region index)
 // alone, so any region can be rebuilt on demand and saves only need what the
@@ -8,15 +8,18 @@
 // from both sides.
 //
 // The land is built in passes:
-//   1. ground height, blending the two biomes' shapes across a band at the edge;
+//   1. ground height, blending the two biomes' shapes across a band at the edge,
+//      with each biome's own features: ridged peaks, dunes, ledges, and a basin
+//      (a lake, a river, a canyon, a frozen lake or a lava caldera);
 //   2. rock in horizontal strata of uneven thickness, with each stratum changing
 //      biome at its own place inside the band, so layers interfinger;
 //   3. caves from noise: wide caverns, sparse meandering tunnels, and a few
 //      sinkhole shafts that open to the sky;
-//   4. a lake in the highlands' basin, then pools and deep lava that fill only
-//      true hollows, a row at a time from the bottom up;
-//   5. trees and giant mushrooms on the surface; moss, fungi, glowing vines,
-//      stalactites and crystals in the caves.
+//   4. the basin's water or lava, then pools and deep lava that fill only true
+//      hollows, a row at a time from the bottom up; in frozen biomes, ice;
+//   5. plants on the surface (pines, broad and giant trees, giant mushrooms,
+//      cacti, dead trees, shrubs); in the caves moss, fungi, glowing vines,
+//      roots, stalactites or icicles, crystals and fossils.
 import {
   GLOW,
   M,
@@ -26,6 +29,7 @@ import {
   fbm2,
   hash3,
   lerp,
+  noise1,
   noise2,
   smoothstep,
   stateOf,
@@ -41,39 +45,95 @@ export interface Biome {
   amp: number;
   /** Small-scale roughness, as a share of amp. */
   detail: number;
+  /** 0-1: sharp ridges and peaks (ridged noise) instead of rounded hills. */
+  ridge: number;
   /** 0-1: how strongly the ground breaks into ledges and cliffs. */
   terrace: number;
   /** Typical cliff height, cells. */
   terraceStep: number;
-  /** 0-1: whether the region holds a lake basin. */
+  /** 0-1: sand dunes heaped on the ground. */
+  dunes: number;
+  /** One basin per region (0 or 1): a lake, a river, a canyon or a caldera. */
   basin: number;
+  /** Basin half-width as a share of the region, and its depth in cells. */
+  basinW: number;
+  basinDepth: number;
+  /** 0 = gently shelving sides, 1 = sheer stepped walls. */
+  basinSteep: number;
+  /** How full the basin is: 1 to just below its rim, 0.15 a stream at the bottom. */
+  basinFill: number;
+  /** What fills it: water or lava. */
+  basinLiquid: number;
   /** 0-1: how much of the deep rock opens into caverns. */
   cavern: number;
   /** Cavern noise wavelength, x then y, cells: wide and low or small and round. */
   cavernX: number;
   cavernY: number;
-  /** 0-1: how many meandering tunnels. */
+  /** 0-1: how many passages join the caverns. */
   tunnels: number;
   /** Expected sinkhole shafts per region. */
   sinkholes: number;
   /** 0-1: share of cave hollows that hold pools. */
   wet: number;
+  /** Hollows lower than this many cells above the world's floor fill with lava. */
+  lavaDepth: number;
+  /** Surface cover and the layer under it, and that layer's thickness. */
+  top: number;
+  sub: number;
   soil: number;
-  /** Surface plants per column: pines, broad trees, giant mushrooms. */
+  /** Surface plants per column. */
   pines: number;
   broad: number;
+  giants: number;
   shrooms: number;
-  /** 0-1 cave life: moss and fungi, glowing vines, stone spikes, crystals. */
+  cacti: number;
+  dead: number;
+  shrubs: number;
+  /** 0-1 cave life and features. */
   fungus: number;
   vines: number;
   spikes: number;
   crystals: number;
+  roots: number;
+  fossils: number;
+  /** 0-1: freezing; above 0.5 pools are ice and stone spikes are icicles. */
+  ice: number;
   /** Ground higher than this (smaller y) carries snow; 0 = never. */
   snowline: number;
 }
 
+const COMMON = {
+  ridge: 0,
+  dunes: 0,
+  basin: 0,
+  basinW: 0.15,
+  basinDepth: 100,
+  basinSteep: 0,
+  basinFill: 1,
+  basinLiquid: M.WATER as number,
+  lavaDepth: 240,
+  top: M.GRASS as number,
+  sub: M.SOIL as number,
+  pines: 0,
+  broad: 0,
+  giants: 0,
+  shrooms: 0,
+  cacti: 0,
+  dead: 0,
+  shrubs: 0,
+  fungus: 0.05,
+  vines: 0,
+  spikes: 0.2,
+  crystals: 0.1,
+  roots: 0,
+  fossils: 0,
+  ice: 0,
+  snowline: 0,
+};
+
 export const BIOMES: Biome[] = [
   {
+    ...COMMON,
     id: "highlands",
     name: "Cliffs over a lake",
     base: 540,
@@ -82,6 +142,8 @@ export const BIOMES: Biome[] = [
     terrace: 0.9,
     terraceStep: 54,
     basin: 1,
+    basinW: 0.15,
+    basinDepth: 105,
     cavern: 0.15,
     cavernX: 190,
     cavernY: 80,
@@ -91,14 +153,14 @@ export const BIOMES: Biome[] = [
     soil: 8,
     pines: 0.06,
     broad: 0.004,
-    shrooms: 0,
+    shrubs: 0.02,
     fungus: 0.08,
-    vines: 0,
     spikes: 0.8,
     crystals: 0.7,
     snowline: 430,
   },
   {
+    ...COMMON,
     id: "fungal",
     name: "Fungal caverns",
     base: 600,
@@ -106,7 +168,6 @@ export const BIOMES: Biome[] = [
     detail: 0.35,
     terrace: 0.05,
     terraceStep: 40,
-    basin: 0,
     cavern: 0.9,
     cavernX: 270,
     cavernY: 110,
@@ -114,14 +175,125 @@ export const BIOMES: Biome[] = [
     sinkholes: 2,
     wet: 0.6,
     soil: 6,
-    pines: 0,
     broad: 0.014,
     shrooms: 0.012,
+    shrubs: 0.02,
     fungus: 1,
     vines: 1,
     spikes: 0.1,
-    crystals: 0.1,
-    snowline: 0,
+  },
+  {
+    ...COMMON,
+    id: "canyon",
+    name: "Red canyon",
+    base: 560,
+    amp: 120,
+    detail: 0.2,
+    terrace: 1,
+    terraceStep: 34,
+    dunes: 1,
+    basin: 1,
+    basinW: 0.1,
+    basinDepth: 280,
+    basinSteep: 0.55,
+    basinFill: 0.12,
+    cavern: 0.2,
+    cavernX: 230,
+    cavernY: 55,
+    tunnels: 0.5,
+    sinkholes: 0.4,
+    wet: 0.05,
+    top: M.SAND,
+    sub: M.SAND,
+    soil: 4,
+    cacti: 0.012,
+    dead: 0.003,
+    spikes: 0.5,
+    crystals: 0.15,
+    fossils: 1,
+  },
+  {
+    ...COMMON,
+    id: "forest",
+    name: "River forest",
+    base: 610,
+    amp: 75,
+    detail: 0.3,
+    terrace: 0.15,
+    terraceStep: 30,
+    basin: 1,
+    basinW: 0.08,
+    basinDepth: 55,
+    cavern: 0.35,
+    cavernX: 200,
+    cavernY: 85,
+    tunnels: 0.6,
+    sinkholes: 0.6,
+    wet: 0.75,
+    soil: 12,
+    broad: 0.03,
+    giants: 0.012,
+    shrubs: 0.08,
+    fungus: 0.35,
+    spikes: 0.25,
+    roots: 1,
+  },
+  {
+    ...COMMON,
+    id: "peaks",
+    name: "Frozen peaks",
+    base: 470,
+    amp: 210,
+    detail: 0.25,
+    ridge: 0.75,
+    terrace: 0.25,
+    terraceStep: 40,
+    basin: 1,
+    basinW: 0.09,
+    basinDepth: 70,
+    cavern: 0.35,
+    cavernX: 150,
+    cavernY: 95,
+    tunnels: 0.5,
+    sinkholes: 0.3,
+    wet: 0.55,
+    top: M.SNOW,
+    sub: M.SNOW,
+    soil: 8,
+    pines: 0.03,
+    spikes: 0.9,
+    crystals: 0.4,
+    ice: 1,
+    snowline: 2000,
+  },
+  {
+    ...COMMON,
+    id: "basalt",
+    name: "Basalt fields",
+    base: 600,
+    amp: 90,
+    detail: 0.2,
+    terrace: 0.7,
+    terraceStep: 26,
+    basin: 1,
+    basinW: 0.06,
+    basinDepth: 60,
+    basinFill: 0.6,
+    basinLiquid: M.LAVA,
+    cavern: 0.55,
+    cavernX: 520,
+    cavernY: 36,
+    tunnels: 0.4,
+    sinkholes: 0.5,
+    wet: 0.1,
+    lavaDepth: 800,
+    top: M.ASH,
+    sub: M.ASH,
+    soil: 3,
+    dead: 0.008,
+    shrubs: 0.006,
+    spikes: 0.3,
+    crystals: 0.3,
   },
 ];
 
@@ -131,16 +303,26 @@ export const BLEND = 400;
 export const MARGIN = 256;
 /** Widest air gap a pool may span; must stay well under MARGIN. */
 const MAX_POOL = 150;
-/** Below this, hollows fill with lava rather than water. */
-const LAVA_LINE = WORLD_H - 240;
 type Params = Record<Exclude<keyof Biome, "id" | "name">, number>;
-const NUMERIC = Object.keys(BIOMES[0]).filter(
-  (k) => k !== "id" && k !== "name",
+/** Parameters that blend across an edge; the rest (materials, basins) belong to one side. */
+const NUMERIC = (Object.keys(BIOMES[0]) as (keyof Biome)[]).filter(
+  (k) => !["id", "name", "top", "sub", "basinLiquid"].includes(k),
 ) as (keyof Params)[];
 
-/** Loop 1: the two biomes alternate, so every panorama shows transitions. */
-export function regionBiome(seed: number, r: number) {
-  return (((r + (hash3(seed, 7, 0) < 0.5 ? 0 : 1)) % 2) + 2) % 2;
+/**
+ * The biome of each region. Even regions draw freely from the list; odd ones
+ * draw from the biomes their two neighbours are not, so neighbours always
+ * differ. Each region depends only on its own index and its neighbours'.
+ */
+export function regionBiome(seed: number, r: number): number {
+  const n = BIOMES.length,
+    pick = (q: number) => Math.floor(hash3(q, 7, seed + 1) * n);
+  if ((r & 1) === 0) return pick(r);
+  const a = pick(r - 1),
+    b = pick(r + 1),
+    choices: number[] = [];
+  for (let k = 0; k < n; k++) if (k !== a && k !== b) choices.push(k);
+  return choices[Math.floor(hash3(r, 8, seed + 1) * choices.length)];
 }
 
 /** The two regions whose shared edge is nearest x, and how far x is past it. */
@@ -165,57 +347,108 @@ export function paramsAt(seed: number, x: number) {
   return { p, t, left: e.left, right: e.right, past: e.past };
 }
 
-function basinOf(seed: number, r: number) {
-  if (!BIOMES[regionBiome(seed, r)].basin) return null;
-  const c = r * REGION_W + REGION_W * (0.3 + 0.4 * hash3(r, 11, seed)),
-    w = REGION_W * (0.12 + 0.07 * hash3(r, 12, seed)),
-    depth = 70 + 70 * hash3(r, 13, seed);
-  return { c, w, depth };
+/** Which side's biome a surface column belongs to: patches that mix across the band. */
+function columnBiome(seed: number, x: number) {
+  const { t, left, right } = paramsAt(seed, x);
+  return regionBiome(seed, noise1(x / 35, seed + 42) < t ? right : left);
+}
+
+interface Basin {
+  c: number;
+  w: number;
+  depth: number;
+  steep: number;
+  fill: number;
+  liquid: number;
+}
+
+function basinOf(seed: number, r: number): Basin | null {
+  const b = BIOMES[regionBiome(seed, r)];
+  if (!b.basin) return null;
+  return {
+    c: r * REGION_W + REGION_W * (0.3 + 0.4 * hash3(r, 11, seed)),
+    w: REGION_W * b.basinW * (0.8 + 0.4 * hash3(r, 12, seed)),
+    depth: b.basinDepth * (0.75 + 0.5 * hash3(r, 13, seed)),
+    steep: b.basinSteep,
+    fill: b.basinFill,
+    liquid: b.basinLiquid,
+  };
+}
+
+/** Dunes: long windward slopes and short steep lee faces, heaped in sand. */
+function duneAt(seed: number, x: number, dunes: number) {
+  if (dunes <= 0.01) return 0;
+  const u = x / 80 + 0.7 * fbm1(x / 420, seed + 10),
+    f = u - Math.floor(u),
+    shape = f < 0.75 ? smoothstep(0, 0.75, f) : smoothstep(1, 0.75, f);
+  return dunes * (6 + 16 * fbm1(x / 300, seed + 11)) * shape;
 }
 
 /** Ground height (cells from the top) at world column x, before caves. */
 export function groundAt(seed: number, x: number) {
   const { p } = paramsAt(seed, x);
-  const n =
+  let n =
     (fbm1(x / 600, seed + 1) - 0.5) * 2 * p.amp +
     (fbm1(x / 110, seed + 2) - 0.5) * 2 * p.amp * p.detail;
-  // Ledges: the height is snapped toward steps whose size drifts along the land,
-  // so cliffs come in different heights rather than one repeated stair.
-  const hs = p.base + n,
-    step = p.terraceStep * (0.7 + 0.6 * fbm1(x / 900, seed + 3)),
-    k = hs / step,
-    fi = Math.floor(k),
-    terr = (fi + smoothstep(0.8, 1, k - fi)) * step;
+  if (p.ridge > 0) {
+    // Ridged noise: crests and peaks rather than rounded hills.
+    const r = 1 - Math.abs(2 * fbm1(x / 380, seed + 8, 4) - 1);
+    n -= p.ridge * p.amp * 1.5 * (r * Math.sqrt(r) - 0.4);
+  }
   const basin = basinOf(seed, Math.floor(x / REGION_W));
   let bowl = 0;
-  if (basin) bowl = smoothstep(1, 0.35, Math.abs(x - basin.c) / basin.w);
-  let h = lerp(hs, terr, p.terrace * (1 - bowl));
-  // A flat-bottomed basin with gently shelving sides and an uneven bed.
-  if (bowl > 0)
-    h += basin!.depth * bowl * (1 + 0.25 * (fbm1(x / 50, seed + 4) - 0.5));
-  return Math.max(200, Math.min(WORLD_H - 420, h));
+  if (basin)
+    bowl = smoothstep(
+      1,
+      0.35 + 0.4 * basin.steep,
+      Math.abs(x - basin.c) / basin.w,
+    );
+  // A basin: flat-bottomed, with shelving sides (a lake) or sheer ones (a canyon).
+  const hs =
+    p.base +
+    n +
+    (bowl > 0
+      ? basin!.depth * bowl * (1 + 0.25 * (fbm1(x / 50, seed + 4) - 0.5))
+      : 0);
+  // Ledges: the height is snapped toward steps whose size drifts along the land,
+  // so cliffs come in different heights rather than one repeated stair.
+  const step = p.terraceStep * (0.7 + 0.6 * fbm1(x / 900, seed + 3)),
+    k = hs / step,
+    fi = Math.floor(k),
+    terr = (fi + smoothstep(0.8, 1, k - fi)) * step,
+    h = lerp(hs, terr, p.terrace * (1 - bowl * (1 - (basin?.steep ?? 0))));
+  return Math.max(150, Math.min(WORLD_H - 420, h - duneAt(seed, x, p.dunes)));
 }
 
 /**
- * The lake in a basin: its surface sits just below the lower of the two highest
- * points either side of the basin, so it is held in on both sides wherever the
- * land around the bowl rises and falls. Returns the level (cells from the top)
- * and the stretch of columns between those two high points.
+ * The liquid in a basin: its surface sits below the lower of the two highest
+ * points either side, so it is held in on both sides wherever the land around
+ * the bowl rises and falls; a part-filled basin sits lower, toward its bed.
+ * Returns the level (cells from the top) and the stretch of columns between
+ * those two high points.
  */
-function lakeOf(seed: number, basin: { c: number; w: number }) {
+function lakeOf(seed: number, basin: Basin) {
   let left = Infinity,
     xl = 0,
     right = Infinity,
-    xr = 0;
+    xr = 0,
+    bed = 0;
   for (let x = Math.round(basin.c); x >= basin.c - 1.4 * basin.w; x--) {
     const g = groundAt(seed, x);
     if (g < left) [left, xl] = [g, x];
+    bed = Math.max(bed, g);
   }
   for (let x = Math.round(basin.c); x <= basin.c + 1.4 * basin.w; x++) {
     const g = groundAt(seed, x);
     if (g < right) [right, xr] = [g, x];
+    bed = Math.max(bed, g);
   }
-  return { level: Math.round(Math.max(left, right)) + 3, x0: xl, x1: xr };
+  const rim = Math.max(left, right) + 3;
+  return {
+    level: Math.round(Math.min(bed - 3, rim + (1 - basin.fill) * (bed - rim))),
+    x0: xl,
+    x1: xr,
+  };
 }
 
 export interface Region {
@@ -432,14 +665,20 @@ export function generateWindow(seed: number, x0: number, width: number) {
 
   // 2. Rock in strata. Layers stay roughly level (cliffs cut through them) with
   // slow folds; across a biome edge each layer changes over at its own place.
-  const table = strataTable(seed);
+  const table = strataTable(seed),
+    colBiome = new Uint8Array(WW);
   for (let x = 0; x < WW; x++) {
     const wx = X0 + x,
       p = params[x],
       { left, right, past } = edges[x],
       s = surface[x],
       slope = Math.abs(ground[x + 4] - ground[x]),
-      soil = Math.round(p.soil * Math.max(0, 1 - slope / 10)),
+      cb = (colBiome[x] = columnBiome(seed, wx)),
+      cover = BIOMES[cb],
+      // Dunes are heaps of sand on the ground, so they are sand all through.
+      soil = Math.round(
+        p.soil * Math.max(0, 1 - slope / 10) + duneAt(seed, wx, p.dunes),
+      ),
       snowy = p.snowline > 0 && s < p.snowline,
       bl = regionBiome(seed, left),
       br = regionBiome(seed, right),
@@ -478,9 +717,9 @@ export function generateWindow(seed: number, x0: number, width: number) {
       state[i] = stateOf(k & 15, biome);
       if (y >= bedrock) cells[i] = M.BEDROCK;
       else if (depth === 0)
-        cells[i] = snowy ? M.SNOW : soil > 0 ? M.GRASS : M.ROCK;
+        cells[i] = snowy ? M.SNOW : soil > 0 ? cover.top : M.ROCK;
       else if (snowy && depth < 3) cells[i] = M.SNOW;
-      else if (depth < soil) cells[i] = M.SOIL;
+      else if (depth < soil) cells[i] = cover.sub;
       else cells[i] = M.ROCK;
     }
   }
@@ -574,51 +813,91 @@ export function generateWindow(seed: number, x0: number, width: number) {
   ) {
     const basin = basinOf(seed, q);
     if (!basin) continue;
-    const { level, x0: lx0, x1: lx1 } = lakeOf(seed, basin);
+    const { level, x0: lx0, x1: lx1 } = lakeOf(seed, basin),
+      lava = basin.liquid === M.LAVA;
     for (let wx = lx0 + 1; wx < lx1; wx++) {
       const x = wx - X0;
       if (x < 0 || x >= WW || surface[x] <= level) continue; // dry land above the waterline
       for (let y = level; y < surface[x]; y++)
-        if (cells[y * WW + x] === M.AIR) cells[y * WW + x] = M.WATER;
-      // A sealed bed: sand at the shore, gravel deeper; no cave breaks through it.
+        if (cells[y * WW + x] === M.AIR) cells[y * WW + x] = basin.liquid;
+      // A sealed bed: sand at the shore, gravel deeper (or bare rock under
+      // lava); no cave breaks through it.
       const shore = surface[x] - level < 8;
       for (let y = surface[x]; y < Math.min(H, surface[x] + 12); y++) {
         const i = y * WW + x;
         if (cells[i] === M.BEDROCK) break;
         if (y < surface[x] + 5 || cells[i] === M.AIR)
-          cells[i] = shore ? M.SAND : M.GRAVEL;
+          cells[i] = lava ? M.ROCK : shore ? M.SAND : M.GRAVEL;
       }
     }
   }
   fillHollows(cells, WW, H, X0, seed, params, surface);
+  // In frozen biomes pools are ice, and lakes carry a crust of it.
+  for (let x = 0; x < WW; x++) {
+    if (params[x].ice < 0.5) continue;
+    let run = 0;
+    for (let y = 0; y < H; y++) {
+      const i = y * WW + x;
+      if (cells[i] !== M.WATER) {
+        run = 0;
+        continue;
+      }
+      run++;
+      if (y >= surface[x] || run <= 4) cells[i] = M.ICE;
+    }
+  }
+  // Fossils in the rock, on a fixed world grid.
+  for (
+    let gx = Math.floor(X0 / 48) - 1;
+    gx <= Math.floor((X0 + WW) / 48) + 1;
+    gx++
+  )
+    for (let gy = 0; gy < H / 40; gy++) {
+      const fx = gx * 48 + Math.floor(hash3(gx, gy, seed + 90) * 40),
+        fy = gy * 40 + Math.floor(hash3(gx, gy, seed + 91) * 32),
+        lx = fx - X0;
+      if (lx < 0 || lx >= WW) continue;
+      if (hash3(gx, gy, seed + 92) > 0.06 * params[lx].fossils) continue;
+      if (fy < surface[lx] + 12) continue;
+      ammonite(cells, WW, lx, fy, 2 + Math.floor(hash3(gx, gy, seed + 93) * 3));
+    }
 
-  // 5. Life on the surface: decided per world column, mixed by the blended densities.
+  // 5. Life on the surface: decided per world column, mixed by the blended
+  // densities. Plants carry their column's biome, which sets their colours.
+  stamp = state;
   for (let x = 0; x < WW; x++) {
     const wx = X0 + x,
       p = params[x],
       s = surface[x],
-      si = s * WW + x;
-    if (cells[si] !== M.GRASS && cells[si] !== M.SNOW && cells[si] !== M.SOIL)
+      si = s * WW + x,
+      top = cells[si];
+    if (top === M.AIR || top === M.WATER || top === M.LAVA || top === M.ICE)
       continue;
     if (cells[si - WW] !== M.AIR) continue;
+    stampBiome = colBiome[x];
     const slope = Math.abs(
-      ground[Math.min(WW + 3, x + 5)] - ground[Math.max(0, x - 1)],
-    );
-    const h = hash3(wx, 31, seed);
-    const R = walkRandom(Math.floor(hash3(wx, 32, seed) * 4294967296));
-    if (slope < 6 && h < p.pines)
-      pine(cells, WW, x, s, R, cells[si] === M.SNOW);
-    else if (slope < 5 && h < p.pines + p.broad)
+        ground[Math.min(WW + 3, x + 5)] - ground[Math.max(0, x - 1)],
+      ),
+      R = walkRandom(Math.floor(hash3(wx, 32, seed) * 4294967296));
+    let h = hash3(wx, 31, seed);
+    if (slope < 6 && (h -= p.pines) < 0)
+      pine(cells, WW, x, s, R, top === M.SNOW);
+    else if (slope < 4 && (h -= p.giants) < 0)
+      giantTree(cells, WW, x, s, R, wx, seed);
+    else if (slope < 5 && (h -= p.broad) < 0)
       broadTree(cells, WW, x, s, R, wx, seed);
-    else if (slope < 4 && h < p.pines + p.broad + p.shrooms)
+    else if (slope < 4 && (h -= p.shrooms) < 0)
       mushroom(cells, state, WW, x, s - 1, wx, seed, R, 1.5);
-    else if (cells[si] === M.GRASS && hash3(wx, 33, seed) < 0.3) {
+    else if (slope < 6 && (h -= p.cacti) < 0) cactus(cells, WW, x, s, R);
+    else if (slope < 8 && (h -= p.dead) < 0) deadTree(cells, WW, x, s, R);
+    else if ((h -= p.shrubs) < 0) shrub(cells, WW, x, s, R);
+    else if (top === M.GRASS && hash3(wx, 33, seed) < 0.3) {
       // Tufts of grass along the skyline.
       const tall = 1 + Math.floor(hash3(wx, 34, seed) * 3);
-      for (let k = 1; k <= tall; k++)
-        if (cells[si - k * WW] === M.AIR) cells[si - k * WW] = M.GRASS;
+      for (let k = 1; k <= tall; k++) put(cells, WW, x, s - k, M.GRASS);
     }
   }
+  stamp = null;
 
   // Life in the caves: floors and ceilings, decided per world cell.
   for (let y = 4; y < H - 30; y++)
@@ -667,12 +946,15 @@ export function generateWindow(seed: number, x0: number, width: number) {
             y,
             -1,
             3 + Math.floor(hash3(wx, y, seed + 64) * 12),
+            p.ice > 0.5 ? M.ICE : M.ROCK,
           );
         } else if (h > 0.6 && h < 0.6 + 0.004 * p.crystals)
           crystals(cells, state, WW, x, y, -1, wx, seed);
-      } else if (above === M.ROCK || above === M.SOIL) {
+      } else if (above === M.ROCK || above === M.SOIL || above === M.SAND) {
         const h = hash3(wx, y, seed + 65);
-        if (
+        if (y < surface[x] + 110 && h > 0.8 && h < 0.8 + 0.2 * p.roots)
+          root(cells, WW, x, y, wx, seed);
+        else if (
           h <
           0.12 *
             p.vines *
@@ -691,6 +973,7 @@ export function generateWindow(seed: number, x0: number, width: number) {
               Math.floor(
                 hash3(wx, y, seed + 67) * hash3(wx, y, seed + 68) * 26,
               ),
+            p.ice > 0.5 ? M.ICE : M.ROCK,
           );
         else if (h > 0.6 && h < 0.6 + 0.004 * p.crystals)
           crystals(cells, state, WW, x, y, 1, wx, seed);
@@ -761,7 +1044,7 @@ function fillHollows(
           // The bottom of a hollow: does a pool start here?
           const wx = X0 + x,
             p = params[x],
-            lava = y > LAVA_LINE;
+            lava = y > H - p.lavaDepth;
           liquid = -1;
           if (
             y > surface[x] + 30 &&
@@ -838,12 +1121,211 @@ function tidy(
   }
 }
 
+/** While surface plants are placed, the state array to mark them with their biome. */
+let stamp: Uint8Array | null = null,
+  stampBiome = 0;
+
 function put(cells: Uint8Array, WW: number, x: number, y: number, m: number) {
   if (x < 0 || x >= WW || y < 0 || y >= WORLD_H) return false;
   const i = y * WW + x;
   if (cells[i] !== M.AIR) return false;
   cells[i] = m;
+  if (stamp) stamp[i] = stateOf(0, stampBiome);
   return true;
+}
+
+/** A blob of leaves: an ellipse with ragged edges. */
+function blob(
+  cells: Uint8Array,
+  WW: number,
+  cx: number,
+  cy: number,
+  rx: number,
+  ry: number,
+  R: () => number,
+) {
+  for (let dy = -Math.ceil(ry); dy <= Math.ceil(ry); dy++)
+    for (let dx = -Math.ceil(rx); dx <= Math.ceil(rx); dx++) {
+      const d = (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry);
+      if (d < 0.75 || (d < 1.05 && R() < 0.55))
+        put(cells, WW, Math.round(cx + dx), Math.round(cy + dy), M.LEAF);
+    }
+}
+
+/** A line of cells from (x0, y0) to (x1, y1). */
+function line(
+  cells: Uint8Array,
+  WW: number,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  m: number,
+) {
+  const n = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0), 1);
+  for (let k = 0; k <= n; k++)
+    put(
+      cells,
+      WW,
+      Math.round(x0 + ((x1 - x0) * k) / n),
+      Math.round(y0 + ((y1 - y0) * k) / n),
+      m,
+    );
+}
+
+/** A giant forest tree: a thick trunk, a few boughs and a broad layered crown. */
+function giantTree(
+  cells: Uint8Array,
+  WW: number,
+  x: number,
+  s: number,
+  R: () => number,
+  wx: number,
+  seed: number,
+) {
+  const tall = 34 + Math.floor(R() * 34),
+    thick = R() < 0.5 ? 2 : 3,
+    top = s - tall;
+  for (let k = 1; k <= tall; k++)
+    for (let t = 0; t < thick; t++) put(cells, WW, x + t, s - k, M.WOOD);
+  // Buttress roots flaring at the base.
+  put(cells, WW, x - 1, s - 1, M.WOOD);
+  put(cells, WW, x + thick, s - 1, M.WOOD);
+  const boughs = 2 + Math.floor(R() * 3);
+  for (let b = 0; b < boughs; b++) {
+    const y0 = top + Math.floor(tall * (0.15 + 0.35 * R())),
+      dir = b % 2 ? 1 : -1,
+      len = 7 + Math.floor(R() * 9),
+      x1 = x + (dir > 0 ? thick : -1) + dir * len,
+      y1 = y0 - Math.floor(len * (0.4 + 0.4 * R()));
+    line(cells, WW, x + (dir > 0 ? thick - 1 : 0), y0, x1, y1, M.WOOD);
+    blob(cells, WW, x1, y1 - 2, 6 + R() * 4, 3.5 + R() * 2, R);
+  }
+  blob(cells, WW, x + thick / 2, top - 3, 10 + R() * 5, 6 + R() * 3, R);
+  blob(
+    cells,
+    WW,
+    x + thick / 2 + (R() - 0.5) * 10,
+    top - 9,
+    7 + R() * 3,
+    4 + R() * 2,
+    R,
+  );
+  void wx;
+  void seed;
+}
+
+/** A cactus: a column with one or two arms bending upward. */
+function cactus(
+  cells: Uint8Array,
+  WW: number,
+  x: number,
+  s: number,
+  R: () => number,
+) {
+  const tall = 6 + Math.floor(R() * 12),
+    wide = tall > 11 ? 2 : 1;
+  for (let k = 1; k <= tall; k++)
+    for (let t = 0; t < wide; t++) put(cells, WW, x + t, s - k, M.LEAF);
+  const arms = tall > 8 ? 1 + Math.floor(R() * 2) : 0;
+  for (let a = 0; a < arms; a++) {
+    const dir = a === 0 ? -1 : 1,
+      y = s - 3 - Math.floor(R() * (tall - 6)),
+      out = 2 + Math.floor(R() * 2),
+      up = 2 + Math.floor(R() * 4),
+      ax = dir < 0 ? x - out : x + wide - 1 + out;
+    line(cells, WW, dir < 0 ? x - 1 : x + wide, y, ax, y, M.LEAF);
+    line(cells, WW, ax, y - 1, ax, y - up, M.LEAF);
+  }
+}
+
+/** A dead tree: a bare trunk with a few crooked branches. */
+function deadTree(
+  cells: Uint8Array,
+  WW: number,
+  x: number,
+  s: number,
+  R: () => number,
+) {
+  const tall = 8 + Math.floor(R() * 14);
+  let cx = x;
+  for (let k = 1; k <= tall; k++) {
+    if (k > 4 && R() < 0.15) cx += R() < 0.5 ? -1 : 1;
+    put(cells, WW, cx, s - k, M.WOOD);
+  }
+  const n = 2 + Math.floor(R() * 3);
+  for (let b = 0; b < n; b++) {
+    const y0 = s - Math.floor(tall * (0.45 + 0.5 * R())),
+      dir = R() < 0.5 ? -1 : 1,
+      len = 3 + Math.floor(R() * 6);
+    line(
+      cells,
+      WW,
+      cx,
+      y0,
+      cx + dir * len,
+      y0 - Math.floor(len * (0.5 + R())),
+      M.WOOD,
+    );
+  }
+}
+
+/** A low shrub. */
+function shrub(
+  cells: Uint8Array,
+  WW: number,
+  x: number,
+  s: number,
+  R: () => number,
+) {
+  blob(cells, WW, x, s - 1.5, 2 + R() * 2.5, 1.5 + R() * 1.2, R);
+}
+
+/** Roots hanging from a cave ceiling near the surface. */
+function root(
+  cells: Uint8Array,
+  WW: number,
+  x: number,
+  y: number,
+  wx: number,
+  seed: number,
+) {
+  const len = 3 + Math.floor(hash3(wx, y, seed + 75) * 18);
+  let cx = x;
+  for (let k = 0; k < len; k++) {
+    if (k > 1 && hash3(wx, y + k, seed + 76) < 0.2)
+      cx += hash3(wx, y + k, seed + 77) < 0.5 ? -1 : 1;
+    if (!put(cells, WW, cx, y + k, M.WOOD)) break;
+  }
+}
+
+/** An ammonite: a ring with a dot, set into the rock. */
+function ammonite(
+  cells: Uint8Array,
+  WW: number,
+  x: number,
+  y: number,
+  r: number,
+) {
+  for (let dy = -r - 1; dy <= r + 1; dy++)
+    for (let dx = -r - 1; dx <= r + 1; dx++) {
+      const d = Math.sqrt(dx * dx + dy * dy),
+        i = (y + dy) * WW + x + dx;
+      if (
+        x + dx < 0 ||
+        x + dx >= WW ||
+        y + dy < 0 ||
+        y + dy >= WORLD_H ||
+        cells[i] !== M.ROCK
+      )
+        continue;
+      if (
+        (d > r - 0.7 && d < r + 0.4) ||
+        d < 0.8 ||
+        (d > r * 0.45 && d < r * 0.45 + 0.8 && dx > 0)
+      )
+        cells[i] = M.FOSSIL;
+    }
 }
 
 function pine(
@@ -929,7 +1411,11 @@ function mushroom(
     if (clear) {
       const thick = Math.max(1, Math.min(3, Math.round(stalk / 20)));
       for (let k = 0; k < stalk; k++)
-        for (let t = 0; t < thick; t++) cells[(y - k) * WW + x + t] = M.STALK;
+        for (let t = 0; t < thick; t++) {
+          const i = (y - k) * WW + x + t;
+          cells[i] = M.STALK;
+          if (stamp) stamp[i] = stateOf(0, stampBiome);
+        }
       for (let r = 0; r < ch; r++) {
         const f = (ch - r) / ch,
           half = Math.floor(cap * Math.sqrt(1 - f * f * f));
@@ -937,6 +1423,7 @@ function mushroom(
           const i = (top - ch + r) * WW + x + dx;
           if (cells[i] !== M.AIR) continue;
           cells[i] = M.CAP;
+          if (stamp) stamp[i] = stateOf(0, stampBiome);
           // A glowing rim under the cap and a few glowing spots on top.
           if (r === ch - 1 || hash3(wx + dx, top - ch + r, seed + 64) < 0.015)
             state[i] |= GLOW;
@@ -980,6 +1467,7 @@ function spike(
   y: number,
   dir: number,
   len: number,
+  material: number,
 ) {
   const st = state[y * WW + x - dir * WW] & 0x7f,
     width = len > 10 ? 2 : len > 5 ? 1 : 0;
@@ -987,7 +1475,7 @@ function spike(
     const half = Math.round(width * (1 - k / len));
     for (let d = -half; d <= half; d++) {
       const yy = y + dir * k;
-      if (put(cells, WW, x + d, yy, M.ROCK)) state[yy * WW + x + d] = st;
+      if (put(cells, WW, x + d, yy, material)) state[yy * WW + x + d] = st;
     }
   }
 }
