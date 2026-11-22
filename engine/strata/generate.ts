@@ -119,7 +119,7 @@ const COMMON = {
   basinSteep: 0,
   basinFill: 1,
   basinLiquid: M.WATER as number,
-  lavaDepth: 240,
+  lavaDepth: 150,
   top: M.GRASS as number,
   sub: M.SOIL as number,
   pines: 0,
@@ -154,7 +154,7 @@ export const BIOMES: Biome[] = [
     base: 540,
     amp: 170,
     detail: 0.3,
-    terrace: 0.9,
+    terrace: 0.7,
     terraceStep: 54,
     basin: 1,
     basinW: 0.15,
@@ -416,11 +416,6 @@ function duneAt(seed: number, x: number, dunes: number) {
 
 /** Ground height (cells from the top) at world column x, before caves. */
 export function groundAt(seed: number, x: number) {
-  const rv = riverOf(seed, Math.floor(x / REGION_W));
-  if (rv) {
-    const bed = riverBed(rv, x);
-    if (bed !== null) return bed;
-  }
   return naturalGround(seed, x);
 }
 
@@ -517,9 +512,11 @@ function valleyRise(seed: number, r: number, x: number) {
 }
 
 /**
- * A river seen from the side runs along the ground: from a spring on high
- * ground it steps down a valley over a few waterfalls to its outlet (the
- * basin's edge, or the top of the escarpment), then on into the basin.
+ * A river seen from the side lies along the ground. It rises at a spring on
+ * the highest ground of its course and runs down to its outlet (the basin's
+ * rim, or the top of the escarpment), then on into the basin. The land is
+ * left as it is: the water's surface only ever falls along the flow, so the
+ * river pools in dips and falls where the ground drops away.
  */
 interface River {
   xs: number;
@@ -529,8 +526,8 @@ interface River {
   /** Direction of flow along x. */
   fdir: number;
   depth: number;
-  slope: number;
-  falls: { t: number; drop: number }[];
+  /** The water's surface from spring to outlet, one height per column along the flow. */
+  surf: Int16Array;
 }
 
 const riverCache = new Map<string, River | null>();
@@ -563,49 +560,43 @@ function makeRiver(seed: number, r: number): River | null {
     dir: number;
   } | null = null;
   for (const dir of sc ? [sc.dir] : [-1, 1]) {
+    // The outlet: the top of the cliff, or the basin's rim.
     const xo = Math.round(sc ? sc.xc + dir * 8 : basin.c + dir * basin.w),
       yo = Math.round(naturalGround(seed, xo));
-    // The spring: the highest ground 250 to 700 cells upstream, inside the region.
+    // The spring: the highest ground within 700 cells upstream, inside the
+    // region, so nothing on the course stands above it.
     let xs = 0,
-      ys = Infinity;
-    for (let d = 250; d <= 700; d += 4) {
+      ys = Infinity,
+      at = 0;
+    for (let d = 1; d <= 700; d += 2) {
       const x = xo + dir * d;
       if (x < lo || x > hi) break;
       const g = naturalGround(seed, x);
-      if (g < ys) [ys, xs] = [g, x];
+      if (g < ys) [ys, xs, at] = [g, x, d];
     }
-    if (Number.isFinite(ys) && (!best || yo - ys > best.yo - best.ys))
+    if (at >= 200 && (!best || yo - ys > best.yo - best.ys))
       best = { xs, ys: Math.round(ys), xo, yo, dir };
   }
   // Water runs downhill: no river unless the spring stands above the outlet.
   if (!best || best.yo - best.ys < (sc ? 8 : 30)) return null;
   const { xs, ys, xo, yo, dir } = best,
-    R = walkRandom(Math.floor(hash3(seed, r, 15) * 4294967296)),
-    n = 1 + Math.floor(R() * 3),
-    drop = Math.round(((yo - ys) * 0.55) / n),
-    falls: River["falls"] = [];
-  for (let k = 0; k < n; k++)
-    falls.push({ t: (k + 0.25 + 0.5 * R()) / n, drop });
-  return {
-    xs,
-    xo,
-    ys,
-    yo,
-    fdir: -dir,
-    depth: 3 + Math.floor(R() * 2),
-    slope: yo - ys - n * drop,
-    falls,
-  };
+    fdir = -dir,
+    n = Math.abs(xo - xs),
+    depth = 3 + Math.floor(hash3(seed, r, 16) * 2),
+    surf = new Int16Array(n + 1);
+  // Work back from the outlet: the surface sits a stream's depth above the
+  // ground, or level with the water downstream where the ground dips (a pool).
+  for (let i = n; i >= 0; i--) {
+    const top = Math.round(naturalGround(seed, xs + fdir * i)) - depth;
+    surf[i] = i === n ? top : Math.min(top, surf[i + 1]);
+  }
+  return { xs, xo, ys, yo, fdir, depth, surf };
 }
 
-/** The river's bed at x, or null outside its course. */
-function riverBed(rv: River, x: number) {
-  const t = (x - rv.xs) / (rv.xo - rv.xs);
-  if (t < 0 || t > 1) return null;
-  // Steeper near the spring, easing toward the outlet, with a drop at each fall.
-  let y = rv.ys + rv.slope * t * (2 - t);
-  for (const f of rv.falls) if (t >= f.t) y += f.drop;
-  return Math.round(y);
+/** Whether x lies on the river's course. */
+function inCourse(rv: River, x: number) {
+  const i = (x - rv.xs) * rv.fdir;
+  return i >= 0 && i < rv.surf.length;
 }
 
 /**
@@ -890,7 +881,7 @@ export function generateWindow(seed: number, x0: number, width: number) {
       cover = BIOMES[cb],
       rv = riverOf(seed, Math.floor(wx / REGION_W)),
       // A riverbed is gravel, not grass.
-      streambed = rv !== null && riverBed(rv, wx) !== null,
+      streambed = rv !== null && inCourse(rv, wx),
       // Dunes are heaps of sand on the ground, so they are sand all through.
       soil = Math.round(
         p.soil * Math.max(0, 1 - slope / 10) + duneAt(seed, wx, p.dunes),
@@ -1154,7 +1145,9 @@ export function generateWindow(seed: number, x0: number, width: number) {
         deep = smoothstep(380, 560, d),
         mid = Math.max(0, 1 - shallow - deep),
         cold = p.ice > 0.5 && d < 480,
-        stone = cold ? M.ICE : M.ROCK;
+        stone = cold ? M.ICE : M.ROCK,
+        // Crystals grow in veins: a few caves glitter, most have none.
+        vein = smoothstep(0.64, 0.8, noise2(wx / 160, y / 160, seed + 71));
       if (
         below === M.ROCK ||
         below === M.SOIL ||
@@ -1190,7 +1183,7 @@ export function generateWindow(seed: number, x0: number, width: number) {
             walkRandom(Math.floor(hash3(wx, y, seed + 63) * 4294967296)),
             1,
           );
-        else if ((t -= 0.035 * deep * (0.3 + 0.7 * p.fungus)) < 0)
+        else if ((t -= 0.035 * deep * p.fungus) < 0)
           coral(cells, state, WW, x, y, wx, seed);
         else if ((t -= 0.012 * p.spikes) < 0)
           spike(
@@ -1203,7 +1196,7 @@ export function generateWindow(seed: number, x0: number, width: number) {
             3 + Math.floor(hash3(wx, y, seed + 64) * 12),
             stone,
           );
-        else if ((t -= 0.004 * p.crystals * (0.5 + deep)) < 0)
+        else if ((t -= 0.006 * p.crystals * vein * (0.4 + deep)) < 0)
           crystals(cells, state, WW, x, y, -1, wx, seed);
       } else if (above === M.ROCK || above === M.SOIL || above === M.SAND) {
         let t = hash3(wx, y, seed + 65);
@@ -1238,12 +1231,12 @@ export function generateWindow(seed: number, x0: number, width: number) {
               ),
             stone,
           );
-        else if ((t -= 0.004 * p.crystals * (0.5 + deep)) < 0)
+        else if ((t -= 0.006 * p.crystals * vein * (0.4 + deep)) < 0)
           crystals(cells, state, WW, x, y, 1, wx, seed);
       } else if (
         deep > 0 &&
         (cells[i - 1] === M.ROCK || cells[i + 1] === M.ROCK) &&
-        hash3(wx, y, seed + 85) < 0.04 * deep * (0.25 + p.fungus)
+        hash3(wx, y, seed + 85) < 0.04 * deep * p.fungus
       )
         shelf(
           cells,
@@ -1325,7 +1318,7 @@ function fillHollows(
           liquid = -1;
           if (
             y > surface[x] + 30 &&
-            noise2(wx / 260, y / 200, seed + 400) < (lava ? 0.45 : p.wet)
+            noise2(wx / 260, y / 200, seed + 400) < (lava ? 0.35 : p.wet)
           )
             liquid = lava ? M.LAVA : M.WATER;
         }
@@ -1785,10 +1778,11 @@ function crystals(
 }
 
 /**
- * Pour a river: a stream along its bed, a waterfall at each drop, and past
- * its outlet, rapids down slopes and falls over drops until it reaches the
- * basin's water. Worked out from world functions alone, so every window
- * agrees; only cells inside this window are written.
+ * Pour a river: water on its course, flowing on top and still in its pools,
+ * a falling sheet wherever its surface drops, and past its outlet rapids
+ * down slopes and falls off drops until it reaches the basin's water. Worked
+ * out from world functions alone, so every window agrees; only cells inside
+ * this window are written.
  */
 function pourRiver(
   seed: number,
@@ -1805,48 +1799,69 @@ function pourRiver(
       const i = y * WW + lx;
       if (cells[i] === M.AIR) cells[i] = m;
     },
-    bed = (wx: number) => Math.round(groundAt(seed, wx)),
+    ground = (wx: number) => Math.round(groundAt(seed, wx)),
     f = rv.fdir,
     D = rv.depth;
-  // Along the course, from the spring to the outlet.
-  for (let wx = rv.xs, prev = bed(rv.xs); wx !== rv.xo + f; wx += f) {
-    const b = bed(wx);
-    // A drop in the bed: the water goes over the lip as a waterfall.
-    if (b - prev > 2)
-      for (let y = prev - D; y < b; y++)
-        for (let k = 0; k < 3; k++) set(wx + f * k, y, M.FALLS);
-    for (let k = 1; k <= D; k++) set(wx, b - k, M.STREAM);
-    prev = b;
+  // A sheet of falling water from the lip at wx: it leaves moving outward, so
+  // it curves clear of the rock (out with the square root of the drop), and
+  // spreads as it falls; spray heaps up where it lands in water.
+  const sheet = (wx: number, from: number, to: number, splash: boolean) => {
+    for (let y = from; y < to; y++) {
+      const fallen = y - from,
+        out = Math.round(Math.sqrt(fallen)),
+        w = D + 2 + Math.min(6, Math.floor(fallen / 25));
+      for (let k = 0; k < w; k++) set(wx + f * (k + out), y, M.FALLS);
+    }
+    if (!splash) return;
+    const land = wx + f * (Math.round(Math.sqrt(to - from)) + (D + 2) / 2);
+    for (let dy = 1; dy <= 3; dy++)
+      for (let k = -(6 - dy * 2); k <= 6 - dy * 2 + D; k++)
+        set(Math.round(land + f * k), to - dy, M.FALLS);
+  };
+  // Along the course.
+  for (let i = 0; i < rv.surf.length; i++) {
+    const wx = rv.xs + f * i,
+      top = rv.surf[i],
+      g = ground(wx);
+    if (i > 0 && top - rv.surf[i - 1] > 2)
+      sheet(wx, rv.surf[i - 1], top, false);
+    for (let y = top; y < g; y++) set(wx, y, y - top < D ? M.STREAM : M.WATER);
   }
   // Past the outlet: on into the basin.
   const basin = basinOf(seed, q),
-    lake = basin ? lakeOf(seed, basin) : null;
-  let level = rv.yo - D;
+    lake = basin ? lakeOf(seed, basin) : null,
+    inLake = (wx: number, g: number) =>
+      lake !== null && wx > lake.x0 && wx < lake.x1 && g > lake.level;
+  let level = rv.surf[rv.surf.length - 1];
   for (let n = 0, wx = rv.xo + f; n < 500; n++, wx += f) {
-    const g = bed(wx);
-    // A sheet of falling water: it leaves the lip moving outward, so it curves
-    // clear of the rock (out with the square root of the drop), and spreads as
-    // it falls; spray heaps up where it lands in water.
-    const sheet = (from: number, to: number, splash: boolean) => {
-      for (let y = from; y < to; y++) {
-        const fallen = y - from,
-          out = Math.round(Math.sqrt(fallen)),
-          w = D + 2 + Math.min(6, Math.floor(fallen / 25));
-        for (let k = 0; k < w; k++) set(wx + f * (k + out), y, M.FALLS);
-      }
-      if (!splash) return;
-      const land = wx + f * (Math.round(Math.sqrt(to - from)) + (D + 2) / 2);
-      for (let dy = 1; dy <= 3; dy++)
-        for (let k = -(6 - dy * 2); k <= 6 - dy * 2 + D; k++)
-          set(Math.round(land + f * k), to - dy, M.FALLS);
-    };
-    if (lake && wx > lake.x0 && wx < lake.x1 && g > lake.level) {
-      // Reached the water: fall the rest of the way in.
-      sheet(level, lake.level, true);
+    const g = ground(wx);
+    if (inLake(wx, g)) {
+      if (lake!.level - level > 2) sheet(wx, level, lake!.level, true);
       return;
     }
-    if (g - (level + D) > 3) sheet(level, g, false);
-    else for (let k = 1; k <= D; k++) set(wx, g - k, M.STREAM);
+    if (g < level + D - 1) return; // the land rises: the water pools against it
+    if (g - (level + D) > 3) {
+      // The ground drops away: find the foot of the drop (or the water below)
+      // and fall there in one sheet from the lip.
+      let foot = wx,
+        bottom = g;
+      for (let k = 1; k < 60; k++) {
+        const x2 = wx + f * k,
+          g2 = ground(x2);
+        if (inLake(x2, g2)) {
+          sheet(wx, level, lake!.level, true);
+          return;
+        }
+        if (g2 - bottom <= 2) break;
+        foot = x2;
+        bottom = g2;
+      }
+      sheet(wx, level, bottom, false);
+      wx = foot;
+      level = bottom - D;
+      continue;
+    }
+    for (let k = 1; k <= D; k++) set(wx, g - k, M.STREAM);
     level = g - D;
   }
 }
@@ -1965,7 +1980,10 @@ export function regionFeatures(seed: number, r: number) {
     river: river && {
       spring: river.xs,
       outlet: river.xo,
-      falls: river.falls.length,
+      falls: river.surf.reduce(
+        (n, w, i) => n + (i > 0 && w - river.surf[i - 1] > 2 ? 1 : 0),
+        0,
+      ),
     },
   };
 }

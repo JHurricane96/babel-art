@@ -70,6 +70,7 @@ const SKY = [hex("#191c3c"), hex("#5a3f78"), hex("#f0a060")];
 const CYAN = hex("#5ff0e0"),
   VIOLET = hex("#c08cff"),
   WARM = hex("#ffae5a"),
+  EMBER = hex("#ff9a6a"),
   SKYL = hex("#ffd2b0"),
   AMB = hex("#9aa0d0"),
   WATER = hex("#2f6f86"),
@@ -145,14 +146,25 @@ let lr = 0,
   lb = 0;
 const stepped = (L: number, bay: number) =>
   Math.floor((L < 1.6 ? L : 1.6) * 5 + bay) / 5;
-function lightAt(Lsky: number, c: number, v: number, w: number, bay: number) {
+function lightAt(
+  Lsky: number,
+  c: number,
+  v: number,
+  w: number,
+  e: number,
+  bay: number,
+) {
   const a = stepped(Lsky, bay),
     sc = stepped(c, bay) * 0.9,
     sv = stepped(v, bay) * 0.9,
-    sw = stepped(w, bay) * 1.1;
-  lr = a * SKYL[0] + sc * CYAN[0] + sv * VIOLET[0] + sw * WARM[0];
-  lg = a * SKYL[1] + sc * CYAN[1] + sv * VIOLET[1] + sw * WARM[1];
-  lb = a * SKYL[2] + sc * CYAN[2] + sv * VIOLET[2] + sw * WARM[2];
+    sw = stepped(w, bay) * 1.1,
+    se = stepped(e, bay) * 0.9;
+  lr =
+    a * SKYL[0] + sc * CYAN[0] + sv * VIOLET[0] + sw * WARM[0] + se * EMBER[0];
+  lg =
+    a * SKYL[1] + sc * CYAN[1] + sv * VIOLET[1] + sw * WARM[1] + se * EMBER[1];
+  lb =
+    a * SKYL[2] + sc * CYAN[2] + sv * VIOLET[2] + sw * WARM[2] + se * EMBER[2];
 }
 
 /** A well-mixed integer hash of a cell, for speckle and pebbles. */
@@ -229,7 +241,8 @@ export function renderLand({ W, H, cells, state, surface, x0 }: Land) {
     Ls = new Float32Array(N),
     Lc = new Float32Array(N),
     Lv = new Float32Array(N),
-    Lw = new Float32Array(N);
+    Lw = new Float32Array(N),
+    Le = new Float32Array(N);
 
   // Sky light enters the ground through its openings: seed the flood from sky
   // cells that touch open space below the ground line.
@@ -263,16 +276,18 @@ export function renderLand({ W, H, cells, state, surface, x0 }: Land) {
   lap("sky");
   // Glowing cells are solid; seed each colour's flood from the open cells beside them.
   const mark = new Uint8Array(N),
-    lists: number[][] = [[], [], []];
+    lists: number[][] = [[], [], [], []];
   for (let i = 0; i < N; i++) {
     const m = cells[i];
     if (!(state[i] & GLOW) && m !== M.LAVA) continue;
     const kind =
-        m === M.LAVA || m === M.CORAL
+        m === M.LAVA
           ? 2
-          : m === M.CRYSTAL || m === M.SHELF
-            ? 1
-            : 0,
+          : m === M.CORAL
+            ? 3
+            : m === M.CRYSTAL || m === M.SHELF
+              ? 1
+              : 0,
       bit = 1 << kind,
       x = i % W;
     for (const j of [x > 0 ? i - 1 : -1, x < W - 1 ? i + 1 : -1, i - W, i + W])
@@ -283,7 +298,9 @@ export function renderLand({ W, H, cells, state, surface, x0 }: Land) {
   }
   flood(W, H, cells, Int32Array.from(lists[0]), 34, 2, dist, Lc);
   flood(W, H, cells, Int32Array.from(lists[1]), 26, 2, dist, Lv);
-  flood(W, H, cells, Int32Array.from(lists[2]), 70, 2, dist, Lw);
+  // Lava lights a pool around it; ember coral only a small glow of its own.
+  flood(W, H, cells, Int32Array.from(lists[2]), 50, 2, dist, Lw);
+  flood(W, H, cells, Int32Array.from(lists[3]), 18, 2, dist, Le);
 
   lap("glow");
   const rgba = new Uint8ClampedArray(N * 4),
@@ -350,6 +367,7 @@ export function renderLand({ W, H, cells, state, surface, x0 }: Land) {
           Lc[i],
           Lv[i],
           Lw[i],
+          Le[i],
           bay,
         );
         lr = 0.25 + 0.75 * Math.min(1.2, lr + 0.3 * AMB[0]);
@@ -378,7 +396,7 @@ export function renderLand({ W, H, cells, state, surface, x0 }: Land) {
           lg = 0.5 + 0.5 * SKYL[1];
           lb = 0.5 + 0.5 * SKYL[2];
         } else {
-          lightAt(Ls[i], Lc[i], Lv[i], Lw[i], bay);
+          lightAt(Ls[i], Lc[i], Lv[i], Lw[i], Le[i], bay);
           lr += 0.4 * AMB[0];
           lg += 0.4 * AMB[1];
           lb += 0.4 * AMB[2];
@@ -426,7 +444,7 @@ export function renderLand({ W, H, cells, state, surface, x0 }: Land) {
           cr = rock[0] * 0.42 * tex + BACK_TINT[0] * 0.25;
           cg = rock[1] * 0.42 * tex + BACK_TINT[1] * 0.25;
           cb = rock[2] * 0.42 * tex + BACK_TINT[2] * 0.25;
-          lightAt(Ls[i], Lc[i], Lv[i], Lw[i], bay);
+          lightAt(Ls[i], Lc[i], Lv[i], Lw[i], Le[i], bay);
           lr += 0.55 * AMB[0];
           lg += 0.55 * AMB[1];
           lb += 0.55 * AMB[2];
@@ -480,14 +498,14 @@ export function renderLand({ W, H, cells, state, surface, x0 }: Land) {
                 const j =
                   s === 0 ? up : s === 1 ? left : s === 2 ? right : down;
                 if (j < 0 || !isOpen(cells[j])) continue;
-                const l = Math.max(Ls[j], Lc[j], Lv[j], Lw[j]);
+                const l = Math.max(Ls[j], Lc[j], Lv[j], Lw[j], Le[j]);
                 if (l > near) near = l;
                 const e = s === 0 ? 1 : 0.6;
                 if (e > edge) edge = e;
               }
             }
             // Deep inside solid rock nothing reaches but the cut-away light.
-            if (near > 0) lightAt(near * 0.85, Lc[i], Lv[i], Lw[i], bay);
+            if (near > 0) lightAt(near * 0.85, Lc[i], Lv[i], Lw[i], Le[i], bay);
             else lr = lg = lb = 0;
             const amb = cut * (1 + 0.35 * edge);
             lr += amb * AMB[0];
