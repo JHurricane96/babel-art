@@ -33,7 +33,7 @@ const SOLID: number[][] = [];
 for (const [m, c] of [
   [M.SOIL, "#6b4a34"],
   [M.GRASS, "#6f8f3e"],
-  [M.SAND, "#d8c08a"],
+  [M.SAND, "#d9a86e"],
   [M.GRAVEL, "#8a8378"],
   [M.SNOW, "#e8eef6"],
   [M.ICE, "#bfe4f0"],
@@ -617,7 +617,13 @@ export function renderLand({
             // Cut-away light on the body, fading with depth, plus light from
             // open space beside it; faces that meet open space catch more,
             // floors (open above) most.
-            let near = 0,
+            // The light falling on this face from the open space beside it,
+            // channel by channel, so a wall by glowing fungi takes their colour.
+            let nS = 0,
+              nC = 0,
+              nV = 0,
+              nW = 0,
+              nE = 0,
               edge = 0;
             if (!skyCell || !SILHOUETTE[m]) {
               const up = y > 0 ? i - W : -1,
@@ -628,14 +634,27 @@ export function renderLand({
                 const j =
                   s === 0 ? up : s === 1 ? left : s === 2 ? right : down;
                 if (j < 0 || !isOpen(cells[j])) continue;
-                const l = Math.max(Ls[j], Lc[j], Lv[j], Lw[j], Le[j]);
-                if (l > near) near = l;
+                if (Ls[j] > nS) nS = Ls[j];
+                if (Lc[j] > nC) nC = Lc[j];
+                if (Lv[j] > nV) nV = Lv[j];
+                if (Lw[j] > nW) nW = Lw[j];
+                if (Le[j] > nE) nE = Le[j];
                 const e = s === 0 ? 1 : 0.6;
                 if (e > edge) edge = e;
               }
             }
             // Deep inside solid rock nothing reaches but the cut-away light.
-            if (near > 0) lightAt(near * 0.85, Lc[i], Lv[i], Lw[i], Le[i], bay);
+            // Sky on an edge is a gentle rim, not a full sunlit face; glows
+            // light the faces they touch more strongly.
+            if (nS + nC + nV + nW + nE > 0)
+              lightAt(
+                nS * 0.35,
+                nC * 0.85,
+                nV * 0.85,
+                nW * 0.85,
+                nE * 0.85,
+                bay,
+              );
             else lr = lg = lb = 0;
             const amb = cut * (1 + 0.35 * edge);
             lr += amb * AMB[0];
