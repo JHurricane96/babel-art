@@ -119,15 +119,23 @@ void main() {
       c *= 0.78 + 0.5 * floor(fbm(vec2(x / 7.0 + t * 0.12, y / 4.0 - t * 0.08)) * 4.0) / 4.0;
     }
   }
-  // Plants above the ground sway: more the higher above it, in gusts that travel.
-  float h = texelFetch(uSurf, ivec2(l.x, 0), 0).r - y;
-  if (h > 0.0) {
-    float amp = clamp(h / 28.0, 0.0, 1.0);
-    int d = int(floor(amp * amp * 3.2 * wind(x, t) * uMotionOn + 0.5));
-    int sx = l.x - d;
-    if (sx >= 0 && sx < uTileW) {
+  // Plants in the open air sway in gusts that travel: each plant bends
+  // about its base, row by row, more the higher the row, in the wind at its
+  // base (height in the plant layer's alpha, the base's x in the colour
+  // layer's). Gather: look along the row for a plant cell whose own sway
+  // lands it here.
+  if (m == 1u) {
+    for (int k = 0; k < 7; k++) {
+      int d = (k + 1) / 2 * ((k & 1) == 1 ? -1 : 1), sx = l.x - d;
+      if (sx < 0 || sx >= uTileW) continue;
       vec4 p = texelFetch(uPlant, ivec2(sx, l.y), 0);
-      if (p.a > 0.5) c = p.rgb;
+      if (p.a < 0.5 / 255.0) continue;
+      float amp = clamp((p.a * 255.0 - 1.0) / 28.0, 0.0, 1.0),
+        base = float(sx + uTileX0) + texelFetch(uBg, ivec2(sx, l.y), 0).a * 255.0 - 128.0;
+      if (int(floor(amp * amp * 3.2 * wind(base, t) * uMotionOn + 0.5)) == d) {
+        c = p.rgb;
+        break;
+      }
     }
   }
   o = vec4(c, 1.0);

@@ -311,13 +311,90 @@ export const MOTION = {
 
 /**
  * Optional outputs for an animating renderer: a motion class per cell, and
- * the plants standing above the ground drawn on their own (alpha 255 where a
- * plant is), so they can sway over a sky drawn live. Those cells are classed
- * as sky.
+ * the plants standing in the open air drawn on their own, so they can sway
+ * over a sky drawn live (those cells are classed as sky). A plant cell's
+ * alpha is 1 + its height above its plant's base (0 where there is no
+ * plant), and the colour output's alpha there is 128 + the base's x minus
+ * the cell's: see swayField.
  */
 export interface MotionLayers {
   motion: Uint8Array;
   plants: Uint8ClampedArray;
+}
+
+/**
+ * How each plant cell standing in the open air sways. A plant is a joined
+ * group of plant cells (with any snow lying on them); it sways about its
+ * base, the lowest place it rests on something solid or on water. Per cell:
+ * h = 1 + its height above that base (0 for cells that are no plant), and
+ * ax = 128 + the base's x minus its own, so the renderer can bend the whole
+ * plant together, row by row, in the wind at its base. Plants held along
+ * much of their length (ivy on a cliff) or by rope (a bridge) stay still.
+ */
+function swayField(W: number, H: number, cells: Uint8Array, surface: Int16Array) {
+  const h = new Uint8Array(W * H),
+    ax = new Uint8Array(W * H).fill(128),
+    mark = new Uint8Array(W * H);
+  // Plant cells in the open air, and snow lying on them (bottom up, so snow
+  // on snow on a branch counts too).
+  for (let x = 0; x < W; x++)
+    for (let y = Math.min(H - 2, surface[x] - 1); y >= 0; y--) {
+      const i = y * W + x,
+        m = cells[i];
+      if (SILHOUETTE[m] || (m === M.SNOW && mark[i + W])) mark[i] = 1;
+    }
+  const comp: number[] = [],
+    support = (j: number) => j >= 0 && j < W * H && !mark[j] && cells[j] !== M.AIR;
+  for (let i0 = 0; i0 < W * H; i0++) {
+    if (!mark[i0] || h[i0]) continue;
+    // Gather the plant: every marked cell joined to this one.
+    comp.length = 0;
+    comp.push(i0);
+    h[i0] = 1;
+    let rope = false;
+    for (let k = 0; k < comp.length; k++) {
+      const i = comp[k],
+        x = i % W;
+      if (cells[i] === M.ROPE) rope = true;
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx,
+            j = i + dy * W + dx;
+          if ((dx || dy) && nx >= 0 && nx < W && j >= 0 && j < W * H && mark[j] && !h[j]) {
+            h[j] = 1;
+            comp.push(j);
+          }
+        }
+    }
+    // Where it rests, and its lowest resting place: the base.
+    let held = 0,
+      baseY = -1,
+      sumX = 0,
+      nX = 0;
+    for (const i of comp) {
+      const x = i % W,
+        y = (i - x) / W;
+      if (!(support(i + W) || (x > 0 && support(i - 1)) || (x < W - 1 && support(i + 1)))) continue;
+      held++;
+      if (y > baseY) {
+        baseY = y;
+        sumX = nX = 0;
+      }
+      if (y === baseY) {
+        sumX += x;
+        nX++;
+      }
+    }
+    if (rope || held === 0 || held > 0.3 * comp.length) continue; // stays still: all 1s
+    const baseX = Math.round(sumX / nX);
+    for (const i of comp) {
+      const x = i % W,
+        y = (i - x) / W;
+      h[i] = 1 + Math.max(0, Math.min(253, baseY - y));
+      ax[i] = 128 + Math.max(-127, Math.min(127, baseX - x));
+    }
+  }
+  return { h, ax };
 }
 
 /** Render land to RGBA, one pixel per cell. */
@@ -338,6 +415,7 @@ export function renderLand({
     tt = n;
   };
   const N = W * H,
+    sway = layers ? swayField(W, H, cells, surface) : null,
     dist = new Int32Array(N),
     Ls = new Float32Array(N),
     Lc = new Float32Array(N),
@@ -414,6 +492,8 @@ export function renderLand({
     flow = new RowNoise(x0, W, 11, 2, 993),
     fall = new RowNoise(x0, W, 2, 13, 994),
     iceAbove = new Int16Array(W),
+    // Whether the water in this column lies under ice.
+    frozen = new Uint8Array(W),
     // Clouds: two value noises, broad and fine; distant ridges: a far range
     // of peaks and nearer rolling hills, both behind the land.
     cloudA = new RowNoise(x0, W, 230, 30, seed + 711),
@@ -453,6 +533,7 @@ export function renderLand({
       waterAbove[x] = m === M.WATER ? wd + 1 : 0;
       const id = m === M.ICE ? iceAbove[x] : 0;
       iceAbove[x] = m === M.ICE ? id + 1 : 0;
+      frozen[x] = m === M.ICE ? 1 : m === M.WATER ? frozen[x] : 0;
       if (m === M.AIR && skyCell) {
         // Open sky: a dusk gradient, dithered into bands, measured in rows
         // above the horizon (d): glowing at it, darkening upward.
@@ -732,15 +813,20 @@ export function renderLand({
       rgba[o + 3] = 255;
       if (layers) {
         let c: number = MOTION.STILL;
-        if (skyCell && (SILHOUETTE[m] || m === M.GRASS || m === M.SNOW)) {
-          // A plant (or snow on one) standing in the open air: it sways.
+        if (sway!.h[i]) {
+          // A plant (or snow on one) standing in the open air: it sways
+          // about its own base. Where its base is rides in the colour
+          // layer's alpha, which an animating renderer doesn't show.
           layers.plants[o] = rgba[o];
           layers.plants[o + 1] = rgba[o + 1];
           layers.plants[o + 2] = rgba[o + 2];
-          layers.plants[o + 3] = 255;
+          layers.plants[o + 3] = sway!.h[i];
+          rgba[o + 3] = sway!.ax[i];
           c = MOTION.SKY;
         } else if (m === M.AIR && skyCell) c = MOTION.SKY;
-        else if (m === M.WATER) c = y > 0 && cells[i - W] === M.AIR ? MOTION.WATER_TOP : MOTION.WATER;
+        // Water under the open sky glints and shimmers; in a cave no sunlight
+        // reaches it, and under ice it is held, so there it lies still.
+        else if (m === M.WATER && skyCell && !frozen[x]) c = y > 0 && cells[i - W] === M.AIR ? MOTION.WATER_TOP : MOTION.WATER;
         else if (m === M.STREAM) c = MOTION.STREAM;
         else if (m === M.FALLS) c = MOTION.FALLS;
         else if (m === M.LAVA) c = MOTION.LAVA;
