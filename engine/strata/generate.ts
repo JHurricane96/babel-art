@@ -1236,7 +1236,14 @@ export function generateWindow(seed: number, x0: number, width: number) {
       } else if (
         deep > 0 &&
         (cells[i - 1] === M.ROCK || cells[i + 1] === M.ROCK) &&
-        hash3(wx, y, seed + 85) < 0.04 * deep * p.fungus
+        // Rare, in clusters, and only on the walls of roomy caves (open space
+        // well out from the wall), never lining narrow shafts.
+        cells[i + (cells[i - 1] === M.ROCK ? 8 : -8)] === M.AIR &&
+        hash3(wx, y, seed + 85) <
+          0.008 *
+            deep *
+            p.fungus *
+            smoothstep(0.55, 0.75, noise2(wx / 90, y / 90, seed + 86))
       )
         shelf(
           cells,
@@ -1942,10 +1949,10 @@ function shelf(
       w = 3 + Math.floor(hash3(wx, by, seed + 93) * 6);
     for (let k = 0; k < w; k++) {
       const cx = x + dir * k;
+      // Only the bracket's outer tip glows.
       if (put(cells, WW, cx, by, M.SHELF))
         state[by * WW + cx] |= k === w - 1 ? GLOW : 0;
-      if (k < w - 1 && put(cells, WW, cx, by + 1, M.SHELF))
-        state[(by + 1) * WW + cx] |= GLOW;
+      if (k < w - 2) put(cells, WW, cx, by + 1, M.SHELF);
     }
   }
 }
