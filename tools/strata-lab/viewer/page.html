@@ -1,0 +1,103 @@
+<title>Strata Land Viewer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* Layout: the land fills the window; a small instrument panel floats top-left
+     and a control strip along the bottom, both dark glass over the art. */
+  :root {
+    --ground: #07070b;
+    --glass: rgba(13, 12, 21, 0.8);
+    --ink: #ece6f6;
+    --muted: #a39cba;
+    --rule: rgba(240, 160, 96, 0.22);
+    --dusk: #f0a060;
+    --glow: #5ff0e0;
+    --display: "Chakra Petch", "Segoe UI", system-ui, sans-serif;
+    --data: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body { background: var(--ground); color: var(--ink); overflow: hidden; font: 13px/1.45 var(--data); }
+  #view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+  #view:active { cursor: grabbing; }
+  .card {
+    position: fixed; background: var(--glass); border: 1px solid var(--rule); border-radius: 6px;
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  }
+  .top {
+    top: calc(12px + env(safe-area-inset-top, 0px)); left: calc(12px + env(safe-area-inset-left, 0px));
+    padding: 12px 14px; display: grid; gap: 8px; max-width: min(380px, calc(100vw - 24px));
+  }
+  .brand { display: flex; align-items: baseline; gap: 10px; }
+  .name { font: 600 20px/1 var(--display); letter-spacing: 0.14em; text-transform: uppercase; color: var(--dusk); }
+  .tag { color: var(--muted); font-size: 12px; letter-spacing: 0.04em; }
+  .seed { display: flex; align-items: center; gap: 8px; }
+  .seed label { color: var(--muted); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; }
+  .seed input {
+    width: 8ch; background: transparent; color: var(--ink); font: 500 14px var(--data);
+    border: 1px solid var(--rule); border-radius: 4px; padding: 3px 6px; font-variant-numeric: tabular-nums;
+  }
+  .biome { margin: 0; font: 500 15px/1.3 var(--display); letter-spacing: 0.02em; text-wrap: balance; }
+  .where { margin: 0; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .bar {
+    left: calc(12px + env(safe-area-inset-left, 0px)); right: calc(12px + env(safe-area-inset-right, 0px));
+    bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    padding: 10px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px;
+  }
+  .group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .scale { font-variant-numeric: tabular-nums; }
+  .scale b { color: var(--dusk); font-weight: 500; }
+  .note, .status, .keys { color: var(--muted); margin: 0; }
+  .status { font-variant-numeric: tabular-nums; }
+  .keys { flex-basis: 100%; font-size: 12px; }
+  button {
+    font: 500 13px/1 var(--display); letter-spacing: 0.04em; color: var(--ink);
+    background: rgba(255, 255, 255, 0.04); border: 1px solid var(--rule); border-radius: 4px;
+    padding: 6px 10px; cursor: pointer;
+  }
+  button:hover { border-color: var(--dusk); }
+  button:focus-visible, .seed input:focus-visible { outline: 2px solid var(--glow); outline-offset: 1px; }
+  button[aria-pressed="true"] { background: rgba(240, 160, 96, 0.18); border-color: var(--dusk); color: var(--dusk); }
+  @media (max-width: 640px) {
+    .keys, .note { display: none; }
+    .bar { gap: 6px 10px; }
+  }
+</style>
+
+<canvas id="view" aria-label="Generated Strata land"></canvas>
+<div id="hud">
+  <header class="card top">
+    <div class="brand"><span class="name">Strata</span><span class="tag">land · loop 2</span></div>
+    <form id="seed-form" class="seed">
+      <label for="seed">Seed</label>
+      <input id="seed" type="number" min="0" step="1" inputmode="numeric">
+      <button id="new-seed" type="button">New</button>
+    </form>
+    <p id="biome" class="biome">…</p>
+    <p id="where" class="where">region 1</p>
+  </header>
+  <nav class="card bar" aria-label="View controls">
+    <div class="group" role="group" aria-label="Zoom">
+      <button id="zoom-out" type="button" aria-label="Fewer screen pixels per art pixel">−</button>
+      <span class="scale"><b id="scale">4</b> screen px per art px</span>
+      <button id="zoom-in" type="button" aria-label="More screen pixels per art pixel">+</button>
+    </div>
+    <span id="scale-note" class="note">480 art px across a 1920 px screen</span>
+    <div class="group" role="group" aria-label="Go to">
+      <button id="prev-edge" type="button">◀ Edge</button>
+      <button id="next-edge" type="button">Edge ▶</button>
+      <button id="surface" type="button">Surface</button>
+      <button id="deeper" type="button">Deeper</button>
+    </div>
+    <div class="group" role="group" aria-label="Show">
+      <button id="drift" type="button" aria-pressed="false">Drift</button>
+      <button id="edges" type="button" aria-pressed="false">Region edges</button>
+      <button id="wall" type="button" aria-pressed="false">Wall frame</button>
+      <button id="full" type="button">Fullscreen</button>
+    </div>
+    <p class="status"><span id="status">Starting…</span> · <span id="workers"></span></p>
+    <p class="keys">Drag to move · scroll to zoom · arrows pan · [ and ] jump between biome edges · space drifts · W wall frame · H hides this panel</p>
+  </nav>
+</div>
+<!-- SCRIPT -->
