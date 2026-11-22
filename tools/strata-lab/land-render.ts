@@ -16,6 +16,7 @@ import {
   fbm1,
   hash3,
 } from "../../engine/strata/world.ts";
+import { groundAt } from "../../engine/strata/generate.ts";
 
 const hex = (h: string) =>
   [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
@@ -264,6 +265,57 @@ export interface Land {
   seed?: number;
 }
 
+/**
+ * A gently smoothed ground line, per column, for the sky to sit on: the dusk
+ * glow, the clouds and the distant hills are placed relative to it, so every
+ * view has its horizon just behind the land, whether the ground there is high
+ * or low. Built from world-aligned samples, so tiles line up exactly.
+ */
+export function horizonRow(seed: number, x0: number, W: number) {
+  const STEP = 128,
+    k0 = Math.floor(x0 / STEP),
+    k1 = Math.floor((x0 + W - 1) / STEP) + 1,
+    pts = new Float32Array(k1 - k0 + 1),
+    out = new Float32Array(W);
+  for (let k = k0; k <= k1; k++) {
+    let sum = 0;
+    for (let j = -12; j <= 12; j++) sum += groundAt(seed, k * STEP + j * 64);
+    pts[k - k0] = sum / 25;
+  }
+  for (let x = 0; x < W; x++) {
+    const wx = x0 + x,
+      k = Math.floor(wx / STEP),
+      f = (wx - k * STEP) / STEP,
+      u = f * f * (3 - 2 * f);
+    out[x] = pts[k - k0] + (pts[k - k0 + 1] - pts[k - k0]) * u;
+  }
+  return out;
+}
+
+/** What moves, per cell, for a renderer that animates (the viewer). */
+export const MOTION = {
+  STILL: 0,
+  SKY: 1,
+  WATER: 2,
+  STREAM: 3,
+  /** A stream flowing toward smaller x (set by whoever knows the river's direction). */
+  STREAM_BACK: 4,
+  FALLS: 5,
+  LAVA: 6,
+  WATER_TOP: 7,
+} as const;
+
+/**
+ * Optional outputs for an animating renderer: a motion class per cell, and
+ * the plants standing above the ground drawn on their own (alpha 255 where a
+ * plant is), so they can sway over a sky drawn live. Those cells are classed
+ * as sky.
+ */
+export interface MotionLayers {
+  motion: Uint8Array;
+  plants: Uint8ClampedArray;
+}
+
 /** Render land to RGBA, one pixel per cell. */
 export const renderTimes: Record<string, number> = {};
 export function renderLand({
@@ -274,7 +326,7 @@ export function renderLand({
   surface,
   x0,
   seed = 0,
-}: Land) {
+}: Land, layers?: MotionLayers) {
   let tt = performance.now();
   const lap = (k: string) => {
     const n = performance.now();
@@ -363,21 +415,18 @@ export function renderLand({
     cloudA = new RowNoise(x0, W, 230, 30, seed + 711),
     cloudB = new RowNoise(x0, W, 70, 12, seed + 712),
     far = new Float32Array(W),
-    near = new Float32Array(W);
+    near = new Float32Array(W),
+    hz = horizonRow(seed, x0, W);
   for (let x = 0; x < W; x++) {
     const wx = x0 + x,
       // Ridged noise at two scales: ranges of sharp peaks, not domes.
       r1 = 1 - Math.abs(2 * fbm1(wx / 1100, seed + 701, 3) - 1),
       r2 = 1 - Math.abs(2 * fbm1(wx / 300, seed + 705, 3) - 1);
+    // Heights above the horizon: a low line of near hills, far peaks behind.
     far[x] =
-      450 -
-      120 * r1 * r1 -
-      70 * r2 * r2 * r1 -
-      15 * fbm1(wx / 60, seed + 702, 2);
+      50 + 70 * r1 * r1 + 40 * r2 * r2 * r1 + 10 * fbm1(wx / 60, seed + 702, 2);
     near[x] =
-      525 -
-      70 * fbm1(wx / 520, seed + 703, 3) -
-      25 * fbm1(wx / 90, seed + 704, 2);
+      22 + 28 * fbm1(wx / 520, seed + 703, 3) + 12 * fbm1(wx / 90, seed + 704, 2);
   }
   for (let y = 0; y < H; y++) {
     const cut = 0.6 - 0.24 * Math.min(1, Math.max(0, (y - 400) / 900));
@@ -401,8 +450,10 @@ export function renderLand({
       const id = m === M.ICE ? iceAbove[x] : 0;
       iceAbove[x] = m === M.ICE ? id + 1 : 0;
       if (m === M.AIR && skyCell) {
-        // Open sky: a dusk gradient, dithered into bands.
-        const t = Math.min(1, y / 600),
+        // Open sky: a dusk gradient, dithered into bands, measured in rows
+        // above the horizon (d): glowing at it, darkening upward.
+        const d = hz[x] - y,
+          t = Math.min(1, Math.max(0, 1 - d / 420)),
           a = t < 0.55 ? SKY[0] : SKY[1],
           b = t < 0.55 ? SKY[1] : SKY[2],
           u = t < 0.55 ? t / 0.55 : (t - 0.55) / 0.45;
@@ -411,15 +462,15 @@ export function renderLand({
         cb = Math.floor((a[2] + (b[2] - a[2]) * u) * 18 + bay) / 18;
         // Clouds: thin bands, sunlit underneath toward the horizon, stepped.
         const env =
-            Math.min(1, Math.max(0, (y - 40) / 80)) *
-            Math.min(1, Math.max(0, (430 - y) / 100)),
+            Math.min(1, Math.max(0, (d - 30) / 40)) *
+            Math.min(1, Math.max(0, (340 - d) / 60)),
           amt =
             Math.floor(
               Math.min(
                 1,
                 Math.max(
                   0,
-                  (0.65 * cloudA.at(wx) + 0.35 * cloudB.at(wx) - 0.58) / 0.12,
+                  (0.65 * cloudA.at(wx) + 0.35 * cloudB.at(wx) - 0.54) / 0.12,
                 ),
               ) *
                 env *
@@ -427,33 +478,27 @@ export function renderLand({
                 bay,
             ) / 3;
         if (amt > 0) {
-          const lit = Math.min(1, Math.max(0, (y - 120) / 260)),
+          const lit = Math.min(1, Math.max(0, (420 - d) / 260)),
             k = amt * 0.6;
           cr += (CLOUD_TOP[0] + (CLOUD_LIT[0] - CLOUD_TOP[0]) * lit - cr) * k;
           cg += (CLOUD_TOP[1] + (CLOUD_LIT[1] - CLOUD_TOP[1]) * lit - cg) * k;
           cb += (CLOUD_TOP[2] + (CLOUD_LIT[2] - CLOUD_TOP[2]) * lit - cb) * k;
-        } else if (y < 260 && grain(wx, y) % 997 === 0) {
+        } else if (d > 230 && grain(wx, y) % 997 === 0) {
           // The first stars, high up where the sky is darkest.
-          const k = 0.6 * (1 - y / 260);
+          const k = 0.6 * Math.min(1, (d - 230) / 120);
           cr += (STAR[0] - cr) * k;
           cg += (STAR[1] - cg) * k;
           cb += (STAR[2] - cb) * k;
         }
-        // Distant ridges behind the land: always darker than the sky behind
-        // them, the nearer the darker, a little darker again lower down each
-        // slope, with faint mottling so they never read as flat paint.
-        const into = y > near[x] ? y - near[x] : y > far[x] ? y - far[x] : -1;
+        // Distant hills behind the land: flat silhouettes with crisp tops,
+        // always darker than the sky behind them, the nearer the darker, and
+        // a little darker again lower down in a few dithered steps.
+        const into = d < near[x] ? near[x] - d : d < far[x] ? far[x] - d : -1;
         if (into >= 0) {
-          const nearer = y > near[x],
-            // The nearer hills show faint bands, like far-off cliffs of strata.
-            bands = nearer
-              ? 0.035 * ((Math.floor((y + 14 * coarse.at(wx)) / 9) % 3) - 1)
-              : 0,
+          const nearer = d < near[x],
             k =
-              (nearer ? 0.5 : 0.28) +
-              Math.min(0.14, into / 900) +
-              bands +
-              Math.floor(0.08 * coarse.at(wx) * 4 + bay) / 40;
+              (nearer ? 0.52 : 0.3) +
+              (0.08 * Math.floor(Math.min(1, into / 120) * 3 + bay)) / 3;
           cr += (HAZE[0] * 0.55 - cr) * k;
           cg += (HAZE[1] * 0.55 - cg) * k;
           cb += (HAZE[2] * 0.55 - cb) * k;
@@ -668,6 +713,22 @@ export function renderLand({
       rgba[o + 1] = cg * lg * 255;
       rgba[o + 2] = cb * lb * 255;
       rgba[o + 3] = 255;
+      if (layers) {
+        let c: number = MOTION.STILL;
+        if (skyCell && (SILHOUETTE[m] || m === M.GRASS || m === M.SNOW)) {
+          // A plant (or snow on one) standing in the open air: it sways.
+          layers.plants[o] = rgba[o];
+          layers.plants[o + 1] = rgba[o + 1];
+          layers.plants[o + 2] = rgba[o + 2];
+          layers.plants[o + 3] = 255;
+          c = MOTION.SKY;
+        } else if (m === M.AIR && skyCell) c = MOTION.SKY;
+        else if (m === M.WATER) c = y > 0 && cells[i - W] === M.AIR ? MOTION.WATER_TOP : MOTION.WATER;
+        else if (m === M.STREAM) c = MOTION.STREAM;
+        else if (m === M.FALLS) c = MOTION.FALLS;
+        else if (m === M.LAVA) c = MOTION.LAVA;
+        layers.motion[i] = c;
+      }
     }
   }
   lap("shade");

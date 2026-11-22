@@ -1,25 +1,24 @@
-// Strata land viewer: shows generated land at an exact whole number of screen
-// pixels per art pixel, so it looks on your monitor the way it will on the
-// TVs (4 screen pixels per art pixel there: 480 art pixels across 1920).
+// Strata land viewer: shows generated land, moving, at an exact whole number
+// of screen pixels per art pixel, so it looks on your monitor the way it will
+// on the TVs (4 screen pixels per art pixel there: 480 art pixels across 1920).
 //
 // Regions are generated and lit in web workers (on the main thread if workers
-// are unavailable), kept as bitmaps, and drawn with smoothing off at integer
-// device-pixel offsets, so edges stay crisp at any position.
-import {
-  BIOMES,
-  BLEND,
-  groundAt,
-  regionBiome,
-} from "../../../engine/strata/generate.ts";
+// are unavailable) and uploaded to the GPU as layers. Every frame the WebGL2
+// renderer draws them with the sky, water, lava and plants moving; particles
+// and creatures go on top; a 2D overlay carries the wall mask and markers.
+import { BIOMES, BLEND, groundAt, regionBiome } from "../../../engine/strata/generate.ts";
 import { REGION_W, WORLD_H } from "../../../engine/strata/world.ts";
-import { buildTile, type Tile } from "./tile.ts";
+import { Renderer, type GpuTile } from "./gl.ts";
+import { Life } from "./life.ts";
+import { APRON, buildTile, type Emitters, type Tile } from "./tile.ts";
 
 declare const WORKER_SOURCE: string;
 
-const $ = <T extends HTMLElement>(id: string) =>
-  document.getElementById(id) as T;
+const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>("view"),
-  ctx = canvas.getContext("2d", { alpha: false })!;
+  overlay = $<HTMLCanvasElement>("overlay"),
+  octx = overlay.getContext("2d")!,
+  gl = canvas.getContext("webgl2", { antialias: false, alpha: false, preserveDrawingBuffer: true });
 
 /** The view: centre in art pixels, and screen (device) pixels per art pixel. */
 const view = {
@@ -31,16 +30,26 @@ const view = {
   edges: false,
   wall: false,
   hud: true,
+  motion: true,
 };
 const DRIFT = 6; // art pixels per second
+
+let renderer: Renderer | null = null,
+  failure = gl ? "" : "This viewer needs WebGL2, which this browser hasn't made available.";
+try {
+  if (gl) renderer = new Renderer(gl);
+} catch (e) {
+  console.error(e);
+  failure = `The renderer failed to start: ${(e as Error).message.split("\n")[0]}`;
+}
+const life = new Life();
 
 // ---- Tiles ---------------------------------------------------------------
 
 interface Entry {
-  bitmap?: ImageBitmap;
-  surface?: Int16Array;
-  genMs?: number;
-  lightMs?: number;
+  gpu: GpuTile;
+  surface: Int16Array;
+  emit: Emitters;
   used: number;
 }
 const cache = new Map<string, Entry>(),
@@ -49,29 +58,18 @@ const cache = new Map<string, Entry>(),
 let last = "";
 
 function accept(t: Tile) {
-  const e: Entry = {
-    surface: t.surface,
-    genMs: t.genMs,
-    lightMs: t.lightMs,
-    used: performance.now(),
-  };
+  pending.delete(key(t.seed, t.r));
+  if (!renderer) return;
   last = `region ${t.r}: land ${(t.genMs / 1000).toFixed(1)} s, light ${(t.lightMs / 1000).toFixed(1)} s`;
-  createImageBitmap(
-    new ImageData(t.rgba as Uint8ClampedArray<ArrayBuffer>, REGION_W, WORLD_H),
-  ).then((b) => {
-    e.bitmap = b;
-    cache.set(key(t.seed, t.r), e);
-    pending.delete(key(t.seed, t.r));
-    evict();
-    dirty = true;
-  });
+  cache.set(key(t.seed, t.r), { gpu: renderer.upload(t), surface: t.surface, emit: t.emit, used: performance.now() });
+  evict();
 }
 
 function evict() {
-  if (cache.size <= 12) return;
+  if (cache.size <= 10) return;
   const old = [...cache.entries()].sort((a, b) => a[1].used - b[1].used);
-  for (const [k, e] of old.slice(0, cache.size - 12)) {
-    e.bitmap?.close();
+  for (const [k, e] of old.slice(0, cache.size - 10)) {
+    renderer?.release(e.gpu);
     cache.delete(k);
   }
 }
@@ -82,9 +80,7 @@ let workers = 0,
   mainThread = false,
   mainBusy = false;
 try {
-  const url = URL.createObjectURL(
-      new Blob([WORKER_SOURCE], { type: "text/javascript" }),
-    ),
+  const url = URL.createObjectURL(new Blob([WORKER_SOURCE], { type: "text/javascript" })),
     n = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 1));
   for (let k = 0; k < n; k++) {
     const w = new Worker(url);
@@ -142,9 +138,15 @@ function schedule() {
   }
 }
 
-// ---- Drawing -------------------------------------------------------------
+/** Ground height at world column x: from a loaded tile if there is one. */
+function ground(x: number) {
+  const r = Math.floor(x / REGION_W),
+    e = cache.get(key(view.seed, r));
+  if (e) return e.surface[Math.floor(x) - (r * REGION_W - APRON)];
+  return groundAt(view.seed, x);
+}
 
-let dirty = true;
+// ---- Drawing -------------------------------------------------------------
 
 // The default wall (staggered): four 531 x 299 mm panels, 6 mm bezels, 10 mm
 // gaps; 480 art pixels across each panel's 531 mm.
@@ -158,78 +160,70 @@ const MM = 480 / 531,
   WALL_W = 553 + 531,
   WALL_H = 406 + 299;
 
-function draw() {
+function frame_(t: number, dt: number) {
   const W = canvas.width,
     H = canvas.height,
     s = view.scale,
     left = view.x - W / s / 2,
     top = view.y - H / s / 2,
     ox = Math.round(left * s),
-    oy = Math.round(top * s);
-  ctx.imageSmoothingEnabled = false;
-  ctx.fillStyle = "#07070b";
-  ctx.fillRect(0, 0, W, H);
-  const r0 = Math.floor(left / REGION_W),
-    r1 = Math.floor((left + W / s) / REGION_W);
+    oy = Math.round(top * s),
+    r0 = Math.floor(left / REGION_W),
+    r1 = Math.floor((left + W / s) / REGION_W),
+    visible: { r: number; g: GpuTile }[] = [],
+    sources: Emitters[] = [];
+  for (let r = r0 - 1; r <= r1 + 1; r++) {
+    const e = cache.get(key(view.seed, r));
+    if (!e) continue;
+    if (r >= r0 && r <= r1) visible.push({ r, g: e.gpu });
+    sources.push(e.emit);
+  }
+  if (view.motion)
+    life.update(dt, t, { left, top, right: left + W / s, bottom: top + H / s }, sources, ground);
+  renderer!.draw(visible, { left, top, scale: s, W, H }, t, view.seed, view.motion, life.buf, life.count);
+
+  // Overlay: regions still building, region edges, the wall mask.
+  octx.clearRect(0, 0, W, H);
   for (let r = r0; r <= r1; r++) {
-    const rx = r * REGION_W,
-      sx0 = Math.max(0, Math.floor(left - rx)),
-      sx1 = Math.min(REGION_W, Math.ceil(left + W / s - rx) + 1),
-      sy0 = Math.max(0, Math.floor(top)),
-      sy1 = Math.min(WORLD_H, Math.ceil(top + H / s) + 1);
-    if (sx1 <= sx0 || sy1 <= sy0) continue;
-    const dx = (rx + sx0) * s - ox,
-      dy = sy0 * s - oy,
-      e = cache.get(key(view.seed, r));
-    if (e?.bitmap)
-      ctx.drawImage(
-        e.bitmap,
-        sx0,
-        sy0,
-        sx1 - sx0,
-        sy1 - sy0,
-        dx,
-        dy,
-        (sx1 - sx0) * s,
-        (sy1 - sy0) * s,
-      );
-    else {
-      ctx.fillStyle = "#0e0e16";
-      ctx.fillRect(dx, dy, (sx1 - sx0) * s, (sy1 - sy0) * s);
-      ctx.fillStyle = "#8d8aa6";
-      ctx.font = `${Math.round(13 * devicePixelRatio)}px "IBM Plex Mono", ui-monospace, monospace`;
-      ctx.textAlign = "center";
-      ctx.fillText(`Building region ${r}…`, dx + ((sx1 - sx0) * s) / 2, H / 2);
-    }
+    if (cache.has(key(view.seed, r))) continue;
+    const dx = Math.max(0, r * REGION_W * s - ox),
+      dx1 = Math.min(W, (r + 1) * REGION_W * s - ox);
+    octx.fillStyle = "#0e0e16";
+    octx.fillRect(dx, 0, dx1 - dx, H);
+    octx.fillStyle = "#8d8aa6";
+    octx.font = `${Math.round(13 * devicePixelRatio)}px "IBM Plex Mono", ui-monospace, monospace`;
+    octx.textAlign = "center";
+    octx.fillText(`Building region ${r}…`, (dx + dx1) / 2, H / 2);
   }
   if (view.edges) {
-    ctx.fillStyle = "rgba(255, 210, 150, 0.55)";
+    octx.fillStyle = "rgba(255, 210, 150, 0.55)";
     for (let r = r0; r <= r1 + 1; r++) {
       const x = r * REGION_W * s - ox;
       for (let y = 0; y < H; y += 12 * devicePixelRatio)
-        ctx.fillRect(
-          x,
-          y,
-          Math.max(1, Math.round(devicePixelRatio)),
-          6 * devicePixelRatio,
-        );
+        octx.fillRect(x, y, Math.max(1, Math.round(devicePixelRatio)), 6 * devicePixelRatio);
     }
   }
   if (view.wall) {
     // Everything outside the four screens goes dark, as on the wall.
     const ax = Math.round(view.x - (WALL_W * MM) / 2),
       ay = Math.round(view.y - (WALL_H * MM) / 2);
-    ctx.beginPath();
-    ctx.rect(0, 0, W, H);
-    for (const [px, py] of PANELS) {
-      const x0 = ax + Math.round(px * MM),
-        y0 = ay + Math.round(py * MM),
-        w = Math.round(531 * MM),
-        h = Math.round(299 * MM);
-      ctx.rect(x0 * s - ox, y0 * s - oy, w * s, h * s);
-    }
-    ctx.fillStyle = "rgba(4, 4, 7, 0.94)";
-    ctx.fill("evenodd");
+    octx.beginPath();
+    octx.rect(0, 0, W, H);
+    for (const [px, py] of PANELS)
+      octx.rect(
+        (ax + Math.round(px * MM)) * s - ox,
+        (ay + Math.round(py * MM)) * s - oy,
+        Math.round(531 * MM) * s,
+        Math.round(299 * MM) * s,
+      );
+    octx.fillStyle = "rgba(4, 4, 7, 0.94)";
+    octx.fill("evenodd");
+  }
+  // Below the world's floor and above its top there is nothing.
+  if (top < 0 || top + H / s > WORLD_H) {
+    octx.fillStyle = "#07070b";
+    if (top < 0) octx.fillRect(0, 0, W, -oy);
+    if (top + H / s > WORLD_H) octx.fillRect(0, WORLD_H * s - oy, W, H);
   }
 }
 
@@ -244,41 +238,41 @@ function biomeLabel(x: number) {
     nearRight = REGION_W - local < BLEND;
   if (nearLeft || nearRight) {
     const other = BIOMES[regionBiome(view.seed, nearLeft ? r - 1 : r + 1)].name;
-    if (other !== here)
-      return nearLeft ? `${other} → ${here}` : `${here} → ${other}`;
+    if (other !== here) return nearLeft ? `${other} → ${here}` : `${here} → ${other}`;
   }
   return here;
 }
 
-let hudText = "";
+let hudText = "",
+  fps = 0,
+  cpuMs = 0;
 function updateHud() {
   const busy = pending.size,
     region = Math.floor(view.x / REGION_W),
-    status = busy
+    status = failure
+      ? failure
+      : busy
       ? `Building ${busy} region${busy > 1 ? "s" : ""}${mainThread ? " on the page (workers unavailable)" : ""}…`
       : last
         ? `Ready · ${last}`
         : "Ready",
-    text = [
-      biomeLabel(view.x),
-      `region ${region} · x ${fmt.format(Math.round(view.x))} · y ${fmt.format(Math.round(view.y))}`,
-      `${view.scale}`,
-      `${Math.round(1920 / view.scale)}`,
-      status,
-    ].join("|");
+    gpu = renderer?.gpuMs ? ` · GPU ${renderer.gpuMs.toFixed(1)} ms` : "",
+    perf = `${Math.round(fps)} fps · frame ${cpuMs.toFixed(1)} ms${gpu} · ${life.count} sprites`,
+    where = `region ${region} · x ${fmt.format(Math.round(view.x))} · y ${fmt.format(Math.round(view.y))}`,
+    text = [biomeLabel(view.x), where, view.scale, status, perf, view.drift, view.edges, view.wall, view.motion].join("|");
   if (text === hudText) return;
   hudText = text;
   $("biome").textContent = biomeLabel(view.x);
-  $("where").textContent =
-    `region ${region} · x ${fmt.format(Math.round(view.x))} · y ${fmt.format(Math.round(view.y))}`;
+  $("where").textContent = where;
   $("scale").textContent = `${view.scale}`;
-  $("scale-note").textContent =
-    `${fmt.format(Math.round(1920 / view.scale))} art px across a 1920 px screen`;
+  $("scale-note").textContent = `${fmt.format(Math.round(1920 / view.scale))} art px across a 1920 px screen`;
   $("status").textContent = status;
+  $("perf").textContent = perf;
   for (const [id, on] of [
     ["drift", view.drift],
     ["edges", view.edges],
     ["wall", view.wall],
+    ["motion", view.motion],
   ] as [string, boolean][])
     $(id).setAttribute("aria-pressed", String(on));
 }
@@ -287,19 +281,14 @@ function updateHud() {
 
 function resize(w: number, h: number) {
   if (w === canvas.width && h === canvas.height) return;
-  canvas.width = w;
-  canvas.height = h;
-  dirty = true;
+  canvas.width = overlay.width = w;
+  canvas.height = overlay.height = h;
 }
 const ro = new ResizeObserver((entries) => {
   const e = entries[0],
     box = e.devicePixelContentBoxSize?.[0];
   if (box) resize(box.inlineSize, box.blockSize);
-  else
-    resize(
-      Math.round(e.contentRect.width * devicePixelRatio),
-      Math.round(e.contentRect.height * devicePixelRatio),
-    );
+  else resize(Math.round(e.contentRect.width * devicePixelRatio), Math.round(e.contentRect.height * devicePixelRatio));
 });
 try {
   ro.observe(canvas, { box: "device-pixel-content-box" });
@@ -318,29 +307,27 @@ function setScale(s: number, ax = canvas.width / 2, ay = canvas.height / 2) {
   view.scale = s;
   view.x = wx - (ax - canvas.width / 2) / s;
   view.y = wy - (ay - canvas.height / 2) / s;
-  dirty = true;
 }
 function toSurface() {
   view.y = groundAt(view.seed, view.x) + (0.1 * canvas.height) / view.scale;
-  dirty = true;
 }
 function toEdge(dir: number) {
   const k = view.x / REGION_W;
-  view.x =
-    (dir > 0 ? Math.floor(k + 1e-6) + 1 : Math.ceil(k - 1e-6) - 1) * REGION_W;
+  view.x = (dir > 0 ? Math.floor(k + 1e-6) + 1 : Math.ceil(k - 1e-6) - 1) * REGION_W;
   toSurface();
+  life.reset();
 }
 function setSeed(seed: number) {
   if (!Number.isFinite(seed)) return;
   view.seed = Math.max(0, Math.min(2 ** 31 - 1, Math.floor(seed)));
   $<HTMLInputElement>("seed").value = String(view.seed);
   last = "";
+  life.reset();
   toSurface();
 }
-function toggle(name: "drift" | "edges" | "wall" | "hud") {
+function toggle(name: "drift" | "edges" | "wall" | "hud" | "motion") {
   view[name] = !view[name];
   if (name === "hud") $("hud").hidden = !view.hud;
-  dirty = true;
 }
 function fullscreen() {
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
@@ -354,11 +341,11 @@ $("next-edge").onclick = () => toEdge(1);
 $("surface").onclick = toSurface;
 $("deeper").onclick = () => {
   view.y = Math.min(WORLD_H, view.y + (0.5 * canvas.height) / view.scale);
-  dirty = true;
 };
 $("drift").onclick = () => toggle("drift");
 $("edges").onclick = () => toggle("edges");
 $("wall").onclick = () => toggle("wall");
+$("motion").onclick = () => toggle("motion");
 $("full").onclick = fullscreen;
 $("new-seed").onclick = () => setSeed(Math.floor(Math.random() * 100000));
 $<HTMLFormElement>("seed-form").onsubmit = (e) => {
@@ -368,40 +355,34 @@ $<HTMLFormElement>("seed-form").onsubmit = (e) => {
 
 // Drag to move, wheel to zoom around the pointer, double-click to centre.
 let drag: { x: number; y: number } | null = null;
-canvas.addEventListener("pointerdown", (e) => {
-  canvas.setPointerCapture(e.pointerId);
+overlay.addEventListener("pointerdown", (e) => {
+  overlay.setPointerCapture(e.pointerId);
   drag = { x: e.clientX, y: e.clientY };
 });
-canvas.addEventListener("pointermove", (e) => {
+overlay.addEventListener("pointermove", (e) => {
   if (!drag) return;
   const d = devicePixelRatio / view.scale;
   view.x -= (e.clientX - drag.x) * d;
   view.y -= (e.clientY - drag.y) * d;
   drag = { x: e.clientX, y: e.clientY };
-  dirty = true;
 });
-canvas.addEventListener("pointerup", () => (drag = null));
-canvas.addEventListener("pointercancel", () => (drag = null));
+overlay.addEventListener("pointerup", () => (drag = null));
+overlay.addEventListener("pointercancel", () => (drag = null));
 let wheel = 0;
-canvas.addEventListener(
+overlay.addEventListener(
   "wheel",
   (e) => {
     e.preventDefault();
     wheel += e.deltaY;
     if (Math.abs(wheel) < 60) return;
-    setScale(
-      view.scale + (wheel < 0 ? 1 : -1),
-      e.offsetX * devicePixelRatio,
-      e.offsetY * devicePixelRatio,
-    );
+    setScale(view.scale + (wheel < 0 ? 1 : -1), e.offsetX * devicePixelRatio, e.offsetY * devicePixelRatio);
     wheel = 0;
   },
   { passive: false },
 );
-canvas.addEventListener("dblclick", (e) => {
+overlay.addEventListener("dblclick", (e) => {
   view.x += (e.offsetX * devicePixelRatio - canvas.width / 2) / view.scale;
   view.y += (e.offsetY * devicePixelRatio - canvas.height / 2) / view.scale;
-  dirty = true;
 });
 
 const held = new Set<string>();
@@ -418,26 +399,24 @@ addEventListener("keydown", (e) => {
   else if (k === "]") toEdge(1);
   else if (k === "Home") toSurface();
   else if (k === "PageDown") $("deeper").click();
-  else if (k === "PageUp") {
-    view.y = Math.max(0, view.y - (0.5 * canvas.height) / view.scale);
-    dirty = true;
-  } else if (k === " ") {
+  else if (k === "PageUp") view.y = Math.max(0, view.y - (0.5 * canvas.height) / view.scale);
+  else if (k === " ") {
     e.preventDefault();
     toggle("drift");
   } else if (k === "g" || k === "G") toggle("edges");
   else if (k === "w" || k === "W") toggle("wall");
+  else if (k === "m" || k === "M") toggle("motion");
   else if (k === "f" || k === "F") fullscreen();
   else if (k === "h" || k === "H") toggle("hud");
   else if (k === "n" || k === "N") $("new-seed").click();
-  else return;
-  dirty = true;
 });
 addEventListener("keyup", (e) => held.delete(e.key));
 addEventListener("blur", () => held.clear());
 
 // ---- Loop ----------------------------------------------------------------
 
-let prev = performance.now();
+let prev = performance.now(),
+  clock = 0;
 function frame(now: number) {
   const dt = Math.min(0.1, (now - prev) / 1000);
   prev = now;
@@ -448,22 +427,19 @@ function frame(now: number) {
     if (held.has("ArrowRight")) view.x += v;
     if (held.has("ArrowUp")) view.y -= v;
     if (held.has("ArrowDown")) view.y += v;
-    dirty = true;
   }
-  if (view.drift) {
-    view.x += DRIFT * dt;
-    dirty = true;
-  }
+  if (view.drift) view.x += DRIFT * dt;
+  if (view.motion) clock += dt;
   schedule();
-  if (dirty) {
-    draw();
-    dirty = false;
-  }
+  const t0 = performance.now();
+  if (renderer) frame_(clock, dt);
+  cpuMs = cpuMs * 0.9 + (performance.now() - t0) * 0.1;
+  fps = fps * 0.95 + (dt > 0 ? 1 / dt : 0) * 0.05;
   updateHud();
   requestAnimationFrame(frame);
 }
 
-// For scripted checks: jump to a seed and world column.
+// For scripted checks: jump to a seed and world column (and row).
 Object.assign(window, {
   strataGo(seed: number, x: number, y?: number) {
     view.x = x;
@@ -472,9 +448,7 @@ Object.assign(window, {
   },
 });
 $<HTMLInputElement>("seed").value = String(view.seed);
-$("workers").textContent = mainThread
-  ? "on the page"
-  : `${workers} worker${workers === 1 ? "" : "s"}`;
+$("workers").textContent = mainThread ? "on the page" : `${workers} worker${workers === 1 ? "" : "s"}`;
 requestAnimationFrame((t) => {
   prev = t;
   toSurface();
