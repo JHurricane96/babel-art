@@ -140,3 +140,26 @@ test("a region generates well inside the mini PC budget", () => {
   // Target: 2 s on the mini PC (factor about 0.77 of this machine); allow a slow CI box.
   assert.ok(ms < 4000, `${ms.toFixed(0)} ms`);
 });
+
+test("the surface carries rock shapes, greenery and built things", () => {
+  const seen = { BRICK: 0, ROPE: 0, REED: 0, FLOWER: 0, raisedRock: 0 };
+  for (const [seed, r] of [
+    [1, 0],
+    [1, 1],
+    [2, 1],
+  ]) {
+    const g = generateRegion(seed, r);
+    for (let x = 0; x < REGION_W; x++)
+      for (let y = 0; y < g.surface[x]; y++) {
+        const m = g.cells[y * REGION_W + x];
+        if (m === M.BRICK) seen.BRICK++;
+        else if (m === M.ROPE) seen.ROPE++;
+        else if (m === M.REED) seen.REED++;
+        else if (m === M.FLOWER) seen.FLOWER++;
+        else if (m === M.ROCK || m === M.GRAVEL) seen.raisedRock++;
+      }
+  }
+  // Seed 1 region 0 is a canyon with a bridge and hoodoos; seed 1 region 1 a
+  // river forest; seed 2 region 1 highlands with a tower.
+  for (const [k, n] of Object.entries(seen)) assert.ok(n > 0, `${k}: ${n}`);
+});

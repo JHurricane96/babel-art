@@ -44,12 +44,12 @@ function stitch(seed: number, r0: number, n: number) {
     }
     surface.set(g.surface, k * REGION_W);
   }
-  return { W, H: WORLD_H, cells, state, surface, ms, x0: r0 * REGION_W };
+  return { W, H: WORLD_H, cells, state, surface, ms, x0: r0 * REGION_W, seed };
 }
 
 function render(world: ReturnType<typeof stitch>) {
   const { W, H } = world,
-    rgba = renderLand(world),
+    rgba = renderLand({ ...world, seed: world.seed }),
     rgb = new Uint8Array(W * H * 3);
   for (let i = 0; i < W * H; i++) {
     rgb[i * 3] = rgba[i * 4];
