@@ -49,16 +49,41 @@ interface Bird {
   vx: number;
   phase: number;
 }
-interface Fish {
-  x: number;
-  y: number;
-  vx: number;
+/** A body of water: its surface row, and the depth under each column. */
+interface Water {
   x0: number;
   x1: number;
   top: number;
-  bottom: number;
+  depth: Float32Array;
+}
+interface Fish {
+  /** Head cell. */
+  x: number;
+  y: number;
+  vx: number;
+  /** Row it is drifting toward. */
+  ty: number;
+  w: Water;
   jump: number;
   vy: number;
+  phase: number;
+}
+
+/** The cells a fish covers: its head at (x, y), its tail 4 cells behind, a row above and below. */
+const span = (x: number, dir: number) => {
+  const h = Math.floor(x);
+  return dir > 0 ? [h - 4, h] : [h, h + 4];
+};
+/** Whether a fish with its head at (x, y) lies wholly in the water, a cell clear of every edge. */
+function fits(w: Water, x: number, y: number, dir: number) {
+  const [a, b] = span(x, dir),
+    r = Math.floor(y);
+  if (r - 1 < w.top + 1) return false;
+  for (let c = a - 1; c <= b + 1; c++) {
+    const k = c - w.x0;
+    if (k < 0 || k >= w.depth.length || r + 1 > w.top + w.depth[k] - 2) return false;
+  }
+  return true;
 }
 interface Bat {
   x: number;
@@ -111,7 +136,7 @@ export class Life {
       }
     };
     let meadow = 0;
-    const waters: number[][] = [];
+    const waters: Water[] = [];
     for (const e of sources) {
       if (this.parts.length > 6000) break;
       spawn(e.spores, 0.2, (x, y) =>
@@ -130,13 +155,16 @@ export class Life {
       spawn(e.spray, 4, (x, y) =>
         this.parts.push({ k: K.Spray, x: x + rnd(-2, 2), y, vx: rnd(-8, 8), vy: rnd(-10, -3), age: 0, life: rnd(0.5, 1), floor: 1e9 }),
       );
+      // Snow over snowfields falls in from the top of the view, in two
+      // layers: near flakes (whole pixels, quicker) and far ones (finer, slower).
       for (let i = 0; i < e.snow.length; i += 2) {
         const x = e.snow[i],
           gy = e.snow[i + 1];
         if (x < v.left - pad || x > v.right + pad || gy < v.top) continue;
-        if (Math.random() < 0.15 * dt) {
-          const y = Math.max(v.top - 2, gy - 260);
-          this.parts.push({ k: K.Snow, x: x + rnd(-1.5, 1.5), y, vx: 0, vy: rnd(4, 8), age: 0, life: 60, floor: gy });
+        if (Math.random() < 0.12 * dt) {
+          const near = Math.random() < 0.6;
+          // vx marks the layer: 1 near, 0 far.
+          this.parts.push({ k: K.Snow, x: x + rnd(-1.5, 1.5), y: v.top - 1, vx: near ? 1 : 0, vy: near ? rnd(7, 11) : rnd(3, 5), age: 0, life: 1e9, floor: gy });
         }
       }
       spawn(e.leaves, 0.01, (x, y) =>
@@ -144,8 +172,11 @@ export class Life {
       );
       for (let i = 0; i < e.meadows.length; i += 2) if (inView(e.meadows[i], e.meadows[i + 1])) meadow++;
       for (let i = 0; i < e.waters.length; i += 4) {
-        const w = [e.waters[i], e.waters[i + 1], e.waters[i + 2], e.waters[i + 3]];
-        if (w[1] > v.left - pad && w[0] < v.right + pad && w[2] > v.top - pad && w[2] < v.bottom + pad) waters.push(w);
+        const x0 = e.waters[i],
+          x1 = e.waters[i + 1],
+          top = e.waters[i + 2];
+        if (x1 > v.left - pad && x0 < v.right + pad && top > v.top - pad && top < v.bottom + pad)
+          waters.push({ x0, x1, top, depth: e.waterDepth.subarray(e.waters[i + 3], e.waters[i + 3] + x1 - x0 + 1) });
       }
       // Bats leave cave mouths now and then.
       spawn(e.mouths, 0.015, (x, y) => {
@@ -164,23 +195,23 @@ export class Life {
         if (inView(x, y) && Math.random() < 0.02)
           this.fireflies.push({ x, y: y - rnd(3, 20), hx: x, hy: y, phase: rnd(0, 6.3), vx: 0, vy: 0 });
       }
-    // Fish in the open water near the view.
+    // Fish in the open water near the view, placed only where they fit.
     this.fish = this.fish.filter((f) => inView(f.x, f.y));
     for (const w of waters) {
-      const have = this.fish.filter((f) => f.x0 === w[0]).length,
-        want = Math.max(1, Math.min(6, Math.floor((w[1] - w[0]) / 40)));
-      if (have < want && w[3] > 6)
-        this.fish.push({
-          x: rnd(w[0] + 3, w[1] - 3),
-          y: rnd(w[2] + 3, w[2] + w[3] - 3),
-          vx: rnd(3, 8) * (Math.random() < 0.5 ? -1 : 1),
-          x0: w[0],
-          x1: w[1],
-          top: w[2],
-          bottom: w[2] + w[3],
-          jump: 0,
-          vy: 0,
-        });
+      const have = this.fish.filter((f) => f.w.x0 === w.x0 && f.w.top === w.top).length,
+        want = Math.max(1, Math.min(6, Math.floor((w.x1 - w.x0) / 40)));
+      if (have >= want) continue;
+      for (let tries = 0; tries < 12; tries++) {
+        const c = Math.floor(Math.random() * w.depth.length),
+          d = w.depth[c],
+          dir = Math.random() < 0.5 ? -1 : 1;
+        if (d < 7) continue;
+        const x = w.x0 + c + 0.5,
+          y = w.top + 2 + Math.floor(Math.random() * (d - 4)) + 0.5;
+        if (!fits(w, x, y, dir)) continue;
+        this.fish.push({ x, y, ty: y, vx: rnd(3, 7) * dir, w, jump: 0, vy: 0, phase: rnd(0, 6) });
+        break;
+      }
     }
     // Birds: a flock crosses the sky every so often.
     this.nextFlock -= dt;
@@ -222,7 +253,7 @@ export class Life {
           }
         }
       } else if (p.k === K.Snow) {
-        p.x += (w * 3 + Math.sin(t * 2 + p.y * 0.1) * 0.6) * dt;
+        p.x += (w * (p.vx ? 3 : 1.5) + Math.sin(t * 1.6 + p.y * 0.1) * 0.8) * dt;
         p.y += p.vy * dt;
         if (p.y >= p.floor) return false;
       } else {
@@ -248,27 +279,44 @@ export class Life {
       return b.x > v.left - 60 && b.x < v.right + 60;
     });
     for (const f of this.fish) {
+      const w = f.w,
+        dir = Math.sign(f.vx);
       if (f.jump > 0) {
-        // A leap out of the water and back.
+        // A leap out of the water and back, landing where it was sure to fit.
         f.vy += 40 * dt;
         f.y += f.vy * dt;
         f.x += f.vx * dt;
-        if (f.y >= f.top + 1 && f.vy > 0) {
+        if (f.y >= w.top + 2.5 && f.vy > 0) {
           f.jump = 0;
-          f.y = f.top + 3;
+          f.y = f.ty = w.top + 2.5;
           for (let k = 0; k < 8; k++)
-            this.parts.push({ k: K.Spray, x: f.x, y: f.top, vx: rnd(-6, 6), vy: rnd(-8, -2), age: 0, life: rnd(0.4, 0.8), floor: 1e9 });
+            this.parts.push({ k: K.Spray, x: f.x - 2 * dir, y: w.top - 1, vx: rnd(-6, 6), vy: rnd(-8, -2), age: 0, life: rnd(0.4, 0.8), floor: 1e9 });
         }
         continue;
       }
-      f.x += f.vx * dt;
-      f.y += Math.sin(t + f.x * 0.1) * 0.5 * dt;
-      f.y = Math.max(f.top + 2, Math.min(f.bottom - 2, f.y));
-      if (f.x < f.x0 + 2 || f.x > f.x1 - 2 || Math.random() < 0.05 * dt) f.vx = -f.vx;
-      if (Math.random() < 0.015 * dt) {
-        f.jump = 1;
-        f.vy = -rnd(14, 22);
-        f.y = f.top;
+      // Swim on; at an edge (or now and then) turn round in place.
+      const nx = f.x + f.vx * dt;
+      if (Math.random() < 0.05 * dt || !fits(w, nx, f.y, dir)) {
+        const tx = f.x - 4 * dir;
+        if (fits(w, tx, f.y, -dir)) {
+          f.x = tx;
+          f.vx = -f.vx;
+        }
+      } else f.x = nx;
+      // Drift up and down toward a row picked now and then.
+      if (Math.random() < 0.3 * dt) f.ty = f.y + rnd(-4, 4);
+      const ny = f.y + Math.max(-1.5 * dt, Math.min(1.5 * dt, f.ty - f.y));
+      if (fits(w, f.x, ny, dir)) f.y = ny;
+      else f.ty = f.y;
+      // Near the surface, a fish may leap, if it would come down in water.
+      if (f.y - w.top < 5 && Math.random() < 0.03 * dt) {
+        const vy = rnd(14, 22),
+          land = f.x + f.vx * ((2 * vy) / 40 + 0.25);
+        if (fits(w, land, w.top + 2.5, dir)) {
+          f.jump = 1;
+          f.vy = -vy;
+          f.y = w.top - 0.5;
+        }
       }
     }
     this.bats = this.bats.filter((b) => {
@@ -307,7 +355,11 @@ export class Life {
       }
       else if (p.k === K.Ember) put(p.x, p.y, 0.5, 1, 0.55 + 0.3 * fade, 0.25, fade);
       else if (p.k === K.Spray) put(p.x, p.y, 0.5, 0.9, 0.96, 1, 0.75 * fade);
-      else if (p.k === K.Snow) put(p.x, p.y, 0.5, 0.96, 0.97, 1, 0.9);
+      else if (p.k === K.Snow) {
+        // Cool blue-white, never the stars' warm white.
+        if (p.vx) put(p.x, p.y, 1, 0.78, 0.86, 1, 0.8);
+        else put(p.x, p.y, 0.5, 0.72, 0.8, 0.96, 0.5);
+      }
       else put(p.x, p.y, 1, 0.3, 0.38, 0.2, fade);
     }
     for (const f of this.fireflies) {
@@ -326,11 +378,25 @@ export class Life {
       put(b.x + 2, b.y + tip, 1, 0.1, 0.08, 0.13, 1);
     }
     for (const f of this.fish) {
-      const out = f.jump > 0,
-        a = out ? 1 : 0.55,
-        dir = f.vx > 0 ? 1 : -1;
-      put(f.x, f.y, 1, 0.78, 0.82, 0.84, a);
-      put(f.x - dir, f.y, 1, 0.62, 0.68, 0.72, a);
+      // A gold fish, five cells long: head, body, a dorsal fin, and a forked
+      // tail that wags (fork, up, fork, down).
+      const a = f.jump > 0 ? 1 : 0.85,
+        d = f.vx > 0 ? 1 : -1,
+        hx = Math.floor(f.x),
+        hy = Math.floor(f.y),
+        wag = Math.floor((t * 6 + f.phase) % 4),
+        cell = (dx: number, dy: number, c: number[]) => put(hx - dx * d, hy + dy, 1, c[0], c[1], c[2], a),
+        HEAD = [0.97, 0.78, 0.48],
+        BODY = [0.88, 0.6, 0.3],
+        FIN = [0.68, 0.42, 0.22];
+      cell(0, 0, HEAD);
+      cell(1, 0, BODY);
+      cell(2, 0, BODY);
+      cell(3, 0, FIN);
+      cell(2, -1, FIN);
+      if (wag !== 3) cell(4, -1, FIN);
+      if (wag !== 1) cell(4, 1, FIN);
+      if (wag === 1 || wag === 3) cell(4, 0, FIN);
     }
     for (const b of this.bats) {
       const up = Math.sin(t * 14 + b.phase) > 0;

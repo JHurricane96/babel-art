@@ -30,6 +30,10 @@ const ROCK = [
   ["#9aa3b2", "#8a93a3", "#a9b1bf", "#7c8596", "#949db0", "#6f7889"],
   ["#6e6670", "#7d7280", "#625b68", "#8a7068", "#5a5462", "#94746a"],
 ].map((p) => p.map(hex));
+/** Each biome's rock averaged over its strata: a cave's back wall leans to it. */
+const ROCK_AVG = ROCK.map((p) =>
+  [0, 1, 2].map((k) => p.reduce((s, c) => s + c[k], 0) / p.length),
+);
 const SOLID: number[][] = [];
 for (const [m, c] of [
   [M.SOIL, "#6b4a34"],
@@ -607,16 +611,27 @@ export function renderLand({
             ? 0.72
             : 1;
         if (m === M.AIR || m === M.BACKWALL) {
-          // A back wall, set back and in shadow: the cave's rock, or a building's masonry.
-          const back =
-            m === M.BACKWALL ? BRICK.map((v) => v * mortar * 1.1) : rock;
+          // A back wall, set back and in shadow: the cave's rock, or a
+          // building's masonry. The cave's strata show only faintly on it,
+          // and its ambient light dims with depth as the rock's does, so open
+          // space always reads as a hole in the rock, however deep.
+          const avg = ROCK_AVG[biome],
+            back =
+              m === M.BACKWALL
+                ? BRICK.map((v) => v * mortar * 1.1)
+                : [
+                    rock[0] * 0.35 + avg[0] * 0.65,
+                    rock[1] * 0.35 + avg[1] * 0.65,
+                    rock[2] * 0.35 + avg[2] * 0.65,
+                  ],
+            amb = (0.55 * cut) / 0.6;
           cr = back[0] * 0.42 * tex + BACK_TINT[0] * 0.25;
           cg = back[1] * 0.42 * tex + BACK_TINT[1] * 0.25;
           cb = back[2] * 0.42 * tex + BACK_TINT[2] * 0.25;
           lightAt(Ls[i], Lc[i], Lv[i], Lw[i], Le[i], bay);
-          lr += 0.55 * AMB[0];
-          lg += 0.55 * AMB[1];
-          lb += 0.55 * AMB[2];
+          lr += amb * AMB[0];
+          lg += amb * AMB[1];
+          lb += amb * AMB[2];
         } else {
           const c =
             m === M.ROCK
@@ -701,7 +716,9 @@ export function renderLand({
                 bay,
               );
             else lr = lg = lb = 0;
-            const amb = cut * (1 + 0.35 * edge);
+            // Faces on open space keep a brighter rim even in the dark, so a
+            // cave's outline reads at any depth.
+            const amb = cut * (1 + 0.7 * edge);
             lr += amb * AMB[0];
             lg += amb * AMB[1];
             lb += amb * AMB[2];

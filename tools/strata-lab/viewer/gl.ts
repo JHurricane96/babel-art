@@ -74,8 +74,12 @@ vec3 sky(ivec2 a, float d, float t) {
   float amt = floor(clamp((cl - 0.54) / 0.12, 0.0, 1.0) * env * 3.0 + bay) / 3.0;
   if (amt > 0.0) c = mix(c, mix(CLOUD_TOP, CLOUD_LIT, clamp((420.0 - d) / 260.0, 0.0, 1.0)), amt * 0.6);
   else if (d > 230.0) {
-    float s = hashi(a + ivec2(17, 91));
-    if (s > 0.9988) c = mix(c, STAR, 0.6 * min(1.0, (d - 230.0) / 120.0) * (0.55 + 0.45 * sin(t * (1.5 + s * 3.0) + s * 40.0)));
+    // Each star twinkles at its own pace and phase (hashed apart from the
+    // hash that places it, so they never fall into step).
+    if (hashi(a + ivec2(17, 91)) > 0.9988) {
+      float rate = 0.6 + 2.2 * hashi(a + ivec2(71, 2)), phase = 6.2832 * hashi(a + ivec2(5, 33));
+      c = mix(c, STAR, 0.6 * min(1.0, (d - 230.0) / 120.0) * (0.6 + 0.4 * sin(t * rate + phase)));
+    }
   }
   // Distant hills: flat silhouettes with crisp tops, far peaks and nearer hills.
   float r1 = 1.0 - abs(2.0 * fbm(vec2(x / 1100.0, 0.5)) - 1.0), r2 = 1.0 - abs(2.0 * fbm(vec2(x / 300.0, 7.5)) - 1.0);
@@ -138,7 +142,9 @@ uniform float uScale;
 uniform vec2 uViewport;
 out vec4 vCol;
 void main() {
-  vec2 d = floor(aPos * uScale) - vec2(uCamDev) + 0.5 * aSize * uScale;
+  // Sprites sit on the art-pixel grid; the finer sparks on a half-pixel grid.
+  float snap = aSize >= 1.0 ? 1.0 : 2.0;
+  vec2 d = floor(aPos * snap) / snap * uScale - vec2(uCamDev) + 0.5 * aSize * uScale;
   gl_Position = vec4(d.x / uViewport.x * 2.0 - 1.0, 1.0 - d.y / uViewport.y * 2.0, 0.0, 1.0);
   gl_PointSize = aSize * uScale;
   vCol = aCol;

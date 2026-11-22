@@ -25,8 +25,10 @@ export interface Emitters {
   mouths: Float32Array;
   /** Columns under snow: snowfall (x, ground y). */
   snow: Float32Array;
-  /** Open water: x0, x1, surface y, depth, per lake or pool. */
+  /** Open water: x0, x1, surface y, and where its column depths start in waterDepth, per lake or pool. */
   waters: Float32Array;
+  /** Per column of each body in waters: how many cells of water lie under its surface. */
+  waterDepth: Float32Array;
   /** Cave ceilings where water drips: x, y, and the row the drop lands on. */
   drips: Float32Array;
 }
@@ -120,6 +122,7 @@ function emitters(
     mouths: number[] = [],
     snow: number[] = [],
     waters: number[] = [],
+    waterDepth: number[] = [],
     tips: number[] = [],
     ceilings: number[] = [];
   for (let x = PAD; x < PAD + REGION_W; x++) {
@@ -153,13 +156,20 @@ function emitters(
       else if (m === M.FALLS && cells[i + W] !== M.FALLS) spray.push(wx, y);
       else if (m === M.LEAF && y < s) leaves.push(wx, y);
       else if (m === M.WATER && cells[i - W] === M.AIR && cells[i - 1] !== M.WATER) {
-        // The left end of a water surface: measure the run and its depth.
+        // The left end of a water surface: measure the run, and how deep the
+        // water is under each column of it, so swimmers keep to the water.
         let e = x;
         while (e < W - 1 && cells[y * W + e + 1] === M.WATER) e++;
-        const mid = (x + e) >> 1;
-        let d = 0;
-        while (y + d < H && cells[(y + d) * W + mid] === M.WATER) d++;
-        if (e - x >= 10 && d >= 4) waters.push(wx, x0 + e, y, d);
+        const depths: number[] = [];
+        for (let c = x; c <= e; c++) {
+          let d = 0;
+          while (y + d < H && cells[(y + d) * W + c] === M.WATER) d++;
+          depths.push(d);
+        }
+        if (e - x >= 16 && Math.max(...depths) >= 7) {
+          waters.push(wx, x0 + e, y, waterDepth.length);
+          waterDepth.push(...depths);
+        }
       }
     }
   }
@@ -172,6 +182,7 @@ function emitters(
     mouths: thin(mouths, 60),
     snow: thin(snow, 400),
     waters: Float32Array.from(waters),
+    waterDepth: Float32Array.from(waterDepth),
     // Tips first: they drip most; a few plain ceilings as well.
     drips: Float32Array.from([...thin(tips, 160, 3), ...thin(ceilings, 60, 3)]),
   };
