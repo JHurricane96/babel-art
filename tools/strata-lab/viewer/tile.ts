@@ -30,6 +30,7 @@ export function buildTile(seed: number, r: number): Tile {
       state: g.state,
       surface: g.surface,
       x0,
+      seed,
     }),
     t2 = performance.now(),
     rgba = new Uint8ClampedArray(REGION_W * H * 4);

@@ -39,6 +39,12 @@ export const M = {
   SHELF: 24,
   TOADSTOOL: 25,
   SPOT: 26,
+  BRICK: 27,
+  /** The inside wall of a building: drawn behind, open to light and passage. */
+  BACKWALL: 28,
+  ROPE: 29,
+  FLOWER: 30,
+  REED: 31,
 } as const;
 export type Material = (typeof M)[keyof typeof M];
 

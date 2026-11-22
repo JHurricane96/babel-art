@@ -8,7 +8,14 @@
 //
 // Everything position-dependent uses world coordinates (x0 + local x), so
 // tiles rendered separately line up exactly.
-import { GLOW, M, bandOf, biomeOf, hash3 } from "../../engine/strata/world.ts";
+import {
+  GLOW,
+  M,
+  bandOf,
+  biomeOf,
+  fbm1,
+  hash3,
+} from "../../engine/strata/world.ts";
 
 const hex = (h: string) =>
   [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
@@ -43,6 +50,7 @@ for (const [m, c] of [
   [M.SHELF, "#a86ab8"],
   [M.TOADSTOOL, "#a8382e"],
   [M.SPOT, "#e8dccb"],
+  [M.ROPE, "#a08458"],
 ] as [number, string][])
   SOLID[m] = hex(c);
 const LEAF = [
@@ -78,7 +86,34 @@ const CYAN = hex("#5ff0e0"),
   BACK_TINT = [0.11, 0.1, 0.18];
 
 const isOpen = (m: number) =>
-  m === M.AIR || m === M.WATER || m === M.STREAM || m === M.FALLS;
+  m === M.AIR ||
+  m === M.WATER ||
+  m === M.STREAM ||
+  m === M.FALLS ||
+  m === M.BACKWALL;
+/** Plants and rope stand dark against the dusk; rock and built stone above the ground are lit. */
+const SILHOUETTE = new Uint8Array(64);
+for (const m of [
+  M.LEAF,
+  M.WOOD,
+  M.CAP,
+  M.STALK,
+  M.TOADSTOOL,
+  M.SPOT,
+  M.VINE,
+  M.REED,
+  M.FLOWER,
+  M.ROPE,
+  M.SHROOM,
+])
+  SILHOUETTE[m] = 1;
+const BRICK = hex("#8a7f6c"),
+  FLOWERS = ["#f2d35a", "#f0ece0", "#e889b0", "#8fb0f0", "#e06a4a"].map(hex),
+  REED = [hex("#6f7a3a"), hex("#5a3a22")],
+  HAZE = hex("#3a2c5a"),
+  CLOUD_TOP = hex("#7a5c95"),
+  CLOUD_LIT = hex("#f4b490"),
+  STAR = hex("#fff4e0");
 const STREAM = ["#4f9ab4", "#cfe9f2", "#e0f4fa"].map(hex),
   FALLS = ["#bfe3f0", "#7fb8d0", "#f4fbfd"].map(hex),
   ICE = ["#e8f6fb", "#a6d4e6", "#7fb3cc", "#f2fbff"].map(hex);
@@ -225,11 +260,21 @@ export interface Land {
   surface: Int16Array;
   /** World x of column 0. */
   x0: number;
+  /** The world's seed: shapes the distant ridges and the clouds. */
+  seed?: number;
 }
 
 /** Render land to RGBA, one pixel per cell. */
 export const renderTimes: Record<string, number> = {};
-export function renderLand({ W, H, cells, state, surface, x0 }: Land) {
+export function renderLand({
+  W,
+  H,
+  cells,
+  state,
+  surface,
+  x0,
+  seed = 0,
+}: Land) {
   let tt = performance.now();
   const lap = (k: string) => {
     const n = performance.now();
@@ -312,13 +357,36 @@ export function renderLand({ W, H, cells, state, surface, x0 }: Land) {
     // Streaks in moving water: long sideways in streams, long downward in falls.
     flow = new RowNoise(x0, W, 11, 2, 993),
     fall = new RowNoise(x0, W, 2, 13, 994),
-    iceAbove = new Int16Array(W);
+    iceAbove = new Int16Array(W),
+    // Clouds: two value noises, broad and fine; distant ridges: a far range
+    // of peaks and nearer rolling hills, both behind the land.
+    cloudA = new RowNoise(x0, W, 230, 30, seed + 711),
+    cloudB = new RowNoise(x0, W, 70, 12, seed + 712),
+    far = new Float32Array(W),
+    near = new Float32Array(W);
+  for (let x = 0; x < W; x++) {
+    const wx = x0 + x,
+      // Ridged noise at two scales: ranges of sharp peaks, not domes.
+      r1 = 1 - Math.abs(2 * fbm1(wx / 1100, seed + 701, 3) - 1),
+      r2 = 1 - Math.abs(2 * fbm1(wx / 300, seed + 705, 3) - 1);
+    far[x] =
+      450 -
+      120 * r1 * r1 -
+      70 * r2 * r2 * r1 -
+      15 * fbm1(wx / 60, seed + 702, 2);
+    near[x] =
+      525 -
+      70 * fbm1(wx / 520, seed + 703, 3) -
+      25 * fbm1(wx / 90, seed + 704, 2);
+  }
   for (let y = 0; y < H; y++) {
     const cut = 0.6 - 0.24 * Math.min(1, Math.max(0, (y - 400) / 900));
     fine.row(y);
     coarse.row(y);
     flow.row(y);
     fall.row(y);
+    cloudA.row(y);
+    cloudB.row(y);
     for (let x = 0; x < W; x++) {
       const i = y * W + x,
         wx = x0 + x,
@@ -341,6 +409,55 @@ export function renderLand({ W, H, cells, state, surface, x0 }: Land) {
         cr = Math.floor((a[0] + (b[0] - a[0]) * u) * 18 + bay) / 18;
         cg = Math.floor((a[1] + (b[1] - a[1]) * u) * 18 + bay) / 18;
         cb = Math.floor((a[2] + (b[2] - a[2]) * u) * 18 + bay) / 18;
+        // Clouds: thin bands, sunlit underneath toward the horizon, stepped.
+        const env =
+            Math.min(1, Math.max(0, (y - 40) / 80)) *
+            Math.min(1, Math.max(0, (430 - y) / 100)),
+          amt =
+            Math.floor(
+              Math.min(
+                1,
+                Math.max(
+                  0,
+                  (0.65 * cloudA.at(wx) + 0.35 * cloudB.at(wx) - 0.58) / 0.12,
+                ),
+              ) *
+                env *
+                3 +
+                bay,
+            ) / 3;
+        if (amt > 0) {
+          const lit = Math.min(1, Math.max(0, (y - 120) / 260)),
+            k = amt * 0.6;
+          cr += (CLOUD_TOP[0] + (CLOUD_LIT[0] - CLOUD_TOP[0]) * lit - cr) * k;
+          cg += (CLOUD_TOP[1] + (CLOUD_LIT[1] - CLOUD_TOP[1]) * lit - cg) * k;
+          cb += (CLOUD_TOP[2] + (CLOUD_LIT[2] - CLOUD_TOP[2]) * lit - cb) * k;
+        } else if (y < 260 && grain(wx, y) % 997 === 0) {
+          // The first stars, high up where the sky is darkest.
+          const k = 0.6 * (1 - y / 260);
+          cr += (STAR[0] - cr) * k;
+          cg += (STAR[1] - cg) * k;
+          cb += (STAR[2] - cb) * k;
+        }
+        // Distant ridges behind the land: always darker than the sky behind
+        // them, the nearer the darker, a little darker again lower down each
+        // slope, with faint mottling so they never read as flat paint.
+        const into = y > near[x] ? y - near[x] : y > far[x] ? y - far[x] : -1;
+        if (into >= 0) {
+          const nearer = y > near[x],
+            // The nearer hills show faint bands, like far-off cliffs of strata.
+            bands = nearer
+              ? 0.035 * ((Math.floor((y + 14 * coarse.at(wx)) / 9) % 3) - 1)
+              : 0,
+            k =
+              (nearer ? 0.5 : 0.28) +
+              Math.min(0.14, into / 900) +
+              bands +
+              Math.floor(0.08 * coarse.at(wx) * 4 + bay) / 40;
+          cr += (HAZE[0] * 0.55 - cr) * k;
+          cg += (HAZE[1] * 0.55 - cg) * k;
+          cb += (HAZE[2] * 0.55 - cb) * k;
+        }
         lr = lg = lb = 1;
       } else if (m === M.WATER) {
         // Water: tinted, darker with depth, a bright line where it meets the air.
@@ -439,11 +556,18 @@ export function renderLand({ W, H, cells, state, surface, x0 }: Land) {
             ((h >>> 8) % 97 === 0 ? 1.25 : 1) *
             (seam ? 0.8 : 1) *
             (joint ? 0.78 : 1);
-        if (m === M.AIR) {
-          // The cave's back wall: the same rock, set back and in shadow.
-          cr = rock[0] * 0.42 * tex + BACK_TINT[0] * 0.25;
-          cg = rock[1] * 0.42 * tex + BACK_TINT[1] * 0.25;
-          cb = rock[2] * 0.42 * tex + BACK_TINT[2] * 0.25;
+        // Brick courses: rows three cells high, joints offset row by row.
+        const mortar =
+          y % 3 === 0 || (wx + (Math.floor(y / 3) % 2) * 3) % 6 === 0
+            ? 0.72
+            : 1;
+        if (m === M.AIR || m === M.BACKWALL) {
+          // A back wall, set back and in shadow: the cave's rock, or a building's masonry.
+          const back =
+            m === M.BACKWALL ? BRICK.map((v) => v * mortar * 1.1) : rock;
+          cr = back[0] * 0.42 * tex + BACK_TINT[0] * 0.25;
+          cg = back[1] * 0.42 * tex + BACK_TINT[1] * 0.25;
+          cb = back[2] * 0.42 * tex + BACK_TINT[2] * 0.25;
           lightAt(Ls[i], Lc[i], Lv[i], Lw[i], Le[i], bay);
           lr += 0.55 * AMB[0];
           lg += 0.55 * AMB[1];
@@ -458,7 +582,13 @@ export function renderLand({ W, H, cells, state, surface, x0 }: Land) {
                   ? CAP[biome]
                   : m === M.VINE && st & GLOW
                     ? VINE_GLOW
-                    : (SOLID[m] ?? rock);
+                    : m === M.BRICK
+                      ? BRICK.map((v) => v * mortar * tex)
+                      : m === M.FLOWER
+                        ? FLOWERS[h % FLOWERS.length]
+                        : m === M.REED
+                          ? REED[y > 0 && cells[i - W] !== M.REED ? 1 : 0]
+                          : (SOLID[m] ?? rock);
           cr = c ? c[0] : rock[0] * tex;
           cg = c ? c[1] : rock[1] * tex;
           cb = c ? c[2] : rock[2] * tex;
@@ -489,7 +619,7 @@ export function renderLand({ W, H, cells, state, surface, x0 }: Land) {
             // floors (open above) most.
             let near = 0,
               edge = 0;
-            if (!skyCell) {
+            if (!skyCell || !SILHOUETTE[m]) {
               const up = y > 0 ? i - W : -1,
                 down = y < H - 1 ? i + W : -1,
                 left = x > 0 ? i - 1 : -1,
