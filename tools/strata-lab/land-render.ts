@@ -16,6 +16,7 @@ import {
   fbm1,
   hash3,
 } from "../../engine/strata/world.ts";
+import { groundAt } from "../../engine/strata/generate.ts";
 
 const hex = (h: string) =>
   [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
@@ -29,6 +30,10 @@ const ROCK = [
   ["#9aa3b2", "#8a93a3", "#a9b1bf", "#7c8596", "#949db0", "#6f7889"],
   ["#6e6670", "#7d7280", "#625b68", "#8a7068", "#5a5462", "#94746a"],
 ].map((p) => p.map(hex));
+/** Each biome's rock averaged over its strata: a cave's back wall leans to it. */
+const ROCK_AVG = ROCK.map((p) =>
+  [0, 1, 2].map((k) => p.reduce((s, c) => s + c[k], 0) / p.length),
+);
 const SOLID: number[][] = [];
 for (const [m, c] of [
   [M.SOIL, "#6b4a34"],
@@ -264,6 +269,134 @@ export interface Land {
   seed?: number;
 }
 
+/**
+ * A gently smoothed ground line, per column, for the sky to sit on: the dusk
+ * glow, the clouds and the distant hills are placed relative to it, so every
+ * view has its horizon just behind the land, whether the ground there is high
+ * or low. Built from world-aligned samples, so tiles line up exactly.
+ */
+export function horizonRow(seed: number, x0: number, W: number) {
+  const STEP = 128,
+    k0 = Math.floor(x0 / STEP),
+    k1 = Math.floor((x0 + W - 1) / STEP) + 1,
+    pts = new Float32Array(k1 - k0 + 1),
+    out = new Float32Array(W);
+  for (let k = k0; k <= k1; k++) {
+    let sum = 0;
+    for (let j = -12; j <= 12; j++) sum += groundAt(seed, k * STEP + j * 64);
+    pts[k - k0] = sum / 25;
+  }
+  for (let x = 0; x < W; x++) {
+    const wx = x0 + x,
+      k = Math.floor(wx / STEP),
+      f = (wx - k * STEP) / STEP,
+      u = f * f * (3 - 2 * f);
+    out[x] = pts[k - k0] + (pts[k - k0 + 1] - pts[k - k0]) * u;
+  }
+  return out;
+}
+
+/** What moves, per cell, for a renderer that animates (the viewer). */
+export const MOTION = {
+  STILL: 0,
+  SKY: 1,
+  WATER: 2,
+  STREAM: 3,
+  /** A stream flowing toward smaller x (set by whoever knows the river's direction). */
+  STREAM_BACK: 4,
+  FALLS: 5,
+  LAVA: 6,
+  WATER_TOP: 7,
+} as const;
+
+/**
+ * Optional outputs for an animating renderer: a motion class per cell, and
+ * the plants standing in the open air drawn on their own, so they can sway
+ * over a sky drawn live (those cells are classed as sky). A plant cell's
+ * alpha is 1 + its height above its plant's base (0 where there is no
+ * plant), and the colour output's alpha there is 128 + the base's x minus
+ * the cell's: see swayField.
+ */
+export interface MotionLayers {
+  motion: Uint8Array;
+  plants: Uint8ClampedArray;
+}
+
+/**
+ * How each plant cell standing in the open air sways. A plant is a joined
+ * group of plant cells (with any snow lying on them); it sways about its
+ * base, the lowest place it rests on something solid or on water. Per cell:
+ * h = 1 + its height above that base (0 for cells that are no plant), and
+ * ax = 128 + the base's x minus its own, so the renderer can bend the whole
+ * plant together, row by row, in the wind at its base. Plants held along
+ * much of their length (ivy on a cliff) or by rope (a bridge) stay still.
+ */
+function swayField(W: number, H: number, cells: Uint8Array, surface: Int16Array) {
+  const h = new Uint8Array(W * H),
+    ax = new Uint8Array(W * H).fill(128),
+    mark = new Uint8Array(W * H);
+  // Plant cells in the open air, and snow lying on them (bottom up, so snow
+  // on snow on a branch counts too).
+  for (let x = 0; x < W; x++)
+    for (let y = Math.min(H - 2, surface[x] - 1); y >= 0; y--) {
+      const i = y * W + x,
+        m = cells[i];
+      if (SILHOUETTE[m] || (m === M.SNOW && mark[i + W])) mark[i] = 1;
+    }
+  const comp: number[] = [],
+    support = (j: number) => j >= 0 && j < W * H && !mark[j] && cells[j] !== M.AIR;
+  for (let i0 = 0; i0 < W * H; i0++) {
+    if (!mark[i0] || h[i0]) continue;
+    // Gather the plant: every marked cell joined to this one.
+    comp.length = 0;
+    comp.push(i0);
+    h[i0] = 1;
+    let rope = false;
+    for (let k = 0; k < comp.length; k++) {
+      const i = comp[k],
+        x = i % W;
+      if (cells[i] === M.ROPE) rope = true;
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx,
+            j = i + dy * W + dx;
+          if ((dx || dy) && nx >= 0 && nx < W && j >= 0 && j < W * H && mark[j] && !h[j]) {
+            h[j] = 1;
+            comp.push(j);
+          }
+        }
+    }
+    // Where it rests, and its lowest resting place: the base.
+    let held = 0,
+      baseY = -1,
+      sumX = 0,
+      nX = 0;
+    for (const i of comp) {
+      const x = i % W,
+        y = (i - x) / W;
+      if (!(support(i + W) || (x > 0 && support(i - 1)) || (x < W - 1 && support(i + 1)))) continue;
+      held++;
+      if (y > baseY) {
+        baseY = y;
+        sumX = nX = 0;
+      }
+      if (y === baseY) {
+        sumX += x;
+        nX++;
+      }
+    }
+    if (rope || held === 0 || held > 0.3 * comp.length) continue; // stays still: all 1s
+    const baseX = Math.round(sumX / nX);
+    for (const i of comp) {
+      const x = i % W,
+        y = (i - x) / W;
+      h[i] = 1 + Math.max(0, Math.min(253, baseY - y));
+      ax[i] = 128 + Math.max(-127, Math.min(127, baseX - x));
+    }
+  }
+  return { h, ax };
+}
+
 /** Render land to RGBA, one pixel per cell. */
 export const renderTimes: Record<string, number> = {};
 export function renderLand({
@@ -274,7 +407,7 @@ export function renderLand({
   surface,
   x0,
   seed = 0,
-}: Land) {
+}: Land, layers?: MotionLayers) {
   let tt = performance.now();
   const lap = (k: string) => {
     const n = performance.now();
@@ -282,6 +415,7 @@ export function renderLand({
     tt = n;
   };
   const N = W * H,
+    sway = layers ? swayField(W, H, cells, surface) : null,
     dist = new Int32Array(N),
     Ls = new Float32Array(N),
     Lc = new Float32Array(N),
@@ -358,26 +492,25 @@ export function renderLand({
     flow = new RowNoise(x0, W, 11, 2, 993),
     fall = new RowNoise(x0, W, 2, 13, 994),
     iceAbove = new Int16Array(W),
+    // Whether the water in this column lies under ice.
+    frozen = new Uint8Array(W),
     // Clouds: two value noises, broad and fine; distant ridges: a far range
     // of peaks and nearer rolling hills, both behind the land.
     cloudA = new RowNoise(x0, W, 230, 30, seed + 711),
     cloudB = new RowNoise(x0, W, 70, 12, seed + 712),
     far = new Float32Array(W),
-    near = new Float32Array(W);
+    near = new Float32Array(W),
+    hz = horizonRow(seed, x0, W);
   for (let x = 0; x < W; x++) {
     const wx = x0 + x,
       // Ridged noise at two scales: ranges of sharp peaks, not domes.
       r1 = 1 - Math.abs(2 * fbm1(wx / 1100, seed + 701, 3) - 1),
       r2 = 1 - Math.abs(2 * fbm1(wx / 300, seed + 705, 3) - 1);
+    // Heights above the horizon: a low line of near hills, far peaks behind.
     far[x] =
-      450 -
-      120 * r1 * r1 -
-      70 * r2 * r2 * r1 -
-      15 * fbm1(wx / 60, seed + 702, 2);
+      50 + 70 * r1 * r1 + 40 * r2 * r2 * r1 + 10 * fbm1(wx / 60, seed + 702, 2);
     near[x] =
-      525 -
-      70 * fbm1(wx / 520, seed + 703, 3) -
-      25 * fbm1(wx / 90, seed + 704, 2);
+      22 + 28 * fbm1(wx / 520, seed + 703, 3) + 12 * fbm1(wx / 90, seed + 704, 2);
   }
   for (let y = 0; y < H; y++) {
     const cut = 0.6 - 0.24 * Math.min(1, Math.max(0, (y - 400) / 900));
@@ -400,9 +533,12 @@ export function renderLand({
       waterAbove[x] = m === M.WATER ? wd + 1 : 0;
       const id = m === M.ICE ? iceAbove[x] : 0;
       iceAbove[x] = m === M.ICE ? id + 1 : 0;
+      frozen[x] = m === M.ICE ? 1 : m === M.WATER ? frozen[x] : 0;
       if (m === M.AIR && skyCell) {
-        // Open sky: a dusk gradient, dithered into bands.
-        const t = Math.min(1, y / 600),
+        // Open sky: a dusk gradient, dithered into bands, measured in rows
+        // above the horizon (d): glowing at it, darkening upward.
+        const d = hz[x] - y,
+          t = Math.min(1, Math.max(0, 1 - d / 420)),
           a = t < 0.55 ? SKY[0] : SKY[1],
           b = t < 0.55 ? SKY[1] : SKY[2],
           u = t < 0.55 ? t / 0.55 : (t - 0.55) / 0.45;
@@ -411,15 +547,15 @@ export function renderLand({
         cb = Math.floor((a[2] + (b[2] - a[2]) * u) * 18 + bay) / 18;
         // Clouds: thin bands, sunlit underneath toward the horizon, stepped.
         const env =
-            Math.min(1, Math.max(0, (y - 40) / 80)) *
-            Math.min(1, Math.max(0, (430 - y) / 100)),
+            Math.min(1, Math.max(0, (d - 30) / 40)) *
+            Math.min(1, Math.max(0, (340 - d) / 60)),
           amt =
             Math.floor(
               Math.min(
                 1,
                 Math.max(
                   0,
-                  (0.65 * cloudA.at(wx) + 0.35 * cloudB.at(wx) - 0.58) / 0.12,
+                  (0.65 * cloudA.at(wx) + 0.35 * cloudB.at(wx) - 0.54) / 0.12,
                 ),
               ) *
                 env *
@@ -427,33 +563,27 @@ export function renderLand({
                 bay,
             ) / 3;
         if (amt > 0) {
-          const lit = Math.min(1, Math.max(0, (y - 120) / 260)),
+          const lit = Math.min(1, Math.max(0, (420 - d) / 260)),
             k = amt * 0.6;
           cr += (CLOUD_TOP[0] + (CLOUD_LIT[0] - CLOUD_TOP[0]) * lit - cr) * k;
           cg += (CLOUD_TOP[1] + (CLOUD_LIT[1] - CLOUD_TOP[1]) * lit - cg) * k;
           cb += (CLOUD_TOP[2] + (CLOUD_LIT[2] - CLOUD_TOP[2]) * lit - cb) * k;
-        } else if (y < 260 && grain(wx, y) % 997 === 0) {
+        } else if (d > 230 && grain(wx, y) % 997 === 0) {
           // The first stars, high up where the sky is darkest.
-          const k = 0.6 * (1 - y / 260);
+          const k = 0.6 * Math.min(1, (d - 230) / 120);
           cr += (STAR[0] - cr) * k;
           cg += (STAR[1] - cg) * k;
           cb += (STAR[2] - cb) * k;
         }
-        // Distant ridges behind the land: always darker than the sky behind
-        // them, the nearer the darker, a little darker again lower down each
-        // slope, with faint mottling so they never read as flat paint.
-        const into = y > near[x] ? y - near[x] : y > far[x] ? y - far[x] : -1;
+        // Distant hills behind the land: flat silhouettes with crisp tops,
+        // always darker than the sky behind them, the nearer the darker, and
+        // a little darker again lower down in a few dithered steps.
+        const into = d < near[x] ? near[x] - d : d < far[x] ? far[x] - d : -1;
         if (into >= 0) {
-          const nearer = y > near[x],
-            // The nearer hills show faint bands, like far-off cliffs of strata.
-            bands = nearer
-              ? 0.035 * ((Math.floor((y + 14 * coarse.at(wx)) / 9) % 3) - 1)
-              : 0,
+          const nearer = d < near[x],
             k =
-              (nearer ? 0.5 : 0.28) +
-              Math.min(0.14, into / 900) +
-              bands +
-              Math.floor(0.08 * coarse.at(wx) * 4 + bay) / 40;
+              (nearer ? 0.52 : 0.3) +
+              (0.08 * Math.floor(Math.min(1, into / 120) * 3 + bay)) / 3;
           cr += (HAZE[0] * 0.55 - cr) * k;
           cg += (HAZE[1] * 0.55 - cg) * k;
           cb += (HAZE[2] * 0.55 - cb) * k;
@@ -562,16 +692,27 @@ export function renderLand({
             ? 0.72
             : 1;
         if (m === M.AIR || m === M.BACKWALL) {
-          // A back wall, set back and in shadow: the cave's rock, or a building's masonry.
-          const back =
-            m === M.BACKWALL ? BRICK.map((v) => v * mortar * 1.1) : rock;
+          // A back wall, set back and in shadow: the cave's rock, or a
+          // building's masonry. The cave's strata show only faintly on it,
+          // and its ambient light dims with depth as the rock's does, so open
+          // space always reads as a hole in the rock, however deep.
+          const avg = ROCK_AVG[biome],
+            back =
+              m === M.BACKWALL
+                ? BRICK.map((v) => v * mortar * 1.1)
+                : [
+                    rock[0] * 0.35 + avg[0] * 0.65,
+                    rock[1] * 0.35 + avg[1] * 0.65,
+                    rock[2] * 0.35 + avg[2] * 0.65,
+                  ],
+            amb = (0.55 * cut) / 0.6;
           cr = back[0] * 0.42 * tex + BACK_TINT[0] * 0.25;
           cg = back[1] * 0.42 * tex + BACK_TINT[1] * 0.25;
           cb = back[2] * 0.42 * tex + BACK_TINT[2] * 0.25;
           lightAt(Ls[i], Lc[i], Lv[i], Lw[i], Le[i], bay);
-          lr += 0.55 * AMB[0];
-          lg += 0.55 * AMB[1];
-          lb += 0.55 * AMB[2];
+          lr += amb * AMB[0];
+          lg += amb * AMB[1];
+          lb += amb * AMB[2];
         } else {
           const c =
             m === M.ROCK
@@ -656,7 +797,9 @@ export function renderLand({
                 bay,
               );
             else lr = lg = lb = 0;
-            const amb = cut * (1 + 0.35 * edge);
+            // Faces on open space keep a brighter rim even in the dark, so a
+            // cave's outline reads at any depth.
+            const amb = cut * (1 + 0.7 * edge);
             lr += amb * AMB[0];
             lg += amb * AMB[1];
             lb += amb * AMB[2];
@@ -668,6 +811,27 @@ export function renderLand({
       rgba[o + 1] = cg * lg * 255;
       rgba[o + 2] = cb * lb * 255;
       rgba[o + 3] = 255;
+      if (layers) {
+        let c: number = MOTION.STILL;
+        if (sway!.h[i]) {
+          // A plant (or snow on one) standing in the open air: it sways
+          // about its own base. Where its base is rides in the colour
+          // layer's alpha, which an animating renderer doesn't show.
+          layers.plants[o] = rgba[o];
+          layers.plants[o + 1] = rgba[o + 1];
+          layers.plants[o + 2] = rgba[o + 2];
+          layers.plants[o + 3] = sway!.h[i];
+          rgba[o + 3] = sway!.ax[i];
+          c = MOTION.SKY;
+        } else if (m === M.AIR && skyCell) c = MOTION.SKY;
+        // Water under the open sky glints and shimmers; in a cave no sunlight
+        // reaches it, and under ice it is held, so there it lies still.
+        else if (m === M.WATER && skyCell && !frozen[x]) c = y > 0 && cells[i - W] === M.AIR ? MOTION.WATER_TOP : MOTION.WATER;
+        else if (m === M.STREAM) c = MOTION.STREAM;
+        else if (m === M.FALLS) c = MOTION.FALLS;
+        else if (m === M.LAVA) c = MOTION.LAVA;
+        layers.motion[i] = c;
+      }
     }
   }
   lap("shade");
