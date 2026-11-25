@@ -7,6 +7,7 @@
 //   node --import tsx tools/strata-lab/lookbook.ts OUT_DIR --before DIR    # DIR (a checkout) | this tree
 //   node --import tsx tools/strata-lab/lookbook.ts OUT_DIR --only 1,5,9    # some places
 //   node --import tsx tools/strata-lab/lookbook.ts OUT_DIR --spots FILE    # places from a JSON file: [[seed, x, "name"], ...]
+//   node --import tsx tools/strata-lab/lookbook.ts OUT_DIR --style study [--compare]   # the renderer's alternative look (beside the usual one)
 //
 // Each still is a 640 x 360 art-pixel screen (zoom 3 on a 1920-wide screen),
 // framed the way the viewer frames the land. Sheets hold four places each:
@@ -110,7 +111,7 @@ function stamp(img: Uint8Array, w: number, n: number) {
 
 // ---- One still ---------------------------------------------------------------
 
-async function still(root: string, seed: number, x: number) {
+async function still(root: string, seed: number, x: number, style?: string) {
   const gen = await import(resolve(root, "engine/strata/generate.ts")),
     map = await import(resolve(root, "engine/strata/worldmap.ts")),
     world = await import(resolve(root, "engine/strata/world.ts")),
@@ -134,6 +135,7 @@ async function still(root: string, seed: number, x: number) {
       seed,
       // Only the rows on screen are shaded.
       rows: [top, top + SH],
+      style,
     }),
     out = new Uint8Array(SW * SH * 4);
   for (let y = 0; y < SH; y++)
@@ -229,7 +231,7 @@ async function worker(root: string, list: number[], spots: typeof SPOTS, dir: st
       await cachedWorld(root, seed);
       ready.add(seed);
     }
-    const { img, flags } = await still(root, seed, x);
+    const { img, flags } = await still(root, seed, x, tag.startsWith("style-") ? tag.slice(6) : undefined);
     if (flags.length) frame(img);
     stamp(img, SW, i + 1);
     writeFileSync(resolve(dir, `${tag}-${i}.raw`), img);
@@ -270,7 +272,16 @@ async function main() {
   const spotsFile = resolve(out, "spots.json");
   writeFileSync(spotsFile, JSON.stringify(spots));
   const t0 = performance.now(),
-    trees: [string, string][] = before ? [[resolve(before), "before"], [ROOT, "after"]] : [[ROOT, "now"]],
+    style = flag("--style"),
+    // --style NAME renders the renderer's alternative look; with --compare,
+    // beside the usual one.
+    trees: [string, string][] = before
+      ? [[resolve(before), "before"], [ROOT, "after"]]
+      : style
+        ? argv.includes("--compare")
+          ? [[ROOT, "now"], [ROOT, `style-${style}`]]
+          : [[ROOT, `style-${style}`]]
+        : [[ROOT, "now"]],
     n = Math.max(1, Math.min(cpus().length, 6)),
     jobs: Promise<void>[] = [];
   // Places of one seed go to one worker (the world is built once per process).

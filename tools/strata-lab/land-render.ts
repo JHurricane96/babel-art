@@ -91,6 +91,7 @@ const GB = LAND.map((b) => {
 });
 /** Scratch colours (no allocation per pixel). */
 const WR = [0, 0, 0],
+  WR2 = [0, 0, 0],
   LOOSE = [0, 0, 0];
 
 /** Looks (generate.ts BIOMES) that leaves and caps take their colours from. */
@@ -182,7 +183,10 @@ const BRICK = hex("#8a7f6c"),
   CLOUD_SHADE = hex("#b6c6d6"),
   CLOUD_LIT = hex("#fbfcfd"),
   // Daylight on plants in the open.
-  DAY = hex("#fff8ee");
+  DAY = hex("#fff8ee"),
+  // The study look's hill planes, far to near, and the mist they fade into.
+  PLANES = ["#c6d6e0", "#a6bccb", "#86a2b3", "#6a8899"].map(hex),
+  MIST = hex("#e2ecf1");
 const STREAM = ["#4f9ab4", "#cfe9f2", "#e0f4fa"].map(hex),
   FALLS = ["#a8d6ee", "#5f9fca", "#f4fbfd"].map(hex),
   ICE = ["#e8f6fb", "#a6d4e6", "#7fb3cc", "#f2fbff"].map(hex);
@@ -335,6 +339,8 @@ export interface Land {
   flora?: Uint8Array;
   /** Only shade rows [from, to) (the rest stay black): for stills that show part of the window. */
   rows?: [number, number];
+  /** An alternative look to compare ("study": fewer details, layered misty depth, a strong land shape, a small unified palette). */
+  style?: string;
 }
 
 /**
@@ -516,7 +522,7 @@ function swayField(
 /** Render land to RGBA, one pixel per cell. */
 export const renderTimes: Record<string, number> = {};
 export function renderLand(
-  { W, H, cells, state, surface, x0, seed = 0, flora, rows }: Land,
+  { W, H, cells, state, surface, x0, seed = 0, flora, rows, style }: Land,
   layers?: MotionLayers,
 ) {
   let tt = performance.now();
@@ -636,6 +642,32 @@ export function renderLand(
       28 * fbm1(wx / 520, seed + 703, 3) +
       12 * fbm1(wx / 90, seed + 704, 2);
   }
+  // The study look's depth is measured from the ground smoothed over the
+  // screen, so peaks don't cast shafts of light into the rock below them.
+  const smoothTop = new Float32Array(W);
+  if (style === "study")
+    for (let x = 0; x < W; x++) {
+      let sum = 0,
+        n = 0;
+      for (let k = Math.max(0, x - 32); k <= Math.min(W - 1, x + 32); k++) {
+        sum += reach[k];
+        n++;
+      }
+      smoothTop[x] = sum / n;
+    }
+  // The study look: four planes of hills behind the land, farther ones
+  // higher and paler, each fading into mist toward its foot.
+  const study = style === "study",
+    planes = study ? [0, 1, 2, 3].map(() => new Float32Array(W)) : [];
+  if (study)
+    for (let x = 0; x < W; x++) {
+      const wx = x0 + x,
+        r = (sx: number, o: number) => 1 - Math.abs(2 * fbm1(wx / sx, seed + o, 3) - 1);
+      planes[0][x] = 70 + 95 * r(1800, 721) ** 2.5 + 30 * r(500, 722) * r(1800, 721) ** 2;
+      planes[1][x] = 45 + 55 * r(1100, 723) ** 2 + 15 * r(300, 724) * r(1100, 723);
+      planes[2][x] = 26 + 30 * fbm1(wx / 700, seed + 725, 3) + 9 * fbm1(wx / 150, seed + 726, 2);
+      planes[3][x] = 8 + 18 * fbm1(wx / 450, seed + 727, 3) + 6 * fbm1(wx / 90, seed + 728, 2);
+    }
   // Each column's ground: its biome, from the cover and plants the generator
   // stamped there (gaps such as water or bare rock take their neighbours').
   const colB = new Int16Array(W).fill(-1);
@@ -717,7 +749,8 @@ export function renderLand(
         biome = biomeOf(st) % LOOKS,
         bay = BAYER[(y & 3) * 4 + (wx & 3)];
       const skyCell = y < surface[x],
-        below = y - reach[x];
+        below = y - reach[x],
+        belowSm = study ? Math.max(0, y - smoothTop[x]) : below;
       // In daylight the cut face is lit near the ground, dimming with depth
       // to a low glow, never quite black.
       // Above the valley floors the land dims only slowly with depth.
@@ -725,7 +758,15 @@ export function renderLand(
       const top = reach[x],
         fl = Math.max(floor[x], top),
         dim = 0.3 * Math.max(0, Math.min(y, fl) - top) + Math.max(0, y - fl);
-      cut = dim <= 4 ? 0.95 : 0.95 * (0.3 + 0.7 * Math.exp(-(dim - 4) / 85));
+      cut = study
+        ? // The land as one strong shape: lit just under the ground, then a
+          // quiet deep tone.
+          belowSm <= 3
+          ? 0.9
+          : 0.9 * (0.5 + 0.5 * Math.exp(-(belowSm - 3) / 40))
+        : dim <= 4
+          ? 0.95
+          : 0.95 * (0.3 + 0.7 * Math.exp(-(dim - 4) / 85));
       let cr: number, cg: number, cb: number;
       const wd = m === M.WATER ? waterAbove[x] : 0;
       waterAbove[x] = m === M.WATER ? wd + 1 : 0;
@@ -764,7 +805,20 @@ export function renderLand(
         // Distant hills behind the land, in haze: flat silhouettes with
         // crisp tops, the nearer the deeper in colour, a little darker
         // lower down in a few dithered steps.
-        const into = d < near[x] ? near[x] - d : d < far[x] ? far[x] - d : -1;
+        if (study) {
+          // The nearest plane this point lies in.
+          for (let k = 3; k >= 0; k--) {
+            if (d >= planes[k][x]) continue;
+            const into = planes[k][x] - d,
+              col = PLANES[k],
+              mist = 0.85 * Math.floor(Math.min(1, Math.max(0, (into - 4) / 26)) * 4 + bay) / 4;
+            cr = col[0] + (MIST[0] - col[0]) * mist;
+            cg = col[1] + (MIST[1] - col[1]) * mist;
+            cb = col[2] + (MIST[2] - col[2]) * mist;
+            break;
+          }
+        }
+        const into = study ? -1 : d < near[x] ? near[x] - d : d < far[x] ? far[x] - d : -1;
         if (into >= 0) {
           const nearer = d < near[x],
             hz2 = nearer ? HAZE_NEAR : HAZE_FAR,
@@ -857,6 +911,13 @@ export function renderLand(
         const mottle = 0.6 * fine.at(wx) + 0.4 * coarse.at(wx),
           h = grain(wx, y);
         let rock = rockOf(st);
+        if (study) {
+          // Fewer distinct rocks: each leans halfway to the average.
+          WR2[0] = rock[0] * 0.55 + KIND_AVG[0] * 0.45;
+          WR2[1] = rock[1] * 0.55 + KIND_AVG[1] * 0.45;
+          WR2[2] = rock[2] * 0.55 + KIND_AVG[2] * 0.45;
+          rock = WR2;
+        }
         // Near the surface, rock takes its climate's tint, and just under the
         // soil it is weathered: grading, in dithered steps, into the earth.
         const gb = colB[x] >= 0 ? G[x] : null;
@@ -878,17 +939,27 @@ export function renderLand(
           WR[2] = b0;
           rock = WR;
         }
+        if (study && gb) {
+          // The land in its biome's own hue: every rock leans to the earth.
+          WR[0] = rock[0] + (gb.earth[0] * 1.15 - rock[0]) * 0.4;
+          WR[1] = rock[1] + (gb.earth[1] * 1.15 - rock[1]) * 0.4;
+          WR[2] = rock[2] + (gb.earth[2] * 1.15 - rock[2]) * 0.4;
+          rock = WR;
+        }
         const
           seam =
             y > 0 &&
             cells[i - W] === M.ROCK &&
             bandOf(state[i - W]) !== bandOf(st),
           joint = false,
-          tex =
-            (1 + (0.05 * ((h & 3) - 1.5)) / 1.5 + 0.12 * (mottle - 0.5)) *
-            ((h >>> 8) % 97 === 0 ? 1.25 : 1) *
-            (seam ? 0.8 : 1) *
-            (joint ? 0.9 : 1);
+          tex = study
+            ? seam
+              ? 0.93
+              : 1
+            : (1 + (0.05 * ((h & 3) - 1.5)) / 1.5 + 0.12 * (mottle - 0.5)) *
+              ((h >>> 8) % 97 === 0 ? 1.25 : 1) *
+              (seam ? 0.8 : 1) *
+              (joint ? 0.9 : 1);
         // Brick courses: rows three cells high, joints offset row by row.
         const mortar =
           y % 3 === 0 || (wx + (Math.floor(y / 3) % 2) * 3) % 6 === 0
@@ -1014,7 +1085,7 @@ export function renderLand(
             if (skyCell && (SILHOUETTE[m] || m === M.GRASS || m === M.FLOWER)) {
               // A plant in the open: daylight from above, its own shade under
               // its leaves, in two steps.
-              const k = y > 0 && isOpen(cells[i - W]) ? 1.04 : 0.84;
+              const k = y > 0 && isOpen(cells[i - W]) ? (study ? 1 : 1.04) : study ? 0.7 : 0.84;
               lr = k * DAY[0];
               lg = k * DAY[1];
               lb = k * DAY[2];
@@ -1096,6 +1167,60 @@ export function renderLand(
       }
     }
   }
+  if (study) unify(rgba, W, yFrom, yTo, x0);
   lap("shade");
   return rgba;
+}
+
+// ---- The study look's palette: graded toward the sky, then snapped ------------
+
+const toLin = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+const toSrgb = (c: number) => (c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055);
+function oklab(r: number, g: number, b: number) {
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b),
+    m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b),
+    s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  return [
+    0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+    1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+    0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
+  ];
+}
+function fromOklab(L: number, a: number, b: number) {
+  const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3,
+    m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3,
+    s = (L - 0.0894841775 * a - 1.291485548 * b) ** 3;
+  return [
+    4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+    -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s,
+  ];
+}
+/** The sky's own hue, which every colour leans toward (shadows most). */
+const TONE = oklab(toLin(0.55), toLin(0.71), toLin(0.84));
+
+/**
+ * One unified palette: every colour leans toward the sky's hue (shadows
+ * most, so the land's dark tones agree with the sky), loses a little
+ * chroma, and is snapped to a few steps of lightness (dithered), hue and
+ * chroma, so a scene holds a small set of colours that agree.
+ */
+function unify(rgba: Uint8ClampedArray, W: number, y0: number, y1: number, x0: number) {
+  for (let y = y0; y < y1; y++)
+    for (let x = 0; x < W; x++) {
+      const o = (y * W + x) * 4,
+        [L, a0, b0] = oklab(toLin(rgba[o] / 255), toLin(rgba[o + 1] / 255), toLin(rgba[o + 2] / 255)),
+        w = 0.05 + 0.12 * (1 - L),
+        a = a0 * 0.95 + TONE[1] * w,
+        b = b0 * 0.95 + TONE[2] * w,
+        bay = BAYER[(y & 3) * 4 + ((x0 + x) & 3)],
+        Lq = Math.floor(L * 14 + bay) / 14,
+        C = Math.hypot(a, b),
+        Cq = Math.round(C / 0.025) * 0.025,
+        hq = Math.round(Math.atan2(b, a) / (Math.PI / 12)) * (Math.PI / 12),
+        [r, g, bb] = fromOklab(Lq, Cq * Math.cos(hq), Cq * Math.sin(hq));
+      rgba[o] = 255 * toSrgb(Math.min(1, Math.max(0, r)));
+      rgba[o + 1] = 255 * toSrgb(Math.min(1, Math.max(0, g)));
+      rgba[o + 2] = 255 * toSrgb(Math.min(1, Math.max(0, bb)));
+    }
 }
