@@ -45,6 +45,17 @@ const hashCell = (x: number, y: number, s: number) => {
   return (h >>> 0) / 4294967296;
 };
 
+// ---- Parts ------------------------------------------------------------------------------------
+// While recording, every pixel drawn is also kept under the part being drawn (a leaf clump, the
+// trunk, a branch, a hanging strand), so a big drawing can be taken apart and put back together at
+// another size, each part at its own place.
+let REC: number[] | null = null,
+  REC_CANVAS: MatCanvas | null = null,
+  PART = 0,
+  /** "clump": every leaf clump its own part; "mass": the clumps heaped into one leaf mass together. */
+  PART_LEVEL: "clump" | "mass" = "clump";
+const newPart = () => void PART++;
+
 class MatCanvas implements Canvas {
   m: Uint8Array;
   t: Uint8Array;
@@ -53,11 +64,13 @@ class MatCanvas implements Canvas {
     this.m = new Uint8Array(w * h);
     this.t = new Uint8Array(w * h);
     this.R = mulberry(seed);
+    if (REC) REC_CANVAS = this;
   }
   set(x: number, y: number, m: number, tone: number) {
     const px = Math.round(x) + this.ox,
       py = Math.round(y) + this.oy;
     if (px < 0 || py < 0 || px >= this.w || py >= this.h) return;
+    if (REC) REC.push(PART, px, py, m, Math.max(1, Math.min(6, Math.round(tone))));
     const i = py * this.w + px;
     this.m[i] = m;
     this.t[i] = Math.max(1, Math.min(6, Math.round(tone)));
@@ -129,6 +142,7 @@ const LX = -0.55,
   LZ = 0.45;
 const EDGE_V = new Float32Array(32);
 function crownV(c: MatCanvas, cx: number, cy: number, rx: number, ry: number, st: CrownStyle, seed: number) {
+  if (PART_LEVEL === "mass") newPart();
   const n = Math.max(3, Math.round((Math.PI * rx * ry * st.density) / (st.r0 * st.r1))),
     clumps: { x: number; y: number; r: number; z: number; s: number }[] = [];
   for (let k = 0; k < n; k++) {
@@ -147,6 +161,7 @@ function crownV(c: MatCanvas, cx: number, cy: number, rx: number, ry: number, st
   }
 }
 function clumpV(c: MatCanvas, cx: number, cy: number, r: number, pos: number, st: CrownStyle, seed: number) {
+  if (PART_LEVEL === "clump") newPart();
   const R = mulberry(seed),
     ox = Math.floor(R() * 12),
     oy = Math.floor(R() * 8),
@@ -349,12 +364,14 @@ function broadleaf(name: string, H: number, seed: number): Img {
   c.R = mulberry(seed + 99);
   for (const st0 of plan.stems) {
     const h = Math.round(st0.h * H);
+    newPart();
     if (big) trunk(c, st0.x * H, -1, h, Math.max(1, st0.w0 * H), Math.max(1, st0.w1 * H), st0.lean * H, k.bark);
     else stemSmall(c, st0.x * H, h, st0.lean * H, H >= 16 ? 2 : 1);
   }
   for (const l of plan.limbs)
     if (big || H >= 12) {
       const w = big ? Math.max(1, Math.round(l.w * H)) : 1;
+      newPart();
       branch(c, l.x0 * H, l.y0 * H, l.x1 * H, l.y1 * H, w);
       branch(c, l.x1 * H, l.y1 * H, l.x2 * H, l.y2 * H, Math.max(1, w - 1));
     }
@@ -372,6 +389,7 @@ function broadleaf(name: string, H: number, seed: number): Img {
           x = Math.round(m.x * H + u * m.rx * H * 0.95),
           y0 = Math.round(m.y * H + m.ry * H * Math.sqrt(Math.max(0, 1 - u * u)) * 0.8),
           len = Math.round((0.05 + 0.08 * c.R() * (1 - Math.abs(u))) * H);
+        newPart();
         for (let d = 0; d < len; d++) if (c.R() < 0.85) c.set(x + (d > len * 0.6 ? Math.sign(u) : 0), y0 + d, M.LEAF, d === len - 1 ? 2 : 3 + (d % 2));
       }
     }
@@ -396,6 +414,7 @@ function conifer(name: string, H: number, seed: number): Img {
     cs = Math.sqrt(H / 60),
     st: CrownStyle = { r0: 2.4 * cs, r1: 3.8 * cs, density: 2.4, speckle: 0.3, holes: 0.06, needles: true, rag: 1.5 };
   c.R = mulberry(seed + 99);
+  newPart();
   if (big) trunk(c, 0, -1, H - 2, Math.max(1, H * 0.035), 1, 0, { cracks: 0.3 });
   else stemSmall(c, 0, Math.max(1, Math.round(H * 0.14)), 0, 1);
   const span = H * (1 - p.base);
@@ -462,9 +481,14 @@ function pine(H: number, seed: number): Img {
     cs = Math.sqrt(H / 60),
     st: CrownStyle = { r0: 2.6 * cs, r1: 4.2 * cs, density: 2.0, speckle: 0.35, holes: 0.12, needles: true, rag: 1.6 };
   c.R = mulberry(seed + 99);
+  newPart();
   if (big) trunk(c, 0, -1, Math.round(H * 0.7), Math.max(1, H * 0.045), Math.max(1, H * 0.02), p.lean * H, { cracks: 0.6 });
   else stemSmall(c, 0, Math.round(H * 0.7), p.lean * H, H >= 16 ? 2 : 1);
-  if (big || H >= 12) for (const l of p.limbs) branch(c, l.x0 * H, l.y0 * H, l.x2 * H, l.y2 * H, big ? Math.max(1, Math.round(l.w * H)) : 1);
+  if (big || H >= 12)
+    for (const l of p.limbs) {
+      newPart();
+      branch(c, l.x0 * H, l.y0 * H, l.x2 * H, l.y2 * H, big ? Math.max(1, Math.round(l.w * H)) : 1);
+    }
   p.pads.forEach((m, i) => {
     const mm = { x: m.x * H, y: m.y * H, rx: Math.max(1.2, m.rx * H), ry: Math.max(1, m.ry * H) };
     if (big) crownV(c, mm.x, mm.y, mm.rx, mm.ry, st, seed * 7 + i * 131);
@@ -479,6 +503,56 @@ function treeDraw(name: string) {
     if (name === "pine") return pine(H, seed);
     return broadleaf(name, H, seed);
   };
+}
+
+/**
+ * A tree drawn at height H and taken apart: each part (leaf clump, trunk, branch, strand) as an
+ * image anchored at the tree's foot like the whole, in drawing order; painted in order they make
+ * the whole drawing again.
+ */
+export function drawParts(def: SlotDef, H: number, seed: number, level: "clump" | "mass" = "clump"): Img[] {
+  PART_LEVEL = level;
+  REC = [];
+  PART = 0;
+  REC_CANVAS = null;
+  def.draw(H, seed);
+  const rec = REC,
+    cv = REC_CANVAS as MatCanvas | null,
+    ramps = rampsFor(def.name.split(" ")[0]) as Record<number, number[][]>;
+  REC = null;
+  REC_CANVAS = null;
+  if (!cv) return [];
+  // Each part is drawn whole before the next begins, so its pixels are one run of the record;
+  // a pixel set twice within a part keeps the later value, as on the canvas.
+  const parts: Img[] = [];
+  for (let a = 0; a < rec.length; ) {
+    let b = a;
+    while (b < rec.length && rec[b] === rec[a]) b += 5;
+    let x0 = 1e9,
+      y0 = 1e9,
+      x1 = -1e9,
+      y1 = -1e9;
+    for (let i = a; i < b; i += 5) {
+      x0 = Math.min(x0, rec[i + 1]);
+      x1 = Math.max(x1, rec[i + 1]);
+      y0 = Math.min(y0, rec[i + 2]);
+      y1 = Math.max(y1, rec[i + 2]);
+    }
+    const w = x1 - x0 + 1,
+      h = y1 - y0 + 1,
+      data = new Uint8ClampedArray(w * h * 4);
+    for (let i = a; i < b; i += 5) {
+      const c = (ramps[rec[i + 3]] ?? ramps[M.LEAF])[rec[i + 4] - 1],
+        o = ((rec[i + 2] - y0) * w + rec[i + 1] - x0) * 4;
+      data[o] = c[0] * 255;
+      data[o + 1] = c[1] * 255;
+      data[o + 2] = c[2] * 255;
+      data[o + 3] = 255;
+    }
+    parts.push({ w, h, ax: cv.ox - x0, ay: cv.oy - y0, data });
+    a = b;
+  }
+  return parts;
 }
 
 // ---- Ground cover --------------------------------------------------------------------------

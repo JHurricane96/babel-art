@@ -4,7 +4,7 @@
 // in the ways that trouble pixel art in perspective: towards the scene, sideways, turning,
 // and back. Each method draws the same frame its own way, on the CPU, so the lab renders to
 // video here and runs as an interactive page anywhere.
-import { CLASS_H, NC, type Img, slotDefs, slotIndex } from "./sprites";
+import { CLASS_H, NC, type Img, TREE_NAMES, drawParts, slotDefs, slotIndex } from "./sprites";
 import { TREE_KINDS, mulberry } from "./valley";
 import { drawVoxel, setView, voxelModel } from "./voxels";
 
@@ -26,6 +26,8 @@ export const METHODS = [
   { id: "seamsH", name: "Rows and columns, drawings every half octave", note: "As rows and columns, drawn afresh every half octave: less taken out, more switches." },
   { id: "seamsB", name: "Rows and columns, big ones from one drawing", note: "Everything 48 px and over grows from one big drawing, so big things never switch drawings; small ones switch at 48, 24 and 12 px." },
   { id: "seamsB24", name: "Rows and columns, one drawing from 24 px", note: "One big drawing (384 px) for every size from 24 px up, so trees in view never switch drawings; under 24 px, drawings made for 12 and 24 px. The only switches are at 12 and 24 px, and each changes about as much as a one-row step. Smooth, and right at every size." },
+  { id: "parts", name: "Trees in clumps, placed exactly", note: "Trees 24 px and over are taken apart into the leaf clumps, trunk and branches their big drawing was made from. At every size each part goes back at its own place, scaled and rounded to the pixel, and shrinks by its own rows and columns, so each glides at a steady pace as it would in 3D, and the tree never tears along a row. Under 24 px, and for everything that is not a tree: rows and columns, one drawing from 24 px." },
+  { id: "masses", name: "Trees in leaf masses, placed exactly", note: "As trees in parts, but the parts are the leaf masses each crown is heaped from (and the trunk and branches), not every clump: fewer parts sliding against each other, each mass growing by its own rows and columns. Shrunk a long way, a mass keeps only one line in several and goes lacy, so clumps are better." },
   { id: "seams1", name: "Rows and columns, one drawing at every size", note: "One big drawing (384 px) for every size from 6 px up: it never switches drawings, so it is the smoothest, but under about 20 px it keeps only one row in 20 and trees come out wrong (thick trunks, lopsided crowns)." },
 ] as const;
 export type Method = (typeof METHODS)[number]["id"];
@@ -114,10 +116,26 @@ function removal(im: Img, rows: boolean, keepIdx: number) {
   }
   return out;
 }
+/** Lines that must never be taken out of an image (default: its bottom row and its foot column). */
+const keepAt = new WeakMap<Img, [number, number]>();
 function orderOf(im: Img): Order {
   let o = orders.get(im);
-  if (!o) orders.set(im, (o = { rows: removal(im, true, im.h - 1), cols: removal(im, false, Math.min(im.w - 1, im.ax)) }));
+  if (!o) {
+    const [kr, kc] = keepAt.get(im) ?? [im.h - 1, Math.min(im.w - 1, im.ax)];
+    orders.set(im, (o = { rows: removal(im, true, kr), cols: removal(im, false, kc) }));
+  }
   return o;
+}
+/** The drawing's rows and columns a size h keeps (for measuring). */
+export function keptLines(src: Img, h: number) {
+  const o = orderOf(src),
+    w = Math.max(1, Math.round((src.w * h) / src.h)),
+    goneR = new Set(o.rows.slice(0, Math.max(0, src.h - h))),
+    goneC = new Set(o.cols.slice(0, Math.max(0, src.w - w)));
+  return {
+    rows: Array.from({ length: src.h }, (_, i) => i).filter((i) => !goneR.has(i)),
+    cols: Array.from({ length: src.w }, (_, i) => i).filter((i) => !goneC.has(i)),
+  };
 }
 const shrunk = new Map<string, Img>();
 /** A drawing made h rows tall by taking out rows and columns in its order. */
@@ -289,6 +307,12 @@ export function spriteImg(method: Method, slot: number, want: number, maxClass: 
   const maxH = CLASS_H[maxClass];
   if (method === "jumps") return imgAt(slot, CLASS_H[Math.min(maxClass, Math.max(0, Math.round(classFor(want))))]);
   if (method === "pixel") return imgAt(slot, Math.min(Math.max(maxH, 400), Math.max(1, Math.round(want))));
+  if (method === "parts" || method === "masses") {
+    const cap = maxClass >= 25 ? 384 : maxH * 2,
+      H = Math.min(Math.max(1, Math.round(want)), cap);
+    if (IS_TREE[slot] && H >= PARTS_MIN && cap >= 96) return partsImg(slot, H, cap, method === "masses" ? "mass" : "clump");
+    return seamImg(slot, H, false, cap, "big24");
+  }
   if (method.startsWith("seams")) {
     const cap = maxClass >= 25 ? 384 : maxH * 2,
       spacing = ({ seams2: "two", seamsH: "half", seamsB: "big48", seamsB24: "big24" } as Record<string, string>)[method] ?? "octave";
@@ -315,6 +339,91 @@ export function spriteImg(method: Method, slot: number, want: number, maxClass: 
   if (!im) made.set(key, (im = scaled(src, Math.min(1, H / src.h))));
   return im;
 }
+// ---- Trees in parts ---------------------------------------------------------------------------
+// A big tree's drawing taken apart (sprites.ts drawParts): each part keeps its own pixels and
+// shrinks by its own rows and columns; its centre goes where the scaled tree puts it, rounded on
+// its own. Offsets are rounded relative to the tree's (whole-pixel) foot, so a tree sliding sideways
+// moves all at once, and growing, each part moves at its own steady rate.
+export const PARTS_MIN = 24;
+const IS_TREE = DEFS.map((d) => TREE_NAMES.includes(d.name.split(" ")[0])),
+  partsOf = new Map<string, Img[]>();
+export type PartLevel = "clump" | "mass";
+export function treeParts(slot: number, K: number, level: PartLevel = "clump") {
+  const key = `${slot}|${K}|${level}`;
+  let p = partsOf.get(key);
+  if (!p) partsOf.set(key, (p = drawParts(DEFS[slot], K, 1000 + slot * 131, level)));
+  return p;
+}
+/**
+ * Where each part goes at height H: its centre row and column are never taken out, and land where
+ * the scaled tree puts them, rounded; the part's other rows and columns sit around them.
+ */
+const partLines = new WeakMap<Img, ({ rows: number[]; cols: number[]; r: number; c: number } | undefined)[]>();
+/** A part's rows and columns at height h, and where its centre row and column land among them. */
+function linesOf(p: Img, h: number) {
+  let byH = partLines.get(p);
+  if (!byH) partLines.set(p, (byH = []));
+  let l = byH[h];
+  if (!l) {
+    const cr = Math.floor(p.h / 2),
+      cc = Math.floor(p.w / 2);
+    if (!keepAt.has(p)) keepAt.set(p, [cr, cc]);
+    const k = h >= p.h ? { rows: [...Array(p.h).keys()], cols: [...Array(p.w).keys()] } : keptLines(p, h);
+    byH[h] = l = { ...k, r: k.rows.indexOf(cr), c: k.cols.indexOf(cc) };
+  }
+  return l;
+}
+export function placeParts(slot: number, H: number, K: number, level: PartLevel = "clump") {
+  const s = H / K;
+  return treeParts(slot, K, level).map((p, i) => {
+    const l = linesOf(p, Math.max(1, Math.round(p.h * s))),
+      x = Math.round((Math.floor(p.w / 2) - p.ax + 0.5) * s - 0.5) - l.c,
+      y = Math.round((Math.floor(p.h / 2) - p.ay + 0.5) * s - 0.5) - l.r;
+    return { p, i, x, y, rows: l.rows, cols: l.cols };
+  });
+}
+const words = new WeakMap<Img, Uint32Array>();
+const wordsOf = (p: Img) => {
+  let u = words.get(p);
+  if (!u) words.set(p, (u = new Uint32Array(p.data.buffer, p.data.byteOffset, p.w * p.h)));
+  return u;
+};
+export function partsImg(slot: number, H: number, K: number, level: PartLevel = "clump"): Img {
+  const key = `p${slot}|${H}|${K}|${level}`;
+  let im = made.get(key);
+  if (im) return im;
+  const placed = placeParts(slot, H, K, level);
+  let x0 = 1e9,
+    y0 = 1e9,
+    x1 = -1e9,
+    y1 = -1e9;
+  for (const q of placed) {
+    x0 = Math.min(x0, q.x);
+    y0 = Math.min(y0, q.y);
+    x1 = Math.max(x1, q.x + q.cols.length);
+    y1 = Math.max(y1, q.y + q.rows.length);
+  }
+  const w = x1 - x0,
+    h = y1 - y0,
+    data = new Uint8ClampedArray(w * h * 4),
+    out = new Uint32Array(data.buffer);
+  for (const { p, x, y, rows, cols } of placed) {
+    const src = wordsOf(p);
+    for (let yy = 0; yy < rows.length; yy++) {
+      const so = rows[yy] * p.w,
+        oo = (y - y0 + yy) * w + x - x0;
+      for (let xx = 0; xx < cols.length; xx++) {
+        const v = src[so + cols[xx]];
+        if (v >>> 24 >= 128) out[oo + xx] = v;
+      }
+    }
+  }
+  im = { w, h, ax: -x0, ay: -y0, data };
+  made.set(key, im);
+  keyframeOf.set(im, K);
+  return im;
+}
+
 function dithered(lo: Img, hi: Img, f: number, vis: number): Img {
   const x0 = Math.min(-lo.ax, -hi.ax),
     x1 = Math.max(lo.w - lo.ax, hi.w - hi.ax),
