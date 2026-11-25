@@ -83,3 +83,22 @@ sprites writing to a light buffer, ambient light following the time of day,
 quantized light levels so it stays pixel art, and dark caverns with pools of
 light. Building the lighting first in the rework lets the new landforms be
 designed under the final light instead of tuning it twice.
+
+## Strata: a world that changes while you watch
+
+Agreed for later (2026-11): over days and weeks, the world on the wall should
+change slowly: villages grow, forests burn and regrow, a mine runs dry. Today a
+world's history is fixed when it is made (`engine/strata/history.ts`); this
+would carry it on in real time after the last era. Worlds are finite and the
+next one is made in the background near the end; one idea for the handover is
+that each world ends at the sea and the crossing to the next world is a voyage.
+
+## Strata: wonders
+
+Deferred until the core systems (deep time, climate, life, people) are in
+place. A few impossible things fed into the systems as if they were natural:
+skystone (rock lighter than air: floating islands where erosion frees it),
+the ancients (giant skeletons buried in the layers of their age, exposed by
+erosion), living crystal (grows where hot mineral water flows), and the Deep
+(a molten realm at the world's floor). Characters stay grounded: no wizards.
+
