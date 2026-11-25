@@ -31,6 +31,10 @@ export interface Win {
   ground: Float64Array;
   params: Params[];
   colBiome: Uint8Array;
+  /** Each column's biome (biomes.ts), or -1 under water. */
+  bio: Int16Array;
+  /** Per cell: 1 + the biome of the plant or ground cover there, or 0. */
+  flora: Uint8Array;
 }
 
 const H = WORLD_H;
@@ -56,7 +60,10 @@ function set(w: Win, x: number, y: number, m: number, onlyAir = true) {
 
 /** Set a cell and mark it with a biome (plants and built things carry one). */
 function setB(w: Win, x: number, y: number, m: number, biome: number) {
-  if (set(w, x, y, m)) w.state[y * w.WW + x] = stateOf(0, biome);
+  if (set(w, x, y, m)) {
+    w.state[y * w.WW + x] = stateOf(0, biome);
+    w.flora[y * w.WW + x] = w.bio[x] + 1;
+  }
 }
 
 const g = (w: Win, x: number) =>
@@ -401,6 +408,7 @@ function reeds(w: Win) {
       if (cells[i] === M.WATER || cells[i] === M.STREAM || cells[i] === M.AIR) {
         cells[i] = M.REED;
         w.state[i] = stateOf(0, w.colBiome[x]);
+        w.flora[i] = w.bio[x] + 1;
       } else break;
     }
   }

@@ -2,19 +2,27 @@
 // along the world, the whole world in cross-section, and a close-up window,
 // with a slider to replay the eras.
 import {
-  BIOMES,
+  ZONES,
   CELL,
   ERAS,
   ROCK,
   ROCKS,
   SEA_ROW,
-  biomeRuns,
+  zoneRuns,
   describeWorld,
   simulateWorld,
   type Snapshot,
   type World,
 } from "../../../engine/strata/history.ts";
 import { REGION_W, WORLD_H } from "../../../engine/strata/world.ts";
+import { adoptWorld, placeAt } from "../../../engine/strata/worldmap.ts";
+import {
+  BIOMES,
+  HABITATS,
+  SOILS,
+  ZONES as ZONE_LIST,
+  swatchOf,
+} from "../../../engine/strata/biomes.ts";
 
 const $ = <T extends HTMLElement>(id: string) =>
   document.getElementById(id) as T;
@@ -26,11 +34,12 @@ const Z_TOP = SEA_ROW + 120,
 const hex = (h: string) =>
   [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
 const ROCK_RGB = ROCKS.map((r) => hex(r.color)),
-  BIOME_RGB = BIOMES.map((b) => hex(b.color));
+  ZONE_RGB = ZONES.map((b) => hex(b.color));
 const css = (name: string) =>
   getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 let world: World | null = null,
+  seedNow = 0,
   era = ERAS - 1,
   centre = 0,
   playing = 0;
@@ -93,10 +102,7 @@ function section(
       const i = (py * W + px) * 4;
       let rgb: number[];
       if (py < strip) {
-        const b = BIOME_RGB[w.biome[c]],
-          b2 = BIOME_RGB[w.biome2[c]],
-          t = w.blend[c] * ((px + py) & 1 ? 1.6 : 0.4);
-        rgb = t > 0.5 ? b2 : b;
+        rgb = ZONE_RGB[w.zone[c]];
       } else {
         const z = zAt(py);
         if (z > ground)
@@ -231,7 +237,7 @@ function drawClimate(w: World) {
   // Biome strip.
   for (let px = 0; px < W; px++) {
     const c = Math.floor((px / W) * w.n),
-      rgb = BIOME_RGB[w.biome[c]];
+      rgb = ZONE_RGB[w.zone[c]];
     ctx.fillStyle = `rgb(${rgb})`;
     ctx.fillRect(px, H - strip, 1, strip);
   }
@@ -283,9 +289,45 @@ function drawZoom(w: World) {
     ctx.stroke();
   }
   ctx.setLineDash([]);
+  if (era === ERAS - 1) biomeBand(ctx, c0, c1);
   const r0 = Math.floor(c0 / PER_REGION);
   $("zoom-note").textContent =
-    `regions ${r0} to ${r0 + 9} · height exaggerated about 6 times · blue ticks: rivers crossing · dashed lines: faults`;
+    `regions ${r0} to ${r0 + 9} · height exaggerated about 6 times · blue ticks: rivers crossing · dashed lines: faults · band at the top: biomes today`;
+}
+
+/** Today's biomes along the close-up, as a labelled band across its top. */
+let bandKey = "",
+  band: Int16Array = new Int16Array(0);
+function biomeBand(ctx: CanvasRenderingContext2D, c0: number, c1: number) {
+  const W = ctx.canvas.width,
+    hgt = 20 * devicePixelRatio,
+    key = `${seedNow}:${c0}:${c1}:${W}`;
+  if (key !== bandKey) {
+    band = new Int16Array(W);
+    for (let px = 0; px < W; px++)
+      band[px] = placeAt(seedNow, (c0 + ((px + 0.5) / W) * (c1 - c0)) * CELL).biome;
+    bandKey = key;
+  }
+  ctx.font = `${11 * devicePixelRatio}px "IBM Plex Sans", sans-serif`;
+  ctx.textBaseline = "middle";
+  let from = 0;
+  for (let px = 1; px <= W; px++) {
+    if (px < W && band[px] === band[from]) continue;
+    const b = band[from];
+    ctx.fillStyle = b < 0 ? css("--rain") : swatchOf(BIOMES[b]);
+    ctx.fillRect(from, 0, px - from, hgt);
+    ctx.fillStyle = "rgba(0,0,0,0.5)";
+    ctx.fillRect(px - devicePixelRatio, 0, devicePixelRatio, hgt);
+    const name = b < 0 ? "water" : BIOMES[b].name,
+      tw = ctx.measureText(name).width;
+    if (tw + 8 * devicePixelRatio < px - from) {
+      ctx.fillStyle = "rgba(10,8,16,0.65)";
+      ctx.fillRect(from + 3 * devicePixelRatio, 3 * devicePixelRatio, tw + 6 * devicePixelRatio, hgt - 6 * devicePixelRatio);
+      ctx.fillStyle = "#f4eefc";
+      ctx.fillText(name, from + 6 * devicePixelRatio, hgt / 2);
+    }
+    from = px;
+  }
 }
 
 function drawAll() {
@@ -305,7 +347,9 @@ function build(seed: number) {
   $("play").textContent = "Play history";
   setTimeout(() => {
     const w = simulateWorld(seed, { record: true });
+    adoptWorld(seed, w);
     world = w;
+    seedNow = seed;
     era = ERAS - 1;
     ($("era") as HTMLInputElement).value = String(era);
     if (!centre || centre > w.n) centre = w.n / 2;
@@ -316,7 +360,7 @@ function build(seed: number) {
         Object.assign(document.createElement("li"), { textContent: t }),
       ),
     );
-    const runs = biomeRuns(w, 2 * PER_REGION),
+    const runs = zoneRuns(w, 2 * PER_REGION),
       p = $("runs");
     p.replaceChildren();
     p.append(
@@ -328,7 +372,7 @@ function build(seed: number) {
       runs
         .map(
           (r) =>
-            `${BIOMES[r.biome].name} (${Math.max(1, Math.round((r.to - r.from) / PER_REGION))})`,
+            `${ZONES[r.biome].name} (${Math.max(1, Math.round((r.to - r.from) / PER_REGION))})`,
         )
         .join(" → "),
     );
@@ -397,13 +441,29 @@ worldCanvas.addEventListener("pointermove", (ev) => dragging && moveTo(ev));
 worldCanvas.addEventListener("pointerup", () => (dragging = false));
 worldCanvas.addEventListener("pointercancel", () => (dragging = false));
 
+// Point at the close-up to read the place under the pointer.
+const zoomCanvas = $("zoom");
+zoomCanvas.addEventListener("pointermove", (ev) => {
+  if (!world) return;
+  const r = zoomCanvas.getBoundingClientRect(),
+    half = zoomSpan(world) / 2,
+    c0 = Math.max(0, Math.min(world.n - 2 * half, centre - half)),
+    x = (c0 + ((ev.clientX - r.left) / r.width) * 2 * half) * CELL,
+    p = placeAt(seedNow, x),
+    where = `region ${Math.floor(x / REGION_W)} · x ${Math.round(x).toLocaleString()}`;
+  $("here").textContent =
+    p.biome < 0
+      ? `${where} · ${ZONE_LIST[p.zone].name} (water)`
+      : `${where} · ${BIOMES[p.biome].name} · ${ZONE_LIST[p.zone].name} · ${HABITATS[p.habitat].toLowerCase()} · ${SOILS[p.soil].toLowerCase()} soil`;
+});
+
 new ResizeObserver(() => drawAll()).observe(document.body);
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", drawAll);
 
 // Legends.
 for (const [id, list] of [
   ["rocks", ROCKS],
-  ["biomes", BIOMES],
+  ["biomes", ZONES],
 ] as const) {
   const box = $(id);
   for (const item of list) {

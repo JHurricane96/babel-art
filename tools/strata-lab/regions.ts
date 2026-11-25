@@ -24,6 +24,7 @@ function stitch(seed: number, r0: number, n: number) {
   const W = REGION_W * n,
     cells = new Uint8Array(W * WORLD_H),
     state = new Uint8Array(W * WORLD_H),
+    flora = new Uint8Array(W * WORLD_H),
     surface = new Int16Array(W),
     ms: number[] = [];
   for (let k = 0; k < n; k++) {
@@ -38,10 +39,24 @@ function stitch(seed: number, r0: number, n: number) {
         g.state.subarray(y * REGION_W, (y + 1) * REGION_W),
         y * W + k * REGION_W,
       );
+      flora.set(
+        g.flora.subarray(y * REGION_W, (y + 1) * REGION_W),
+        y * W + k * REGION_W,
+      );
     }
     surface.set(g.surface, k * REGION_W);
   }
-  return { W, H: WORLD_H, cells, state, surface, ms, x0: r0 * REGION_W, seed };
+  return {
+    W,
+    H: WORLD_H,
+    cells,
+    state,
+    flora,
+    surface,
+    ms,
+    x0: r0 * REGION_W,
+    seed,
+  };
 }
 
 function render(world: ReturnType<typeof stitch>) {

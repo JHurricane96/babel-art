@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  BIOME,
+  ZONE,
   CELL,
   ERAS,
   ROCKS,
@@ -25,7 +25,7 @@ test("the same seed gives the same world", () => {
   assert.deepEqual(a.surface, b.surface);
   assert.deepEqual(a.kinds, b.kinds);
   assert.deepEqual(a.tops, b.tops);
-  assert.deepEqual(a.biome, b.biome);
+  assert.deepEqual(a.zone, b.zone);
   assert.notDeepEqual(world(4).surface, a.surface);
 });
 
@@ -33,8 +33,8 @@ test("a world is finite, with ocean at both ends", () => {
   for (const seed of [1, 2, 3]) {
     const w = world(seed);
     assert.equal(w.n, (200 * REGION_W) / CELL);
-    assert.equal(w.biome[0], BIOME.OCEAN, `seed ${seed}: left end`);
-    assert.equal(w.biome[w.n - 1], BIOME.OCEAN, `seed ${seed}: right end`);
+    assert.equal(w.zone[0], ZONE.OCEAN, `seed ${seed}: left end`);
+    assert.equal(w.zone[w.n - 1], ZONE.OCEAN, `seed ${seed}: right end`);
     assert.equal(w.sea[ERAS - 1], 0);
   }
 });
@@ -62,22 +62,22 @@ test("rock stacks are ordered and the land stays inside the world", () => {
   }
 });
 
-test("climate makes a varied world, not one biome", () => {
+test("climate makes a varied world, not one climate zone", () => {
   for (const seed of [1, 2, 3, 4]) {
     const w = world(seed),
       count = new Map();
     let land = 0;
     for (let c = 0; c < w.n; c++)
-      if (w.biome[c] !== BIOME.OCEAN) {
+      if (w.zone[c] !== ZONE.OCEAN && w.zone[c] !== ZONE.LAKE) {
         land++;
-        count.set(w.biome[c], (count.get(w.biome[c]) ?? 0) + 1);
+        count.set(w.zone[c], (count.get(w.zone[c]) ?? 0) + 1);
       }
     const top = Math.max(...count.values());
     assert.ok(
       top / land < 0.6,
-      `seed ${seed}: one biome covers ${((100 * top) / land).toFixed(0)}% of the land`,
+      `seed ${seed}: one zone covers ${((100 * top) / land).toFixed(0)}% of the land`,
     );
-    assert.ok(count.size >= 4, `seed ${seed}: only ${count.size} biomes`);
+    assert.ok(count.size >= 4, `seed ${seed}: only ${count.size} zones`);
   }
 });
 

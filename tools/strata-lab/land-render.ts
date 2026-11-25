@@ -17,6 +17,7 @@ import {
   hash3,
 } from "../../engine/strata/world.ts";
 import { groundAt } from "../../engine/strata/generate.ts";
+import { BIOMES as LAND } from "../../engine/strata/biomes.ts";
 
 const hex = (h: string) =>
   [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
@@ -45,6 +46,19 @@ const rockOf = (st: number) => KIND[bandOf(st) % KIND.length];
 const KIND_AVG = [0, 1, 2].map(
   (k) => KIND.reduce((s, c) => s + c[k], 0) / KIND.length,
 );
+/** Each biome's colours for leaves, grass, moss, bark, flowers and bare earth. */
+const PAL = LAND.map((b) => {
+  const grass = hex(b.grass);
+  return {
+    leaf: hex(b.leaf),
+    grass,
+    moss: grass.map((v) => v * 0.8),
+    bark: hex(b.bark),
+    bloom: hex(b.bloom),
+    earth: hex(b.earth),
+    salt: b.earth.toLowerCase() === "#e8e2d8",
+  };
+});
 /** Looks (generate.ts BIOMES) that leaves and caps take their colours from. */
 const LOOKS = 6;
 const SOLID: number[][] = [];
@@ -109,7 +123,7 @@ const isOpen = (m: number) =>
   m === M.STREAM ||
   m === M.FALLS ||
   m === M.BACKWALL;
-/** Plants and rope stand dark against the dusk; rock and built stone above the ground are lit. */
+/** Plants and rope stand dark against the dusk; rock, built stone, grass and flowers above the ground are lit. */
 const SILHOUETTE = new Uint8Array(64);
 for (const m of [
   M.LEAF,
@@ -120,7 +134,6 @@ for (const m of [
   M.SPOT,
   M.VINE,
   M.REED,
-  M.FLOWER,
   M.ROPE,
   M.SHROOM,
 ])
@@ -280,6 +293,8 @@ export interface Land {
   x0: number;
   /** The world's seed: shapes the distant ridges and the clouds. */
   seed?: number;
+  /** Per cell: 1 + the biome (biomes.ts) of the plant or ground cover there, or 0: sets its colours. */
+  flora?: Uint8Array;
 }
 
 /**
@@ -432,7 +447,7 @@ function swayField(
 /** Render land to RGBA, one pixel per cell. */
 export const renderTimes: Record<string, number> = {};
 export function renderLand(
-  { W, H, cells, state, surface, x0, seed = 0 }: Land,
+  { W, H, cells, state, surface, x0, seed = 0, flora }: Land,
   layers?: MotionLayers,
 ) {
   let tt = performance.now();
@@ -738,8 +753,29 @@ export function renderLand(
           lg += amb * AMB[1];
           lb += amb * AMB[2];
         } else {
+          // A plant or ground cover in a biome takes the biome's colours.
+          const fl = flora ? flora[i] : 0,
+            pal = fl ? PAL[fl - 1] : null,
+            tinted = !pal
+              ? null
+              : m === M.LEAF
+                ? pal.leaf
+                : m === M.GRASS
+                  ? pal.grass
+                  : m === M.MOSS
+                    ? pal.moss
+                    : m === M.WOOD
+                      ? pal.bark
+                      : m === M.FLOWER
+                        ? h % 3 === 0
+                          ? FLOWERS[h % FLOWERS.length]
+                          : pal.bloom
+                        : m === M.SOIL || (m === M.SAND && pal.salt)
+                          ? pal.earth
+                          : null;
           const c =
-            m === M.ROCK
+            tinted ??
+            (m === M.ROCK
               ? null
               : m === M.LEAF
                 ? LEAF[biome]
@@ -753,7 +789,7 @@ export function renderLand(
                         ? FLOWERS[h % FLOWERS.length]
                         : m === M.REED
                           ? REED[y > 0 && cells[i - W] !== M.REED ? 1 : 0]
-                          : (SOLID[m] ?? rock);
+                          : (SOLID[m] ?? rock));
           cr = c ? c[0] : rock[0] * tex;
           cg = c ? c[1] : rock[1] * tex;
           cb = c ? c[2] : rock[2] * tex;

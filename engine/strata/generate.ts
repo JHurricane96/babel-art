@@ -45,8 +45,10 @@ import {
   surfaceLandmarks,
 } from "./surface";
 import { ROCK as KIND, SEA_ROW } from "./history";
+import { BIOMES as LAND, coverOf } from "./biomes";
 import {
   type RockColumn,
+  placeAt,
   groundRow,
   hard,
   kindAt,
@@ -420,6 +422,31 @@ const NUMERIC = (Object.keys(BIOMES[0]) as (keyof Biome)[]).filter(
     ].includes(k),
 ) as (keyof Params)[];
 
+/** Parameters a column's biome decides (the rest come from its climate zone's look). */
+/** Grass where no land biome is (under water, at the shore). */
+const DEFAULT_GRASS = { tufts: 0.3, tall: 3 };
+
+const SURFACE_KEYS = [
+  "pines",
+  "broad",
+  "giants",
+  "shrubs",
+  "cacti",
+  "dead",
+  "logs",
+  "shrooms",
+  "flowers",
+  "reeds",
+  "ivy",
+  "boulders",
+  "scree",
+  "hoodoos",
+  "hoodooCap",
+  "mouths",
+  "dunes",
+  "soil",
+] as const;
+
 /** Scratch for look weights. */
 const LW = new Float32Array(6);
 
@@ -700,12 +727,19 @@ export function generateWindow(seed: number, x0: number, width: number) {
 
   // 1. The ground and the look parameters for every column, and the world's
   // rock under it.
+  // Each column's biome (biomes.ts; -1 under water) sets what grows and
+  // stands on the land; the climate zone's look still sets the caves.
   const ground = new Float64Array(WW + 4),
     params: Params[] = [],
-    rock: RockColumn[] = [];
+    rock: RockColumn[] = [],
+    bio = new Int16Array(WW),
+    flora = new Uint8Array(WW * H);
   for (let i = 0; i < WW + 4; i++) ground[i] = groundAt(seed, X0 + i - 2);
   for (let x = 0; x < WW; x++) {
-    params.push(paramsAt(seed, X0 + x).p);
+    const p = paramsAt(seed, X0 + x).p,
+      b = (bio[x] = placeAt(seed, X0 + x).biome);
+    if (b >= 0) for (const k of SURFACE_KEYS) p[k] = LAND[b][k];
+    params.push(p);
     rock.push(rockAt(seed, X0 + x));
   }
   const surface = new Int16Array(WW);
@@ -721,7 +755,8 @@ export function generateWindow(seed: number, x0: number, width: number) {
       s = surface[x],
       slope = Math.abs(ground[x + 4] - ground[x]),
       cb = (colBiome[x] = columnBiome(seed, wx)),
-      cover = BIOMES[cb],
+      cover = bio[x] >= 0 ? coverOf(LAND[bio[x]]) : BIOMES[cb],
+      tint = bio[x] + 1,
       col = rock[x],
       water = waterAt(seed, wx),
       // Under water the bed is gravel and sand, not grass.
@@ -730,7 +765,13 @@ export function generateWindow(seed: number, x0: number, width: number) {
       soil = Math.round(
         p.soil * Math.max(0, 1 - slope / 10) + duneAt(seed, wx, p.dunes),
       ),
-      snowy = !bed && warmthAt(seed, wx, s) < -1,
+      // Snow lies all over in the hard cold and in drifts and patches where
+      // it is only just freezing.
+      cold = warmthAt(seed, wx, s),
+      snowy =
+        !bed &&
+        cold < -1 &&
+        (cold < -10 || fbm1(wx / 90, seed + 545, 3) < 0.3 + (-1 - cold) / 30),
       bedrock = H - 22 - Math.floor(10 * fbm1(wx / 40, seed + 9));
     // Rock is worked out a little above the ground too, so rock raised on the
     // land (spires, boulders, arches) shows the same beds.
@@ -746,7 +787,7 @@ export function generateWindow(seed: number, x0: number, width: number) {
       const depth = y - s;
       if (depth < 0) continue;
       if (y >= bedrock) cells[i] = M.BEDROCK;
-      else if (depth === 0)
+      else if (depth === 0) {
         cells[i] = bed
           ? M.GRAVEL
           : snowy
@@ -754,9 +795,12 @@ export function generateWindow(seed: number, x0: number, width: number) {
             : soil > 0
               ? cover.top
               : M.ROCK;
-      else if (snowy && depth < 3) cells[i] = M.SNOW;
-      else if (depth < soil && !bed) cells[i] = cover.sub;
-      else cells[i] = M.ROCK;
+        if (!bed) flora[i] = tint;
+      } else if (snowy && depth < 3) cells[i] = M.SNOW;
+      else if (depth < soil && !bed) {
+        cells[i] = cover.sub;
+        flora[i] = tint;
+      } else cells[i] = M.ROCK;
     }
   }
 
@@ -858,6 +902,8 @@ export function generateWindow(seed: number, x0: number, width: number) {
     ground,
     params,
     colBiome,
+    bio,
+    flora,
   };
   carveSurface(win);
 
@@ -926,6 +972,7 @@ export function generateWindow(seed: number, x0: number, width: number) {
   // 5. Life on the surface: decided per world column, mixed by the blended
   // densities. Plants carry their column's biome, which sets their colours.
   stamp = state;
+  floraStamp = flora;
   for (let x = 0; x < WW; x++) {
     const wx = X0 + x,
       p = params[x],
@@ -936,6 +983,8 @@ export function generateWindow(seed: number, x0: number, width: number) {
       continue;
     if (cells[si - WW] !== M.AIR) continue;
     stampBiome = colBiome[x];
+    stampFlora = bio[x] + 1;
+    const grass = bio[x] >= 0 ? LAND[bio[x]] : DEFAULT_GRASS;
     const slope = Math.abs(
         ground[Math.min(WW + 3, x + 5)] - ground[Math.max(0, x - 1)],
       ),
@@ -957,17 +1006,19 @@ export function generateWindow(seed: number, x0: number, width: number) {
     else if (slope < 2 && (h -= p.logs * trees) < 0)
       fallenLog(cells, WW, x, s, R, ground);
     else if (top === M.GRASS && (h -= p.flowers * (1.6 - 0.6 * trees)) < 0) {
-      // Flowers in the clearings, on short stems.
-      const stem = Math.floor(R() * 2);
+      // Flowers in the clearings, on stems as tall as the grass, some in pairs.
+      const stem = Math.floor(R() * (1 + 0.6 * grass.tall));
       for (let k = 1; k <= stem; k++) put(cells, WW, x, s - k, M.GRASS);
       put(cells, WW, x, s - stem - 1, M.FLOWER);
-    } else if (top === M.GRASS && hash3(wx, 33, seed) < 0.3) {
-      // Tufts of grass along the skyline.
-      const tall = 1 + Math.floor(hash3(wx, 34, seed) * 3);
+      if (R() < 0.4) put(cells, WW, x + 1, s - stem - 1, M.FLOWER);
+    } else if (top === M.GRASS && hash3(wx, 33, seed) < grass.tufts) {
+      // Tufts of grass along the skyline, as tall as the biome grows them.
+      const tall = 1 + Math.floor(hash3(wx, 34, seed) * grass.tall);
       for (let k = 1; k <= tall; k++) put(cells, WW, x, s - k, M.GRASS);
     }
   }
   stamp = null;
+  floraStamp = null;
 
   // Life in the caves, decided per world cell, and changing with depth:
   // roots, moss, small mushrooms and glow-worms near the surface; each biome's
@@ -1100,8 +1151,13 @@ export function generateWindow(seed: number, x0: number, width: number) {
 
   // Cut the region out of the window.
   const outCells = new Uint8Array(width * H),
-    outState = new Uint8Array(width * H);
+    outState = new Uint8Array(width * H),
+    outFlora = new Uint8Array(width * H);
   for (let y = 0; y < H; y++) {
+    outFlora.set(
+      flora.subarray(y * WW + MARGIN, y * WW + MARGIN + width),
+      y * width,
+    );
     outCells.set(
       cells.subarray(y * WW + MARGIN, y * WW + MARGIN + width),
       y * width,
@@ -1114,6 +1170,8 @@ export function generateWindow(seed: number, x0: number, width: number) {
   return {
     cells: outCells,
     state: outState,
+    /** Per cell: 1 + the biome (biomes.ts) of the plant or ground cover there, or 0. */
+    flora: outFlora,
     surface: surface.slice(MARGIN, MARGIN + width),
   };
 }
@@ -1268,16 +1326,22 @@ function tidy(
   }
 }
 
-/** While surface plants are placed, the state array to mark them with their biome. */
+/** While surface plants are placed, the arrays to mark them with their look and biome. */
 let stamp: Uint8Array | null = null,
-  stampBiome = 0;
+  stampBiome = 0,
+  floraStamp: Uint8Array | null = null,
+  stampFlora = 0;
+function mark(i: number) {
+  if (stamp) stamp[i] = stateOf(0, stampBiome);
+  if (floraStamp) floraStamp[i] = stampFlora;
+}
 
 function put(cells: Uint8Array, WW: number, x: number, y: number, m: number) {
   if (x < 0 || x >= WW || y < 0 || y >= WORLD_H) return false;
   const i = y * WW + x;
   if (cells[i] !== M.AIR) return false;
   cells[i] = m;
-  if (stamp) stamp[i] = stateOf(0, stampBiome);
+  mark(i);
   return true;
 }
 
@@ -1561,7 +1625,7 @@ function mushroom(
         for (let t = 0; t < thick; t++) {
           const i = (y - k) * WW + x + t;
           cells[i] = M.STALK;
-          if (stamp) stamp[i] = stateOf(0, stampBiome);
+          mark(i);
         }
       for (let r = 0; r < ch; r++) {
         const f = (ch - r) / ch,
@@ -1570,7 +1634,7 @@ function mushroom(
           const i = (top - ch + r) * WW + x + dx;
           if (cells[i] !== M.AIR) continue;
           cells[i] = M.CAP;
-          if (stamp) stamp[i] = stateOf(0, stampBiome);
+          mark(i);
           // A glowing rim under the cap and a few glowing spots on top.
           if (r === ch - 1 || hash3(wx + dx, top - ch + r, seed + 64) < 0.015)
             state[i] |= GLOW;

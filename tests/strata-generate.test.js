@@ -6,8 +6,9 @@ import {
   generateWindow,
   regionFeatures,
 } from "../engine/strata/generate.ts";
-import { BIOME, ROCK } from "../engine/strata/history.ts";
-import { worldOf } from "../engine/strata/worldmap.ts";
+import { ROCK } from "../engine/strata/history.ts";
+import { BIOMES } from "../engine/strata/biomes.ts";
+import { placeAt, worldOf } from "../engine/strata/worldmap.ts";
 import { M, REGION_W, WORLD_H, bandOf } from "../engine/strata/world.ts";
 
 const digest = (a) => createHash("sha256").update(a).digest("hex");
@@ -88,24 +89,21 @@ test("water never stands as a wall: no water cell has open air beside it", () =>
   }
 });
 
-test("the land keeps changing: no biome runs on for more than 15 regions", () => {
+test("the land keeps changing: no biome runs on past seven regions, and a world has many", () => {
   for (const seed of [1, 2, 3, 4]) {
     const w = worldOf(seed),
-      per = REGION_W / 64;
-    let run = 0,
-      last = -1;
-    for (let r = 0; r < w.regions; r++) {
-      const count = new Map();
-      for (let c = r * per; c < (r + 1) * per; c++)
-        count.set(w.biome[c], (count.get(w.biome[c]) ?? 0) + 1);
-      const main = [...count].sort((a, b) => b[1] - a[1])[0][0];
-      run = main === last ? run + 1 : 1;
-      last = main;
-      if (main !== BIOME.OCEAN)
-        assert.ok(
-          run <= 15,
-          `seed ${seed}: one biome for ${run} regions by region ${r}`,
-        );
+      per = REGION_W / 64,
+      seq = [];
+    for (let x = 32; x < w.regions * REGION_W; x += 64) seq.push(placeAt(seed, x).biome);
+    const all = new Set(seq.filter((b) => b >= 0));
+    assert.ok(all.size >= 15, `seed ${seed}: only ${all.size} biomes`);
+    for (let r = 2; r + 8 <= w.regions - 2; r++) {
+      const here = new Set(seq.slice(r * per, (r + 8) * per));
+      if (here.has(-1)) continue;
+      assert.ok(
+        here.size >= 2,
+        `seed ${seed}: only ${BIOMES[[...here][0]].name} in regions ${r}-${r + 7}`,
+      );
     }
   }
 });
@@ -116,15 +114,17 @@ test("regions show the world: snow where it's cold, sand in deserts, leaves in w
     for (let i = 0; i < g.cells.length; i++) if (pred(g.cells[i])) n++;
     return n;
   };
-  /** A region whose middle the world calls this biome. */
-  const find = (seed, biome) => {
+  /** A region whose middle is mostly biomes that look like this. */
+  const find = (seed, looks) => {
     const w = worldOf(seed),
       per = REGION_W / 64;
     for (let r = 10; r < w.regions - 10; r++) {
       let hits = 0;
-      for (let c = r * per + 8; c < (r + 1) * per - 8; c++)
-        if (w.biome[c] === biome) hits++;
-      if (hits > (per - 16) * 0.6) return r;
+      for (let c = r * per + 8; c < (r + 1) * per - 8; c++) {
+        const b = placeAt(seed, c * 64 + 32).biome;
+        if (b >= 0 && looks(BIOMES[b])) hits++;
+      }
+      if (hits > (per - 16) * 0.7) return r;
     }
     return -1;
   };
@@ -142,8 +142,8 @@ test("regions show the world: snow where it's cold, sand in deserts, leaves in w
   };
   const checks = [
     ["cold", (g) => count(g, (m) => m === M.SNOW) > 1000, "snow"],
-    [BIOME.DESERT, (g) => count(g, (m) => m === M.SAND) > 1500, "sand"],
-    [BIOME.WOODS, (g) => count(g, (m) => m === M.LEAF) > 2000, "leaves"],
+    [(b) => b.ground === "sand", (g) => count(g, (m) => m === M.SAND) > 1500, "sand"],
+    [(b) => b.broad + b.pines > 0.05, (g) => count(g, (m) => m === M.LEAF) > 2000, "leaves"],
   ];
   for (const [biome, ok, what] of checks) {
     let tried = false;

@@ -22,6 +22,7 @@
 // Everything is decided from the seed. Elevations are art pixels above the
 // final era's sea level; on screen, row = SEA_ROW - elevation.
 import { REGION_W, fbm1, hash3, smoothstep } from "./world";
+import { ZONE, ZONES, zoneOf } from "./biomes";
 
 export const CELL = 64;
 export const ERAS = 48;
@@ -66,39 +67,10 @@ export const ROCKS: { name: string; k: number; color: string }[] = [
   { name: "Salt", k: 2.2, color: "#f0ece8" },
 ];
 
-// ---- Biomes ----------------------------------------------------------------
+// ---- Zones ------------------------------------------------------------------
 
-export const BIOME = {
-  OCEAN: 0,
-  LAKE: 1,
-  SALT_FLAT: 2,
-  ICE: 3,
-  TUNDRA: 4,
-  PINE: 5,
-  WOODS: 6,
-  GRASSLAND: 7,
-  DESERT: 8,
-  SAVANNA: 9,
-  JUNGLE: 10,
-  SWAMP: 11,
-  ALPINE: 12,
-} as const;
-
-export const BIOMES: { name: string; color: string }[] = [
-  { name: "Ocean", color: "#2a4f7a" },
-  { name: "Lake", color: "#3f7fa8" },
-  { name: "Salt flat", color: "#ece6dc" },
-  { name: "Ice", color: "#dcecf6" },
-  { name: "Tundra", color: "#8fa49a" },
-  { name: "Snowy pine forest", color: "#3f6a5a" },
-  { name: "Temperate woods", color: "#4f8a3a" },
-  { name: "Grassland", color: "#a8b85a" },
-  { name: "Desert", color: "#e0b870" },
-  { name: "Savanna", color: "#c8a448" },
-  { name: "Jungle", color: "#1f7a3a" },
-  { name: "Swamp", color: "#4a6a3a" },
-  { name: "Alpine rock", color: "#8a8490" },
-];
+/** Climate zones live in biomes.ts; the world names each column's. */
+export { ZONE, ZONES };
 
 // ---- The plan: what this world's history will hold --------------------------
 
@@ -156,27 +128,6 @@ export interface WorldOptions {
   record?: boolean;
 }
 
-/** Land biome runs longer than `max` regions, as column ranges. */
-function longRuns(biome: Uint8Array, n: number, wet: Uint8Array, max = 12) {
-  const per = REGION_W / CELL,
-    regions = Math.floor(n / per),
-    main: number[] = [];
-  for (let r = 0; r < regions; r++) {
-    const count = new Map<number, number>();
-    for (let i = r * per; i < (r + 1) * per; i++)
-      if (wet[i] !== 3) count.set(biome[i], (count.get(biome[i]) ?? 0) + 1);
-    main.push(count.size ? [...count].sort((a, b) => b[1] - a[1])[0][0] : -1);
-  }
-  const out: [number, number][] = [];
-  for (let r = 0; r < regions;) {
-    let e = r;
-    while (e < regions && main[e] === main[r]) e++;
-    if (main[r] >= 0 && e - r > max) out.push([r * per, e * per]);
-    r = e;
-  }
-  return out;
-}
-
 /** One era's state, as the overview draws it. */
 export interface Snapshot {
   era: number;
@@ -214,10 +165,11 @@ export interface World {
   /** Final climate: warmth (°C) and rain (mm a year). */
   T: Float32Array;
   P: Float32Array;
-  /** Main biome, second biome, and the second's share (0 to 0.5) for blending. */
-  biome: Uint8Array;
-  biome2: Uint8Array;
-  blend: Float32Array;
+  /** Seasonality (-1 dry winters .. 0 even .. +1 dry summers) and how oceanic the air is (0 inland .. 1 by the sea). */
+  S: Float32Array;
+  O: Float32Array;
+  /** Each column's climate zone (ZONE), or its water. */
+  zone: Uint8Array;
   faults: { c: number; throw: number; era: number }[];
   rivers: River[];
   history?: Snapshot[];
@@ -380,6 +332,8 @@ function planWorld(seed: number, regions: number) {
     wetness: 0.65 + 0.6 * r(8),
     /** How marine the old rock is (0 mostly land-laid, 1 mostly sea-laid). */
     marine: r(9),
+    /** How seasonal this world's climates are. */
+    seasonal: 0.5 + 0.8 * r(70),
   };
 }
 
@@ -967,77 +921,33 @@ export function simulateWorld(seed: number, opts: WorldOptions = {}): World {
   }
   offsets[n] = o;
 
-  // Today's climate on today's land, with local features where one biome
-  // would otherwise run on for too long.
-  const tFinal = T0.map((t) => t + tg[ERAS - 1]),
-    climateToday = () => {
-      for (let i = 0; i < n; i++) {
-        T[i] = tFinal[i] - 0.025 * Math.max(0, surface[i]);
-        Tsea[i] = tFinal[i];
-      }
-      rainfall(P, W, wet, Tsea, Mb, plan.windFromLeft);
-      return biomesOf(n, surface, W, wet, T, P);
-    };
-  let today = climateToday();
-  const features: { c: number; kind: "warm" | "cold" | "wet" | "dry" }[] = [];
-  for (let pass = 0; pass < 8; pass++) {
-    const long = longRuns(today.biome, n, wet);
-    if (!long.length) break;
-    for (const [from, to] of long) {
-      // Try each kind of local feature in the middle of the run; keep the one
-      // that changes the most of the middle stretch.
-      const mid = (from + to) / 2,
-        sigma = (3 * REGION_W) / CELL,
-        lo = Math.max(0, Math.floor(mid - 3 * sigma)),
-        hi = Math.min(n, Math.ceil(mid + 3 * sigma)),
-        was = today.biome[Math.round(mid)];
-      let best: (typeof features)[number]["kind"] | null = null,
-        bestChanged = 0;
-      const saveT = tFinal.slice(lo, hi),
-        saveM = Mb.slice(lo, hi);
-      let bestStrength = 1;
-      const apply = (
-        kind: (typeof features)[number]["kind"],
-        strength: number,
-      ) => {
-        for (let i = lo; i < hi; i++) {
-          const g = strength * Math.exp(-0.5 * ((i - mid) / sigma) ** 2);
-          tFinal[i] =
-            saveT[i - lo] +
-            (kind === "warm" ? 6 : kind === "cold" ? -6 : 0) * g;
-          Mb[i] =
-            kind === "wet"
-              ? saveM[i - lo] + 0.6 * g
-              : saveM[i - lo] *
-                (kind === "dry" ? Math.max(0.05, 1 - 0.75 * g) : 1);
-        }
-      };
-      // A gentle feature first; a stronger one if that barely shows.
-      for (const strength of [1, 1.8])
-        if (bestChanged < 0.4 * 2 * sigma)
-          for (const kind of ["wet", "dry", "warm", "cold"] as const) {
-            apply(kind, strength);
-            const b = climateToday().biome;
-            let changed = 0;
-            for (let i = Math.floor(mid - sigma); i < mid + sigma; i++)
-              if (b[i] !== was) changed++;
-            if (changed > bestChanged) {
-              bestChanged = changed;
-              best = kind;
-              bestStrength = strength;
-            }
-          }
-      if (best) {
-        apply(best, bestStrength);
-        features.push({ c: mid, kind: best });
-      } else {
-        tFinal.set(saveT, lo);
-        Mb.set(saveM, lo);
-      }
-    }
-    today = climateToday();
+  // Today's climate on today's land: warmth, rain, seasonality (long swells
+  // along the world, dry summers in some stretches and dry winters in
+  // others) and how oceanic the air is (near the seas beside the strip).
+  const S = new Float32Array(n),
+    O = new Float32Array(n),
+    zone = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const tNow = T0[i] + tg[ERAS - 1];
+    T[i] = tNow - 0.025 * Math.max(0, surface[i]);
+    Tsea[i] = tNow;
+    S[i] = clamp(
+      plan.seasonal * 1.6 * (2 * fbm1(i / 600, seed + 73, 3) - 1),
+      -1,
+      1,
+    );
+    O[i] = clamp((Mb[i] - 0.35) / 0.55, 0, 1);
   }
-  const { biome, biome2, blend } = today;
+  rainfall(P, W, wet, Tsea, Mb, plan.windFromLeft);
+  for (let i = 0; i < n; i++)
+    zone[i] =
+      wet[i] === 3
+        ? ZONE.OCEAN
+        : wet[i] === 1
+          ? ZONE.LAKE
+          : wet[i] === 2
+            ? ZONE.SALT_FLAT
+            : zoneOf(T[i], P[i], S[i], O[i], surface[i]);
   return {
     seed,
     regions,
@@ -1056,9 +966,9 @@ export function simulateWorld(seed: number, opts: WorldOptions = {}): World {
     wet: Uint8Array.from(wet),
     T: Float32Array.from(T),
     P: Float32Array.from(P),
-    biome,
-    biome2,
-    blend,
+    S,
+    O,
+    zone,
     faults,
     rivers: plan.rivers,
     history: opts.record ? history : undefined,
@@ -1146,84 +1056,6 @@ function snapshot(
   return { era, sea, b, offsets, kinds, tops, water: Float32Array.from(W) };
 }
 
-// ---- Biomes from climate ------------------------------------------------------
-
-const ramp = (x: number, a: number, b: number) => smoothstep(a, b, x);
-const band = (x: number, a0: number, a1: number, b0: number, b1: number) =>
-  ramp(x, a0, a1) * (1 - ramp(x, b0, b1));
-
-/**
- * Each column's biome from its warmth, rain, slope and water, as weights
- * that change smoothly with climate, so neighbouring biomes always blend.
- */
-function biomesOf(
-  n: number,
-  surface: Float32Array,
-  W: Float32Array,
-  wet: Uint8Array,
-  T: Float32Array,
-  P: Float32Array,
-) {
-  const biome = new Uint8Array(n),
-    biome2 = new Uint8Array(n),
-    blend = new Float32Array(n),
-    w = new Float32Array(BIOMES.length);
-  for (let i = 0; i < n; i++) {
-    if (wet[i] === 3) {
-      biome[i] = biome2[i] = BIOME.OCEAN;
-      continue;
-    }
-    if (wet[i] === 1) {
-      biome[i] = biome2[i] = BIOME.LAKE;
-      continue;
-    }
-    if (wet[i] === 2) {
-      biome[i] = biome2[i] = BIOME.SALT_FLAT;
-      continue;
-    }
-    const t = T[i],
-      p = P[i],
-      a = i > 0 ? surface[i - 1] : surface[i],
-      b = i < n - 1 ? surface[i + 1] : surface[i],
-      slope = Math.abs(b - a) / (2 * CELL),
-      low = surface[i] < 40,
-      flat = 1 - ramp(slope, 0.002, 0.008);
-    w.fill(0);
-    w[BIOME.ICE] = ramp(-t, 6, 10);
-    w[BIOME.TUNDRA] = band(t, -10, -6, 0, 3);
-    w[BIOME.PINE] = band(t, -1, 2, 6, 9) * ramp(p, 220, 380);
-    w[BIOME.WOODS] = band(t, 7, 10, 15, 19) * ramp(p, 500, 700);
-    w[BIOME.GRASSLAND] = band(t, 3, 7, 21, 25) * band(p, 250, 350, 540, 720);
-    w[BIOME.DESERT] = (1 - ramp(p, 230, 360)) * ramp(t, 2, 6);
-    w[BIOME.SAVANNA] = ramp(t, 15, 19) * band(p, 340, 460, 900, 1200);
-    w[BIOME.JUNGLE] = ramp(t, 18, 22) * ramp(p, 1200, 1500);
-    w[BIOME.SWAMP] =
-      ramp(t, 8, 12) * ramp(p, 900, 1200) * flat * (low ? 1.4 : 0);
-    w[BIOME.ALPINE] = ramp(slope, 0.12, 0.25) * (1 - ramp(t, 2, 8));
-    let best = BIOME.GRASSLAND,
-      second = BIOME.GRASSLAND,
-      bw = 0,
-      sw = 0;
-    for (let k = 3; k < w.length; k++) {
-      if (w[k] > bw) {
-        second = best;
-        sw = bw;
-        best = k as typeof best;
-        bw = w[k];
-      } else if (w[k] > sw) {
-        second = k as typeof second;
-        sw = w[k];
-      }
-    }
-    if (bw < 0.02) best = second = BIOME.GRASSLAND;
-    biome[i] = best;
-    biome2[i] = sw > 0.02 ? second : best;
-    blend[i] = sw > 0.02 ? (0.5 * sw) / Math.max(1e-6, bw) : 0;
-  }
-  void W;
-  return { biome, biome2, blend };
-}
-
 /** A few sentences on what this world is and what happened in it. */
 export function describeWorld(w: World) {
   const lines: string[] = [];
@@ -1270,11 +1102,11 @@ export function describeWorld(w: World) {
   return lines;
 }
 
-/** Runs of the same main biome along the world, merging runs shorter than `min` columns. */
-export function biomeRuns(w: World, min = 48) {
+/** Runs of the same climate zone along the world, merging runs shorter than `min` columns. */
+export function zoneRuns(w: World, min = 48) {
   const runs: { biome: number; from: number; to: number }[] = [];
   for (let i = 0; i < w.n; i++) {
-    const b = w.biome[i],
+    const b = w.zone[i],
       last = runs[runs.length - 1];
     if (last && last.biome === b) last.to = i + 1;
     else runs.push({ biome: b, from: i, to: i + 1 });

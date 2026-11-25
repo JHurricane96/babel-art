@@ -3,8 +3,6 @@
 // columns (CELL art pixels each). Everything is a function of the seed and
 // the world position, so regions built separately line up exactly.
 import {
-  BIOME,
-  BIOMES as WORLD_BIOMES,
   CELL,
   ROCK,
   ROCKS,
@@ -12,9 +10,25 @@ import {
   simulateWorld,
   type World,
 } from "./history";
-import { fbm1 } from "./world";
+import {
+  BIOMES,
+  HABITAT,
+  SOIL,
+  ZONE,
+  ZONES,
+  classify,
+  zoneOf,
+} from "./biomes";
+import { fbm1, hash3 } from "./world";
 
 const worlds = new Map<number, World>();
+
+/** Use a world already built for this seed (e.g. one with its history recorded). */
+export function adoptWorld(seed: number, w: World) {
+  worlds.delete(seed);
+  worlds.set(seed, w);
+  if (worlds.size > 3) worlds.delete(worlds.keys().next().value!);
+}
 
 /** The world for a seed, built once and kept (the last few). */
 export function worldOf(seed: number): World {
@@ -188,13 +202,13 @@ export const hard = (kind: number) => ROCKS[kind].k < 0.6;
 // ---- Water -------------------------------------------------------------------
 
 /** A river crossing near x: its centre, half-width and depth in art pixels. */
-function riverNear(w: World, x: number) {
+function riverNear(w: World, x: number, reach = 40) {
   for (const r of w.rivers) {
     if (w.wet[r.c]) continue;
     const xc = (r.c + 0.5) * CELL,
       size = Math.sqrt(r.q / 33000),
       hw = 8 + 16 * size;
-    if (Math.abs(x - xc) < hw + 40) return { xc, hw, depth: 5 + 9 * size };
+    if (Math.abs(x - xc) < hw + reach) return { xc, hw, size, depth: 5 + 9 * size };
   }
   return null;
 }
@@ -296,9 +310,9 @@ export function groundRow(seed: number, x: number) {
   return SEA_ROW - groundElevation(seed, x);
 }
 
-// ---- Climate and biome -----------------------------------------------------------
+// ---- Climate, habitat, soil and biome ----------------------------------------------
 
-/** Warmth (°C) at x on the ground, from the world's climate, colder with height. */
+/** Warmth (°C) at x on the ground at the given row, from the world's climate, colder with height. */
 export function warmthAt(seed: number, x: number, row: number) {
   const w = worldOf(seed),
     { c, t } = pos(w, x),
@@ -307,25 +321,230 @@ export function warmthAt(seed: number, x: number, row: number) {
   return T - 0.025 * (SEA_ROW - row - coarse);
 }
 
+/** The land's shape at the scale of habitats: the world's land and its rolling relief, without the fine detail. */
+function relief(w: World, seed: number, x: number) {
+  return smoothElevation(w, x) + 22 * (2 * fbm1(x / 700, seed + 503, 3) - 1);
+}
+
+/** Is the place by the sea or a lake, or by a river? (Local: these keep their own edges.) */
+function shoreAt(w: World, seed: number, x: number) {
+  for (const d of [-140, 0, 140]) {
+    const wa = waterAt(seed, x + d);
+    if (wa && wa.kind !== "river" && relief(w, seed, x + d) < wa.level + 6)
+      return HABITAT.SHORE;
+  }
+  // Bigger rivers keep wider banks.
+  const rv = riverNear(w, x, 260);
+  if (rv && Math.abs(x - rv.xc) < rv.hw + 90 + 120 * Math.min(1.4, rv.size))
+    return HABITAT.RIVERSIDE;
+  return -1;
+}
+
+/** Where a place sits in the land (HABITAT), at one column. */
+export function habitatAt(seed: number, x: number) {
+  const w = worldOf(seed),
+    by = shoreAt(w, seed, x);
+  return by >= 0 ? by : landformAt(w, seed, x);
+}
+
+/** The land's form at x, away from water: ridge, valley, cliff, slope, flat or wetland. */
+function landformAt(w: World, seed: number, x: number) {
+  const z = relief(w, seed, x);
+  // Cliffs from the ground itself (benches and drops included).
+  if (Math.abs(groundElevation(seed, x + 24) - groundElevation(seed, x - 24)) > 30)
+    return HABITAT.CLIFF;
+  const tpi =
+      z -
+      (relief(w, seed, x - 250) +
+        relief(w, seed, x + 250) +
+        relief(w, seed, x - 600) +
+        relief(w, seed, x + 600)) /
+        4,
+    slope = Math.abs(relief(w, seed, x + 60) - relief(w, seed, x - 60)) / 120;
+  if (tpi > 28) return HABITAT.RIDGE;
+  if (tpi < -28) return HABITAT.VALLEY;
+  if (slope < 0.05) {
+    const { c, t } = pos(w, x),
+      P = w.P[c] + (w.P[c + 1] - w.P[c]) * t;
+    // Hollows and low plains near sea level hold water where it rains enough.
+    return P > 1000 && (tpi < -6 || z < 24) ? HABITAT.WETLAND : HABITAT.FLAT;
+  }
+  return HABITAT.SLOPE;
+}
+
+/** What each rock kind (history.ts ROCK order) weathers into. */
+const SOIL_OF = [
+  SOIL.STONY,
+  SOIL.STONY,
+  SOIL.RICH,
+  SOIL.RICH,
+  SOIL.ALKALINE,
+  SOIL.CLAY,
+  SOIL.SANDY,
+  SOIL.CLAY,
+  SOIL.CLAY,
+  SOIL.SANDY,
+  SOIL.CLAY,
+  SOIL.SANDY,
+  SOIL.CLAY,
+  SOIL.SALTY,
+];
+
+// Biomes come in patches about PATCH columns wide, each the majority of
+// what its land, climate and rock say along it, so they last a screen or more
+// instead of flickering with every bench and bed. Shores and riversides keep
+// their own edges; patch edges dither over FRINGE columns.
+const PATCH = 900,
+  FRINGE = 56,
+  SAMPLES = 9;
+
+const edge = (seed: number, k: number) =>
+  k * PATCH + 0.35 * PATCH * (2 * hash3(k, 7, seed + 530) - 1);
+
+function patchIndex(seed: number, x: number) {
+  let k = Math.floor(x / PATCH);
+  while (x < edge(seed, k)) k--;
+  while (x >= edge(seed, k + 1)) k++;
+  return k;
+}
+
+interface Patch {
+  zone: number;
+  habitat: number;
+  soil: number;
+  T: number;
+  P: number;
+  z: number;
+  /** Opened up lately by fire, storm or grazing, and growing back. */
+  open: boolean;
+}
+
+const patchCache = new WeakMap<World, Map<number, Patch>>();
+
+const mode = (counts: Map<number, number>) => {
+  let best = -1,
+    n = -1;
+  for (const [k, c] of counts)
+    if (c > n) {
+      best = k;
+      n = c;
+    }
+  return best;
+};
+
+function patchOf(w: World, seed: number, k: number): Patch {
+  let cache = patchCache.get(w);
+  if (!cache) patchCache.set(w, (cache = new Map()));
+  let p = cache.get(k);
+  if (p) return p;
+  const x0 = edge(seed, k),
+    x1 = edge(seed, k + 1),
+    zones = new Map<number, number>(),
+    habs = new Map<number, number>(),
+    soils = new Map<number, number>(),
+    add = (m: Map<number, number>, v: number, by = 1) => m.set(v, (m.get(v) ?? 0) + by);
+  let T = 0,
+    P = 0,
+    z = 0;
+  for (let s = 0; s < SAMPLES; s++) {
+    const x = x0 + ((s + 0.5) / SAMPLES) * (x1 - x0),
+      { c, t } = pos(w, x),
+      lerp = (a: Float32Array) => a[c] + (a[c + 1] - a[c]) * t,
+      zs = relief(w, seed, x),
+      Ts = lerp(w.T) - 0.025 * (zs - Math.max(0, lerp(w.surface))),
+      Ps = lerp(w.P),
+      near = w.zone[colAt(w, x)];
+    T += Ts / SAMPLES;
+    P += Ps / SAMPLES;
+    z += zs / SAMPLES;
+    if (near === ZONE.OCEAN || near === ZONE.LAKE) continue;
+    add(
+      zones,
+      near === ZONE.SALT_FLAT ? ZONE.SALT_FLAT : zoneOf(Ts, Ps, lerp(w.S), lerp(w.O), zs),
+    );
+    add(habs, landformAt(w, seed, x));
+    add(soils, SOIL_OF[kindAt(rockAt(seed, x), groundElevation(seed, x) - 3)]);
+  }
+  const habitat = habs.size ? mode(habs) : HABITAT.FLAT;
+  let soil = soils.size ? mode(soils) : SOIL.SANDY;
+  if (T < 6 && P > 900 && (habitat === HABITAT.WETLAND || habitat === HABITAT.FLAT))
+    soil = SOIL.PEAT;
+  // Disturbance: fire, storms and grazing open the land in stretches a patch
+  // or three long, more often where summers are dry; woods grow back after.
+  const S = w.S[colAt(w, (x0 + x1) / 2)],
+    prone = 0.1 * Math.max(0, Math.min(1, (1100 - P) / 700)) + 0.08 * Math.max(0, S),
+    open = fbm1((x0 + x1) / 2 / 2600, seed + 540, 3) > 0.62 - prone;
+  p = {
+    zone: zones.size ? mode(zones) : ZONE.OCEAN,
+    habitat,
+    soil,
+    T,
+    P,
+    z,
+    open,
+  };
+  cache.set(k, p);
+  return p;
+}
+
+/**
+ * The place at art column x: its climate zone, habitat, soil, and biome
+ * (an index into biomes.ts BIOMES, or -1 under water).
+ */
+export function placeAt(seed: number, x: number) {
+  const w = worldOf(seed),
+    z = groundElevation(seed, x),
+    water = waterAt(seed, x),
+    near = w.zone[colAt(w, x)];
+  if (
+    (water !== null && z < water.level) ||
+    (water && (near === ZONE.OCEAN || near === ZONE.LAKE))
+  )
+    return {
+      zone: near === ZONE.LAKE ? ZONE.LAKE : ZONE.OCEAN,
+      habitat: HABITAT.SHORE,
+      soil: SOIL.SANDY,
+      biome: -1,
+    };
+  let k = patchIndex(seed, x);
+  // Dither across the patch edges, so neighbours mix over a few plants.
+  const dl = x - edge(seed, k),
+    dr = edge(seed, k + 1) - x,
+    r = hash3(Math.floor(x), 3, seed + 531);
+  if (dl < FRINGE && r < 0.5 * (1 - dl / FRINGE)) k--;
+  else if (dr < FRINGE && r < 0.5 * (1 - dr / FRINGE)) k++;
+  const p = patchOf(w, seed, k),
+    by = shoreAt(w, seed, x),
+    habitat = by >= 0 ? by : p.habitat,
+    zone = p.zone === ZONE.OCEAN || p.zone === ZONE.LAKE ? ZONE.CONTINENTAL : p.zone,
+    flags = { wet: p.P > 1500, dry: p.P < 650, high: p.z > 260, open: p.open };
+  return { zone, habitat, soil: p.soil, biome: classify(zone, habitat, p.soil, flags) };
+}
+
+/** The biome at x, or -1 under water. */
+export const biomeAt = (seed: number, x: number) => placeAt(seed, x).biome;
+
 /**
  * The region generator's six looks (its BIOMES presets, in order: highlands,
- * fungal, canyon, forest, peaks, basalt), weighted for each world biome.
- * These stand in until each world biome has its own looks.
+ * fungal, canyon, forest, peaks, basalt) by climate zone: they still decide
+ * the caves and what lives in them, until each zone has its own.
  */
 const LOOKS: number[][] = [];
-LOOKS[BIOME.OCEAN] = [1, 0, 0, 0, 0, 0];
-LOOKS[BIOME.LAKE] = [1, 0, 0, 0, 0, 0];
-LOOKS[BIOME.SALT_FLAT] = [0, 0, 1, 0, 0, 0];
-LOOKS[BIOME.ICE] = [0, 0, 0, 0, 1, 0];
-LOOKS[BIOME.TUNDRA] = [0.35, 0, 0, 0, 0.65, 0];
-LOOKS[BIOME.PINE] = [0, 0, 0, 0.3, 0.7, 0];
-LOOKS[BIOME.WOODS] = [0.2, 0, 0, 0.8, 0, 0];
-LOOKS[BIOME.GRASSLAND] = [1, 0, 0, 0, 0, 0];
-LOOKS[BIOME.DESERT] = [0, 0, 1, 0, 0, 0];
-LOOKS[BIOME.SAVANNA] = [0.5, 0, 0.5, 0, 0, 0];
-LOOKS[BIOME.JUNGLE] = [0, 0.25, 0, 0.75, 0, 0];
-LOOKS[BIOME.SWAMP] = [0, 0.35, 0, 0.65, 0, 0];
-LOOKS[BIOME.ALPINE] = [0, 0, 0, 0, 1, 0];
+LOOKS[ZONE.OCEAN] = [1, 0, 0, 0, 0, 0];
+LOOKS[ZONE.LAKE] = [1, 0, 0, 0, 0, 0];
+LOOKS[ZONE.SALT_FLAT] = [0, 0, 1, 0, 0, 0];
+LOOKS[ZONE.ICE] = [0, 0, 0, 0, 1, 0];
+LOOKS[ZONE.TUNDRA] = [0.35, 0, 0, 0, 0.65, 0];
+LOOKS[ZONE.BOREAL] = [0, 0, 0, 0.3, 0.7, 0];
+LOOKS[ZONE.ALPINE] = [0, 0, 0, 0, 1, 0];
+LOOKS[ZONE.OCEANIC] = [0.2, 0, 0, 0.8, 0, 0];
+LOOKS[ZONE.CONTINENTAL] = [0.4, 0, 0, 0.6, 0, 0];
+LOOKS[ZONE.MEDITERRANEAN] = [0.5, 0, 0.5, 0, 0, 0];
+LOOKS[ZONE.STEPPE] = [0.8, 0, 0.2, 0, 0, 0];
+LOOKS[ZONE.DESERT] = [0, 0, 1, 0, 0, 0];
+LOOKS[ZONE.SAVANNA] = [0.5, 0, 0.5, 0, 0, 0];
+LOOKS[ZONE.MONSOON] = [0, 0.2, 0, 0.8, 0, 0];
+LOOKS[ZONE.RAINFOREST] = [0, 0.3, 0, 0.7, 0, 0];
 
 /** The look weights of one coarse column, built once per world. */
 const lookCache = new WeakMap<World, Float32Array>();
@@ -334,14 +553,9 @@ function looksOf(w: World) {
   if (a) return a;
   a = new Float32Array(w.n * 6);
   for (let c = 0; c < w.n; c++) {
-    const m1 = LOOKS[w.biome[c]],
-      m2 = LOOKS[w.biome2[c]],
-      t = w.blend[c];
+    const m = LOOKS[w.zone[c]];
     let sum = 0;
-    for (let k = 0; k < 6; k++) {
-      a[c * 6 + k] = m1[k] * (1 - t) + m2[k] * t;
-      sum += a[c * 6 + k];
-    }
+    for (let k = 0; k < 6; k++) sum += a[c * 6 + k] = m[k];
     // Volcanic ground takes the basalt look.
     const top =
       w.offsets[c + 1] > w.offsets[c]
@@ -367,11 +581,10 @@ export function looksAt(seed: number, x: number, out = new Float32Array(6)) {
   return out;
 }
 
-/** The world biome's name at x, and the one it is blending into (if any). */
+/** What to call the place at x: its biome and its climate zone. */
 export function biomeNameAt(seed: number, x: number) {
-  const w = worldOf(seed),
-    c = colAt(w, x),
-    a = WORLD_BIOMES[w.biome[c]].name,
-    b = WORLD_BIOMES[w.biome2[c]].name;
-  return w.blend[c] > 0.2 && a !== b ? `${a} → ${b}` : a;
+  const p = placeAt(seed, x);
+  return p.biome < 0
+    ? ZONES[p.zone].name
+    : `${BIOMES[p.biome].name} · ${ZONES[p.zone].name}`;
 }
