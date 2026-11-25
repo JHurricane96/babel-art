@@ -10,7 +10,7 @@ declare const WORKER_SOURCE: string;
 const $ = (id: string) => document.getElementById(id)!;
 
 // ---- State ------------------------------------------------------------------------------------
-const opt = { snap: true, bands: true, marker: true, wall: true };
+const opt = { snap: true, bands: true, marker: true, ghost: true, wall: true };
 let mode: "auto" | "follow" | "turn" = "auto",
   speed = 6,
   paused = matchMedia("(prefers-reduced-motion: reduce)").matches,
@@ -356,9 +356,10 @@ function coverAround(x: number, z: number, yaw: number) {
   return all;
 }
 
-/** The people, the ox and the cart, this frame. */
+/** The party (and its marker), and the others on the road (the carter, the ox and the cart), this frame. */
 function actors(c: Camera) {
   const out: number[] = [],
+    others: number[] = [],
     fx = Math.sin(c.yaw),
     fz = Math.cos(c.yaw),
     rx = Math.cos(c.yaw),
@@ -387,11 +388,11 @@ function actors(c: Camera) {
     fc = facing(o.hx * caravanDir, o.hz * caravanDir),
     fr = Math.floor(caravan / 0.5) & 3;
   if (inside(0, o.x, o.z)) {
-    out.push(o.x, surfaceAt(o.x, o.z), o.z, 1.6, SLOTS.get(`ox ${fr}`)!, fc.f === 0 ? fc.mirror : 0);
-    out.push(back.x, surfaceAt(back.x, back.z), back.z, 2.6, SLOTS.get("cart")!, fc.f === 0 ? fc.mirror : 0);
-    out.push(lead.x, surfaceAt(lead.x, lead.z), lead.z, 1.75, SLOTS.get(`person 4 ${fc.f} ${fr}`)!, fc.mirror);
+    others.push(o.x, surfaceAt(o.x, o.z), o.z, 1.6, SLOTS.get(`ox ${fr}`)!, fc.f === 0 ? fc.mirror : 0);
+    others.push(back.x, surfaceAt(back.x, back.z), back.z, 2.6, SLOTS.get("cart")!, fc.f === 0 ? fc.mirror : 0);
+    others.push(lead.x, surfaceAt(lead.x, lead.z), lead.z, 1.75, SLOTS.get(`person 4 ${fc.f} ${fr}`)!, fc.mirror);
   }
-  return Float32Array.from(out);
+  return { party: Float32Array.from(out), others: Float32Array.from(others) };
 }
 
 // ---- Clouds: a band of pixel-art cumulus all round the sky --------------------------------------
@@ -647,6 +648,7 @@ const spriteParts: { slot: number; imgs: Img[] }[] = [],
 let ready = false,
   treesList: Sprites | null = null,
   coverList: Sprites | null = null,
+  partyList: Sprites | null = null,
   actorList: Sprites | null = null;
 
 function onDone() {
@@ -674,6 +676,7 @@ function onDone() {
   treesList = renderer.sprites(new Float32Array(0));
   coverList = renderer.sprites(new Float32Array(0));
   actorList = renderer.sprites(new Float32Array(0));
+  partyList = renderer.sprites(new Float32Array(0));
   buildMap();
   $("loading").hidden = true;
   layout();
@@ -939,15 +942,20 @@ function frame(now: number, forced = -1) {
   if (visTrees && treesList) renderer.sprites(visTrees, treesList);
   const cover = coverAround(rc.x, rc.z, rc.yaw);
   if (cover && coverList) renderer.sprites(cover, coverList);
-  if (actorList) renderer.sprites(actors(rc), actorList);
+  if (actorList && partyList) {
+    const a = actors(rc);
+    renderer.sprites(a.party, partyList);
+    renderer.sprites(a.others, actorList);
+  }
   renderer.draw(
     rc,
     [
-      { sprites: treesList!, near: 14, far: 6000 },
-      { sprites: coverList!, near: 3, far: 230 },
-      { sprites: actorList!, near: 3, far: 20000 },
+      { sprites: treesList!, near: 10, far: 6000 },
+      { sprites: coverList!, near: 3, far: 260 },
+      { sprites: actorList!, near: 1.5, far: 20000 },
+      { sprites: partyList!, near: 1.5, far: 20000, ghost: opt.ghost },
     ],
-    { bands: opt.bands, wall: opt.wall, time: simTime, party: (() => { const p = routeAt(s); return [p.x, partyY(s), p.z]; })() },
+    { bands: opt.bands, wall: opt.wall, time: simTime },
   );
   drawMap(rc);
   const cpuNow = performance.now() - t1;

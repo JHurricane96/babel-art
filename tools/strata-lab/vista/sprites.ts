@@ -8,7 +8,7 @@
 // crowns heaped from shaded leaf clumps); small ones, conifers, people,
 // ground cover, the ox and the cart are drawn here.
 import { M } from "../../../engine/strata/world";
-import { TREES, type Canvas, type CrownStyle, type TreeKind, boulder, branch, crown, fern, shrub, tree, trunk } from "../../../engine/strata/art";
+import { TREES, type Canvas, type CrownStyle, boulder, branch, crown, fern, trunk } from "../../../engine/strata/art";
 import { hex, rampOf } from "./color";
 import { mulberry } from "./valley";
 
@@ -117,192 +117,280 @@ const rampsFor = (name: string) => ({
   [M.ROCK]: rampOf(hex("#8a8478")),
 });
 
-/** A broadleaf tree at its full drawing (art.ts), exactly H px tall, its leaf masses sized to it. */
-function bigBroadleaf(name: string, H: number, seed: number): Img {
-  const k = TREES[name],
+// One structure at every size: a tree's trunk, limbs and leaf masses are laid out once per
+// variant (in fractions of its height, from its own random sequence), and every size class draws
+// that same layout. Big sizes heap shaded leaf clumps into each mass (the forest slice's crowns);
+// small sizes shade each mass as a whole. So a tree changing size class grows a little: it never
+// turns into another tree.
+interface Mass {
+  x: number;
+  y: number;
+  rx: number;
+  ry: number;
+}
+interface Limb {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  w: number;
+}
+interface Plan {
+  /** Stems: foot x, height, lean (all fractions of H), widths at foot and top (fractions of H). */
+  stems: { x: number; h: number; lean: number; w0: number; w1: number }[];
+  limbs: Limb[];
+  masses: Mass[];
+  fringe: boolean;
+}
+
+/** A broadleaf tree's layout, in fractions of its height (y up is negative). */
+function broadleafPlan(name: string, seed: number): Plan {
+  const S = mulberry(seed),
+    k = TREES[name],
     base = (k.h0 + k.h1) / 2,
-    s = H / base,
+    w0 = k.w0 / base,
+    w1 = k.w1 / base,
+    plan: Plan = { stems: [], limbs: [], masses: [], fringe: false };
+  const limb = (x0: number, y0: number, ang: number, len: number, w: number) => {
+    const kink = (S() - 0.5) * 0.7,
+      x1 = x0 + Math.sin(ang) * len * 0.5,
+      y1 = y0 - Math.cos(ang) * len * 0.5,
+      x2 = x1 + Math.sin(ang + kink) * len * 0.5,
+      y2 = y1 - Math.cos(ang + kink) * len * 0.5;
+    plan.limbs.push({ x0, y0, x1, y1, x2, y2, w });
+    return { x: x2, y: y2 };
+  };
+  if (k.form === "oak") {
+    const th = 0.3 + 0.1 * S(),
+      lean = (S() - 0.5) * 0.06;
+    plan.stems.push({ x: 0, h: th, lean, w0, w1: w1 + 1 / base });
+    const top = { x: lean, y: -th },
+      n = 4 + Math.floor(S() * 2);
+    for (let j = 0; j < n; j++) {
+      const side = (j / (n - 1)) * 2 - 1,
+        ang = side * (0.95 + 0.3 * S()) + (S() - 0.5) * 0.2,
+        end = limb(top.x, top.y, ang, (0.4 + 0.16 * S()) * (1 - 0.2 * Math.abs(side)), w1),
+        r = 0.15 + 0.05 * S();
+      plan.masses.push({ x: end.x, y: end.y - r * 0.2, rx: r * 1.15, ry: r * 0.72 });
+    }
+    plan.masses.push({ x: top.x + (S() - 0.5) * 0.1, y: top.y - 0.5, rx: 0.16 * 1.15, ry: 0.16 * 0.72 });
+  } else if (k.form === "beech") {
+    const th = 0.62,
+      lean = (S() - 0.5) * 0.03;
+    plan.stems.push({ x: 0, h: th, lean, w0, w1 });
+    for (const s of [-1, 1]) limb(lean, -th + 0.08, s * 0.5, 0.25, Math.max(0.5 / base, w1 - 1 / base));
+    const rx = 0.24 + 0.04 * S(),
+      ry = 0.33 + 0.04 * S(),
+      cy = -1 + ry;
+    plan.masses.push({ x: lean, y: cy, rx, ry });
+    plan.masses.push({ x: lean + (S() - 0.5) * rx * 0.6, y: cy - ry * 0.55, rx: rx * 0.55, ry: ry * 0.4 });
+  } else if (k.form === "maple") {
+    const th = 0.42,
+      lean = (S() - 0.5) * 0.04,
+      r = 0.27 + 0.04 * S(),
+      cy = -1 + r;
+    plan.stems.push({ x: 0, h: th, lean, w0, w1 });
+    for (const s of [-1, 1]) {
+      const e = limb(lean, -th, s * (0.7 + 0.2 * S()), 0.28, w1);
+      plan.masses.push({ x: e.x, y: e.y + r * 0.1, rx: r * 0.62, ry: r * 0.5 });
+    }
+    plan.masses.push({ x: lean, y: cy, rx: r * 1.05, ry: r * 0.92 });
+  } else {
+    // Birch: one to three slender stems, narrow airy crowns with hanging fringes.
+    const stems = S() < 0.45 ? 1 + Math.floor(S() * 3) : 1;
+    plan.fringe = true;
+    for (let j = 0; j < stems; j++) {
+      const hh = 1 - 0.13 * j,
+        dx = j === 0 ? 0 : (j % 2 ? -1 : 1) * (0.03 + 0.02 * S()),
+        lean = dx * 2.2 + (S() - 0.5) * 0.05,
+        rx = hh * (0.11 + 0.03 * S()),
+        ry = hh * (0.3 + 0.04 * S());
+      plan.stems.push({ x: dx, h: hh * 0.8, lean, w0, w1 });
+      plan.masses.push({ x: dx + lean, y: -hh + ry, rx, ry });
+    }
+  }
+  plan.masses.sort((a, b) => a.y - b.y);
+  return plan;
+}
+
+/** A leaf mass shaded as a whole: lit at the upper left, a ragged rim, a few speckles and gaps. */
+function massSmall(c: MatCanvas, m: Mass, H: number, salt: number, needles: boolean) {
+  const rx = Math.max(0.8, m.rx),
+    ry = Math.max(0.8, m.ry);
+  for (let y = Math.floor(m.y - ry - 1); y <= Math.ceil(m.y + ry + 1); y++)
+    for (let x = Math.floor(m.x - rx - 1); x <= Math.ceil(m.x + rx + 1); x++) {
+      const dx = (x + 0.5 - m.x) / rx,
+        dy = (y + 0.5 - m.y) / ry,
+        ang = Math.atan2(dy, dx),
+        rag = H >= 8 ? 1 + 0.12 * Math.sin(ang * 6 + salt) : 1,
+        d = Math.hypot(dx, dy) / rag;
+      if (d > 1) continue;
+      const nz = Math.sqrt(Math.max(0, 1 - d * d)),
+        lam = Math.max(0, -0.55 * dx - 0.7 * dy + 0.45 * nz);
+      let t = 1 + Math.floor(lam * 4.2 + 1 + bay(x, y) - 0.4);
+      if (d > 0.78 && dx * -0.55 + dy * -0.7 < 0) t -= 1;
+      if (H >= 10 && t >= 4 && hashCell(x, y, salt) > (needles ? 0.92 : 0.86)) t = 6;
+      if (H >= 12 && d < 0.85 && hashCell(x, y, salt + 1) < 0.05) t = Math.max(1, t - 2);
+      c.set(x, y, M.LEAF, t);
+    }
+}
+
+/** A stem drawn simply (small sizes): a column a pixel or two wide, lit on its left. */
+function stemSmall(c: MatCanvas, x: number, h: number, lean: number, w: number) {
+  for (let k = 0; k <= h; k++) {
+    const t = k / Math.max(1, h),
+      cx = x + lean * t * t;
+    for (let d = 0; d < w; d++) c.set(Math.round(cx) + d - (w > 1 ? 1 : 0), -1 - k, M.WOOD, d === 0 ? 3 : 1);
+  }
+}
+
+function broadleaf(name: string, H: number, seed: number): Img {
+  const plan = broadleafPlan(name, seed),
+    k = TREES[name],
+    big = H >= 24,
+    s = H / ((k.h0 + k.h1) / 2),
     cs = Math.max(0.55, Math.sqrt(s)),
-    kind: TreeKind = {
-      ...k,
-      h0: H,
-      h1: H,
-      w0: Math.max(1, k.w0 * s),
-      w1: Math.max(1, k.w1 * s),
-      style: { ...k.style, r0: Math.max(1.6, k.style.r0 * cs), r1: Math.max(2.2, k.style.r1 * cs) },
-    };
-  const { c } = canvasFor(H, 1.3, seed);
-  tree(c, kind, 0, 0, 1);
-  return c.toImg(rampsFor(name), 0, 0);
-}
-
-/** A small broadleaf tree: its crown's shape lit as a whole, a few speckles, its trunk. */
-function smallBroadleaf(name: string, H: number, seed: number): Img {
-  const { c } = canvasFor(H, 1.1, seed),
-    R = c.R,
-    shape: Record<string, number[]> = { oak: [0.44, 0.3, 0.6], beech: [0.3, 0.4, 0.58], maple: [0.34, 0.32, 0.62], birch: [0.17, 0.34, 0.62] },
-    [fx, fy, fc] = shape[name],
-    rx = Math.max(1, fx * H),
-    ry = Math.max(1, fy * H),
-    cy = -fc * H,
-    lobes = [{ x: 0, y: cy, rx, ry }];
-  if (name === "oak" && H >= 10) for (const sd of [-1, 1]) lobes.push({ x: sd * rx * 0.55, y: cy + ry * 0.35, rx: rx * 0.55, ry: ry * 0.6 });
-  // The trunk, seen below the crown.
-  const tw = H >= 16 ? 2 : 1;
-  for (let y = -1; y > cy; y--) for (let d = 0; d < tw; d++) c.set(d - (tw > 1 ? 1 : 0), y, M.WOOD, d === 0 ? 3 : 1);
-  const salt = Math.floor(R() * 1e6);
-  for (const l of lobes)
-    for (let y = Math.floor(l.y - l.ry - 1); y <= Math.ceil(l.y + l.ry + 1); y++)
-      for (let x = Math.floor(l.x - l.rx - 1); x <= Math.ceil(l.x + l.rx + 1); x++) {
-        const dx = (x + 0.5 - l.x) / l.rx,
-          dy = (y + 0.5 - l.y) / l.ry,
-          ang = Math.atan2(dy, dx),
-          rag = H >= 8 ? 1 + 0.12 * Math.sin(ang * 6 + salt) : 1,
-          d = Math.hypot(dx, dy) / rag;
-        if (d > 1) continue;
-        const nz = Math.sqrt(Math.max(0, 1 - d * d)),
-          lam = Math.max(0, -0.55 * dx - 0.7 * dy + 0.45 * nz);
-        let t = 1 + Math.floor(lam * 4.2 + 1 + bay(x, y) - 0.4);
-        if (d > 0.78 && dx * -0.55 + dy * -0.7 < 0) t -= 1;
-        if (H >= 10 && t >= 4 && hashCell(x, y, salt) > 0.86) t = 6;
-        if (H >= 12 && d < 0.85 && hashCell(x, y, salt + 1) < 0.05) t = Math.max(1, t - 2);
-        c.set(x, y, M.LEAF, t);
-      }
-  return c.toImg(rampsFor(name), 0, 0);
-}
-
-/** A conifer: tiers of drooping branches up to a spire, lit on the left, each tier's underside in shadow. */
-function conifer(name: string, H: number, seed: number): Img {
-  const { c } = canvasFor(H, 0.8, seed),
-    R = c.R,
-    wide = name === "fir" ? 0.5 : 0.42,
-    W = Math.max(2, H * wide),
-    trunkH = Math.max(1, Math.round(H * (H < 8 ? 0.14 : 0.1))),
-    crownH = H - trunkH,
-    tiers = Math.max(2, Math.round(H / (H < 20 ? 4 : 6.5))),
-    salt = Math.floor(R() * 1e6);
-  for (let y = -1; y >= -trunkH - 1; y--) c.set(0, y, M.WOOD, 2);
-  if (H >= 30) for (let y = -1; y >= -trunkH; y--) c.set(-1, y, M.WOOD, 3);
-  for (let r = 0; r < crownH; r++) {
-    const y = -H + r,
-      t = (r + 0.5) / crownH,
-      tp = t * tiers,
-      tf = tp - Math.floor(tp),
-      tier = Math.floor(tp),
-      // Each tier flares toward its lower edge, its tips drooping.
-      half = (W / 2) * (0.12 + 0.88 * t) * (0.72 + 0.36 * tf) + (H >= 14 ? (hashCell(tier, r, salt) - 0.5) * 1.2 : 0),
-      xa = Math.round(-half),
-      xb = Math.round(half);
-    for (let x = xa; x <= xb; x++) {
-      const u = x / Math.max(1, half),
-        v = 0.62 - 0.42 * u - 0.3 * tf + 0.12 * (1 - t);
-      let tone = 1 + Math.floor(v * 5 + bay(x, y) - 0.2);
-      if (tf > 0.86 && H >= 10) tone -= 1; // the shadow under each tier
-      if (Math.abs(u) > 0.85 && H >= 12) tone -= u > 0 ? 1 : 0;
-      if (H >= 16 && tone >= 4 && hashCell(x, y, salt) > 0.9) tone = 6;
-      if (H >= 24 && hashCell(x, y, salt + 3) < 0.06) tone -= 1;
-      c.set(x, y, M.LEAF, tone);
+    st: CrownStyle = { ...k.style, r0: Math.max(1.6, k.style.r0 * cs), r1: Math.max(2.2, k.style.r1 * cs) },
+    { c } = canvasFor(H, 1.3, seed);
+  c.R = mulberry(seed + 99);
+  for (const st0 of plan.stems) {
+    const h = Math.round(st0.h * H);
+    if (big) trunk(c, st0.x * H, -1, h, Math.max(1, st0.w0 * H), Math.max(1, st0.w1 * H), st0.lean * H, k.bark);
+    else stemSmall(c, st0.x * H, h, st0.lean * H, H >= 16 ? 2 : 1);
+  }
+  for (const l of plan.limbs)
+    if (big || H >= 12) {
+      const w = big ? Math.max(1, Math.round(l.w * H)) : 1;
+      branch(c, l.x0 * H, l.y0 * H, l.x1 * H, l.y1 * H, w);
+      branch(c, l.x1 * H, l.y1 * H, l.x2 * H, l.y2 * H, Math.max(1, w - 1));
     }
-  }
-  return c.toImg(rampsFor(name), 0, 0);
-}
-
-/** A pine: a tall warm trunk and a few flat clouds of needles at the top. */
-function pine(H: number, seed: number): Img {
-  const { c } = canvasFor(H, 0.9, seed),
-    R = c.R,
-    trunkTop = -Math.round(H * 0.62),
-    tw = Math.max(1, Math.round(H / 22)),
-    lean = (R() - 0.5) * H * 0.08;
-  for (let y = -1; y >= trunkTop; y--) {
-    const t = y / trunkTop,
-      x = Math.round(lean * t * t);
-    for (let d = 0; d < tw; d++) c.set(x + d, y, M.WOOD, d === 0 && tw > 1 ? 4 : 2);
-  }
-  const n = H < 10 ? 1 : 2 + Math.floor(R() * 3),
-    salt = Math.floor(R() * 1e6);
-  for (let k = 0; k < n; k++) {
-    const cx = lean + (k === 0 ? 0 : (R() - 0.5) * H * 0.42),
-      cy = trunkTop - H * (0.06 + 0.25 * (k === 0 ? 1 : R())),
-      rx = Math.max(1.2, H * (k === 0 ? 0.2 : 0.13 + 0.05 * R())),
-      ry = Math.max(1, rx * 0.42);
-    if (k > 0 && H >= 16) for (let s = 0; s <= 1; s += 0.05) c.set(Math.round(lean + (cx - lean) * s), Math.round(trunkTop - (trunkTop - cy) * s * 0.7), M.WOOD, 2);
-    for (let y = Math.floor(cy - ry); y <= Math.ceil(cy + ry); y++)
-      for (let x = Math.floor(cx - rx); x <= Math.ceil(cx + rx); x++) {
-        const dx = (x + 0.5 - cx) / rx,
-          dy = (y + 0.5 - cy) / ry,
-          d = Math.hypot(dx, dy * (dy < 0 ? 1.25 : 1));
-        if (d > 1 || (H >= 12 && d > 0.75 && hashCell(x, y, salt) < 0.3)) continue;
-        let tone = 1 + Math.floor((0.62 - 0.3 * dx - 0.5 * dy) * 4.6 + bay(x, y) - 0.3);
-        if (H >= 16 && tone >= 4 && hashCell(x, y, salt + 1) > 0.88) tone = 6;
-        c.set(x, y, M.LEAF, tone);
-      }
-  }
-  return c.toImg(rampsFor("pine"), 0, 0);
-}
-
-/** A big conifer: drooping tiers of needle masses down a straight trunk, a narrow spire at the top. */
-function bigConifer(name: string, H: number, seed: number): Img {
-  const { c } = canvasFor(H, 0.9, seed),
-    R = c.R,
-    s = H / 60,
-    cs = Math.sqrt(s),
-    st: CrownStyle = { r0: 2.4 * cs, r1: 3.8 * cs, density: 2.4, speckle: 0.3, holes: 0.06, needles: true, rag: 1.5 },
-    W = H * (name === "fir" ? 0.48 : 0.4),
-    base = Math.round(H * 0.08);
-  trunk(c, 0, -1, H - 2, Math.max(1, H * 0.035), 1, 0, { cracks: 0.3 });
-  // Tiers from the bottom up, so the upper ones sit over the lower.
-  const tiers = Math.max(5, Math.round(H / 11));
-  for (let k = tiers - 1; k >= 0; k--) {
-    const t = (k + 0.6) / tiers, // 0 at the top, 1 at the bottom
-      y = -H + t * (H - base),
-      w = (W / 2) * (0.1 + 0.9 * t) * (0.85 + 0.3 * R()),
-      th = ((H - base) / tiers) * 1.05;
-    // Branch masses either side, drooping toward their tips; a smaller one over the trunk.
-    for (const side of [-1, 1]) {
-      const n = w > 10 * cs ? 2 : 1;
+  plan.masses.forEach((m, i) => {
+    const mm = { x: m.x * H, y: m.y * H, rx: m.rx * H, ry: m.ry * H };
+    c.R = mulberry(seed * 7 + i * 131);
+    if (big) crown(c, mm.x, mm.y, mm.rx, mm.ry, st);
+    else massSmall(c, mm, H, seed + i * 17, false);
+  });
+  if (plan.fringe && H >= 20) {
+    c.R = mulberry(seed + 7);
+    for (const m of plan.masses) {
+      const n = Math.round(m.rx * H * 1.4);
       for (let j = 0; j < n; j++) {
-        const u = n === 1 ? 0.55 : 0.35 + 0.45 * j,
-          x = side * w * u,
-          droop = th * 0.35 * u * u;
-        crown(c, x, y + droop, Math.max(1.5, w * (n === 1 ? 0.5 : 0.36)), Math.max(1.2, th * 0.5), st);
+        const u = (j / Math.max(1, n - 1)) * 2 - 1,
+          x = Math.round(m.x * H + u * m.rx * H * 0.95),
+          y0 = Math.round(m.y * H + m.ry * H * Math.sqrt(Math.max(0, 1 - u * u)) * 0.8),
+          len = Math.round((0.05 + 0.08 * c.R() * (1 - Math.abs(u))) * H);
+        for (let d = 0; d < len; d++) if (c.R() < 0.85) c.set(x + (d > len * 0.6 ? Math.sign(u) : 0), y0 + d, M.LEAF, d === len - 1 ? 2 : 3 + (d % 2));
       }
     }
-    crown(c, 0, y - th * 0.15, Math.max(1.2, w * 0.35), Math.max(1.2, th * 0.55), st);
   }
-  // The spire.
-  crown(c, 0, -H + H * 0.05, Math.max(1, W * 0.05), Math.max(1.5, H * 0.06), st);
   return c.toImg(rampsFor(name), 0, 0);
 }
 
-/** A big pine: a leaning trunk, warm above, limbs out to flat, ragged pads of needles. */
-function bigPine(H: number, seed: number): Img {
-  const { c } = canvasFor(H, 1.1, seed),
-    R = c.R,
-    s = H / 60,
-    cs = Math.sqrt(s),
-    st: CrownStyle = { r0: 2.6 * cs, r1: 4.2 * cs, density: 2.0, speckle: 0.35, holes: 0.12, needles: true, rag: 1.6 },
-    top = trunk(c, 0, -1, Math.round(H * 0.7), Math.max(1, H * 0.045), Math.max(1, H * 0.02), (R() - 0.5) * H * 0.12, { cracks: 0.6 }),
-    pads = 3 + Math.floor(R() * 3);
-  const list: { x: number; y: number; rx: number; ry: number }[] = [{ x: top.x, y: -H + H * 0.08, rx: H * 0.17, ry: H * 0.07 }];
-  for (let k = 1; k < pads; k++) {
-    const side = k % 2 ? -1 : 1,
-      y0 = top.y + H * (0.05 + 0.18 * R()),
-      ex = top.x + side * H * (0.14 + 0.16 * R()),
-      ey = y0 - H * (0.06 + 0.1 * R());
-    branch(c, top.x, y0, ex, ey, Math.max(1, Math.round(H * 0.02)));
-    list.push({ x: ex, y: ey - H * 0.02, rx: H * (0.1 + 0.06 * R()), ry: H * (0.045 + 0.02 * R()) });
+/** A conifer's tiers (fractions of H): the same for every size. */
+function coniferPlan(name: string, seed: number) {
+  const S = mulberry(seed),
+    n = 7 + Math.floor(S() * 3),
+    W = name === "fir" ? 0.5 : 0.42,
+    tiers: { t: number; w: number; j: number[] }[] = [];
+  for (let k = 0; k < n; k++) tiers.push({ t: (k + 0.6) / n, w: (W / 2) * (0.85 + 0.3 * S()), j: [S(), S(), S()] });
+  return { tiers, W, base: 0.08 };
+}
+/** A conifer: drooping tiers of needle masses down a straight trunk, the same layout at every size. */
+function conifer(name: string, H: number, seed: number): Img {
+  const p = coniferPlan(name, seed),
+    { c } = canvasFor(H, 0.9, seed),
+    big = H >= 26,
+    cs = Math.sqrt(H / 60),
+    st: CrownStyle = { r0: 2.4 * cs, r1: 3.8 * cs, density: 2.4, speckle: 0.3, holes: 0.06, needles: true, rag: 1.5 };
+  c.R = mulberry(seed + 99);
+  if (big) trunk(c, 0, -1, H - 2, Math.max(1, H * 0.035), 1, 0, { cracks: 0.3 });
+  else stemSmall(c, 0, Math.max(1, Math.round(H * 0.14)), 0, 1);
+  const span = H * (1 - p.base);
+  for (let k = p.tiers.length - 1; k >= 0; k--) {
+    const tier = p.tiers[k],
+      y = -H + tier.t * span,
+      w = tier.w * (0.1 + 0.9 * tier.t) * H,
+      th = (span / p.tiers.length) * 1.05;
+    if (big) {
+      for (const side of [-1, 1]) {
+        const n = w > 10 * cs ? 2 : 1;
+        for (let j = 0; j < n; j++) {
+          const u = n === 1 ? 0.55 : 0.35 + 0.45 * j,
+            droop = th * 0.35 * u * u;
+          c.R = mulberry(seed * 13 + k * 7 + j * 3 + (side + 1));
+          crown(c, side * w * u, y + droop, Math.max(1.5, w * (n === 1 ? 0.5 : 0.36)), Math.max(1.2, th * 0.5), st);
+        }
+      }
+      c.R = mulberry(seed * 17 + k);
+      crown(c, 0, y - th * 0.15, Math.max(1.2, w * 0.35), Math.max(1.2, th * 0.55), st);
+    } else {
+      // The tier as one drooping shape: wide at its foot, lit on the left, shadowed beneath.
+      const rows = Math.max(1, Math.round(th));
+      for (let r = 0; r < rows; r++) {
+        const f = (r + 0.5) / rows,
+          yy = Math.round(y - th * 0.6 + r),
+          half = w * (0.35 + 0.65 * f);
+        for (let x = Math.round(-half); x <= Math.round(half); x++) {
+          const u = x / Math.max(1, half);
+          let tone = 1 + Math.floor((0.62 - 0.42 * u - 0.3 * f) * 5 + bay(x, yy) - 0.2);
+          if (f > 0.8 && H >= 10) tone -= 1;
+          c.set(x, yy, M.LEAF, tone);
+        }
+      }
+    }
   }
-  list.sort((a, b) => a.y - b.y);
-  for (const p of list) crown(c, p.x, p.y, Math.max(2, p.rx), Math.max(1.5, p.ry), st);
+  if (big) {
+    c.R = mulberry(seed + 5);
+    crown(c, 0, -H + H * 0.05, Math.max(1, p.W * H * 0.05), Math.max(1.5, H * 0.06), st);
+  } else c.set(0, -H, M.LEAF, 4);
+  return c.toImg(rampsFor(name), 0, 0);
+}
+
+/** A pine's layout: a leaning trunk, limbs out to flat pads (fractions of H). */
+function pinePlan(seed: number) {
+  const S = mulberry(seed),
+    lean = (S() - 0.5) * 0.12,
+    top = { x: lean, y: -0.7 },
+    pads: Mass[] = [{ x: lean, y: -1 + 0.08, rx: 0.17, ry: 0.07 }],
+    limbs: Limb[] = [],
+    n = 3 + Math.floor(S() * 3);
+  for (let k = 1; k < n; k++) {
+    const side = k % 2 ? -1 : 1,
+      y0 = top.y + 0.05 + 0.18 * S(),
+      ex = top.x + side * (0.14 + 0.16 * S()),
+      ey = y0 - (0.06 + 0.1 * S());
+    limbs.push({ x0: top.x, y0, x1: (top.x + ex) / 2, y1: (y0 + ey) / 2, x2: ex, y2: ey, w: 0.02 });
+    pads.push({ x: ex, y: ey - 0.02, rx: 0.1 + 0.06 * S(), ry: 0.045 + 0.02 * S() });
+  }
+  pads.sort((a, b) => a.y - b.y);
+  return { lean, top, pads, limbs };
+}
+function pine(H: number, seed: number): Img {
+  const p = pinePlan(seed),
+    { c } = canvasFor(H, 1.1, seed),
+    big = H >= 26,
+    cs = Math.sqrt(H / 60),
+    st: CrownStyle = { r0: 2.6 * cs, r1: 4.2 * cs, density: 2.0, speckle: 0.35, holes: 0.12, needles: true, rag: 1.6 };
+  c.R = mulberry(seed + 99);
+  if (big) trunk(c, 0, -1, Math.round(H * 0.7), Math.max(1, H * 0.045), Math.max(1, H * 0.02), p.lean * H, { cracks: 0.6 });
+  else stemSmall(c, 0, Math.round(H * 0.7), p.lean * H, H >= 16 ? 2 : 1);
+  if (big || H >= 12) for (const l of p.limbs) branch(c, l.x0 * H, l.y0 * H, l.x2 * H, l.y2 * H, big ? Math.max(1, Math.round(l.w * H)) : 1);
+  p.pads.forEach((m, i) => {
+    const mm = { x: m.x * H, y: m.y * H, rx: Math.max(1.2, m.rx * H), ry: Math.max(1, m.ry * H) };
+    c.R = mulberry(seed * 7 + i * 131);
+    if (big) crown(c, mm.x, mm.y, mm.rx, mm.ry, st);
+    else massSmall(c, mm, H, seed + i * 17, true);
+  });
   return c.toImg(rampsFor("pine"), 0, 0);
 }
 
 function treeDraw(name: string) {
   return (H: number, seed: number) => {
-    if (name === "spruce" || name === "fir") return H >= 26 ? bigConifer(name, H, seed) : conifer(name, H, seed);
-    if (name === "pine") return H >= 26 ? bigPine(H, seed) : pine(H, seed);
-    return H >= 24 ? bigBroadleaf(name, H, seed) : smallBroadleaf(name, H, seed);
+    if (name === "spruce" || name === "fir") return conifer(name, H, seed);
+    if (name === "pine") return pine(H, seed);
+    return broadleaf(name, H, seed);
   };
 }
 
@@ -322,17 +410,19 @@ const GRASS_R = rampOf(hex("#6f9a3c")),
 
 /** A grass clump: blades fanning from one root, dark at the base, lit at the tips; blooms if given. */
 function grass(H: number, seed: number, dry: boolean, bloom?: string): Img {
+  // The same blades at every size (fewer drawn when small), the same flower heads.
   const { c } = canvasFor(H, 1.2, seed),
-    R = c.R,
-    n = Math.max(2, Math.min(42, Math.round(H * 0.9)));
+    R = mulberry(seed),
+    n = Math.max(2, Math.min(28, Math.round(H * 0.9)));
   if (H <= 3) {
     c.set(0, -1, M.GRASS, 3);
     if (H >= 3) { c.set(-1, -1, M.GRASS, 2); c.set(0, -2, M.GRASS, 4); c.set(1, -2, M.GRASS, 5); }
   } else
-    for (let k = 0; k < n; k++) {
-      const lean = ((k / (n - 1)) * 2 - 1) * (0.5 + 0.3 * R()),
+    for (let k = 0; k < 28; k++) {
+      const lean = (((k * 0.618) % 1) * 2 - 1) * (0.5 + 0.3 * R()),
         len = H * (0.55 + 0.45 * R()),
         bend = (R() - 0.3) * 0.5;
+      if (k >= n) continue;
       for (let s = 0; s < len; s++) {
         const t = s / len,
           x = Math.round(lean * s * 0.55 + bend * t * t * len * 0.5),
@@ -341,10 +431,12 @@ function grass(H: number, seed: number, dry: boolean, bloom?: string): Img {
       }
     }
   if (bloom) {
-    const heads = H < 6 ? 1 : 1 + Math.floor(R() * 3);
+    const B = mulberry(seed + 5),
+      all = 1 + Math.floor(B() * 3),
+      heads = H < 6 ? 1 : all;
     for (let k = 0; k < heads; k++) {
-      const x = Math.round((R() - 0.5) * H * 0.6),
-        y = -Math.round(H * (0.75 + 0.3 * R())),
+      const x = Math.round((B() - 0.5) * H * 0.6),
+        y = -Math.round(H * (0.75 + 0.3 * B())),
         r = H >= 12 ? 1 : 0;
       for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) c.set(x + dx, y + dy, M.FLOWER, dx < 0 || dy < 0 ? 5 : 3);
       if (r) c.set(x, y, M.FLOWER, 6);
@@ -357,14 +449,21 @@ function fernDraw(H: number, seed: number): Img {
   if (H < 5) {
     for (let x = -1; x <= 1; x++) c.set(x, -1, M.LEAF, x < 0 ? 4 : 2);
     c.set(0, -2, M.LEAF, 5);
-  } else fern(c, 0, 0, H);
+  } else {
+    c.R = mulberry(seed);
+    fern(c, 0, 0, H);
+  }
   return c.toImg({ [M.LEAF]: FERN_R }, 0, 0);
 }
 function shrubDraw(H: number, seed: number): Img {
   const { c } = canvasFor(H, 1.7, seed);
   if (H < 5) {
     for (let x = -1; x <= 1; x++) for (let y = -H; y < 0; y++) c.set(x, y, M.LEAF, 4 - (x > 0 ? 2 : 0) - (y === -1 ? 1 : 0));
-  } else shrub(c, 0, 0, H * 1.4, H);
+  } else {
+    c.R = mulberry(seed);
+    const k = Math.max(0.6, H / 14);
+    crown(c, 0, -H / 2, H * 0.7, H / 2, { r0: 2.2 * k, r1: 3.6 * k, density: 1.8, speckle: 0.35, holes: 0 });
+  }
   return c.toImg({ [M.LEAF]: SHRUB_R }, 0, 0);
 }
 function rockDraw(H: number, seed: number, wide: number, moss: number): Img {
@@ -373,6 +472,7 @@ function rockDraw(H: number, seed: number, wide: number, moss: number): Img {
     for (let x = -1; x <= 1; x++) c.set(x, -1, M.ROCK, x < 0 ? 4 : 2);
     if (H >= 3) c.set(0, -2, M.ROCK, 4);
   } else {
+    c.R = mulberry(seed);
     boulder(c, 0, 0, H * wide, H, moss);
     if (H >= 7) {
       // Grain in the facets, a crack or two, lichen where it is lit.
@@ -701,9 +801,12 @@ export function slotDefs(): SlotDef[] {
   out.push({
     name: "marker", worldH: 1, maxClass: 0, sunFlip: false,
     draw: () => {
-      const p = new Px(9, 6, 4, 4);
-      for (let k = 0; k < 3; k++) for (let x = -2 + k; x <= 2 - k; x++) p.set(x, -3 + k, [233, 169, 90]);
-      return p.toImg(0, 1);
+      // A yellow arrow pointing down at the leader, outlined so it reads on sky and land alike.
+      const p = new Px(13, 9, 6, 7);
+      for (let k = 0; k < 4; k++) for (let x = -3 + k; x <= 3 - k; x++) p.set(x, -5 + k, k === 0 && x < 0 ? [255, 232, 120] : [244, 200, 64]);
+      for (let y = -7; y < -5; y++) for (let x = -1; x <= 1; x++) p.set(x, y, [244, 200, 64]);
+      p.outline([40, 30, 20]);
+      return p.toImg(0, 0);
     },
   });
   return out;

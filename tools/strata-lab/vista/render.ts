@@ -301,62 +301,78 @@ void main() {
   oColor = vec4(mix(c, uHaze, hazeT(d)), 1.0);
 }`;
 
+// Sprites: each picks the two size classes around its size on screen and hands over from one to
+// the other pixel by pixel (a fixed dither pattern that moves with the sprite), so growing and
+// shrinking is gradual; it fades in the same way as it grows from 1 to 3 px, and out near the camera.
 const SPRITE_VS = /* glsl */ `${COMMON}
 in vec2 aCorner;
 in vec4 iPos;
 in vec2 iInfo;
 uniform usampler2D uRect, uAnchor;
 uniform float uSunFlip, uFar2, uNear2;
-out vec2 vLocal;
-flat out ivec4 vRect;
-flat out float vDepth;
+out vec2 vP;
+flat out ivec4 vLo, vHi, vA;
+flat out float vF, vVis, vDepth;
 flat out int vFlip;
-flat out int vCut;
+const int NC = ${26};
 void main() {
   float vz;
   project(iPos.xyz, vz);
-  vCut = (int(iInfo.y + 0.5) & 2) == 2 ? 1 : 0;
   int flags = int(iInfo.y + 0.5);
-  if (vz < uNear2 || vz > uFar2) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  bool top = (flags & 4) == 4;
   vec3 v = iPos.xyz - uCam;
+  float want = iPos.w * uF / max(vz, 0.01);
+  if (vz < 1.5 || vz > uFar2 || (want < 1.0 && !top)) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
   vec2 sc = vec2(uRes.x * 0.5 + uF * dot(v.xz, uRight) / vz, uHz - uF * v.y / vz);
-  float want = iPos.w * uF / vz;
-  int cls = clamp(int(floor(log2(max(want, 1.0) / 3.0) * 4.0 + 0.5)), 0, ${25});
+  float cf = log2(max(want, 3.0) / 3.0) * 4.0;
+  int lo = min(int(floor(cf)), NC - 1), hi = min(lo + 1, NC - 1);
+  float f = lo == hi ? 0.0 : smoothstep(0.3, 0.7, fract(cf));
+  float vis = clamp((want - 1.0) / 2.0, 0.0, 1.0) * clamp((vz - uNear2) / (uNear2 * 0.5), 0.0, 1.0) * clamp((uFar2 - vz) / (uFar2 * 0.15), 0.0, 1.0);
+  if (top) vis = 1.0;
   int slot = int(iInfo.x + 0.5);
-  uvec4 r = texelFetch(uRect, ivec2(cls, slot), 0);
-  uvec4 a = texelFetch(uAnchor, ivec2(cls, slot), 0);
+  uvec4 rl = texelFetch(uRect, ivec2(lo, slot), 0), al = texelFetch(uAnchor, ivec2(lo, slot), 0);
+  uvec4 rh = texelFetch(uRect, ivec2(hi, slot), 0), ah = texelFetch(uAnchor, ivec2(hi, slot), 0);
   bool flip = (flags & 1) == 1;
   if ((flags & 2) == 2 && uSunFlip > 0.5) flip = !flip;
-  vec2 anchor = floor(sc + 0.5);
-  float ax = flip ? float(r.z) - float(a.x) : float(a.x);
-  vec2 tl = anchor - vec2(ax, float(a.y));
-  vec2 px = tl + aCorner * vec2(r.zw);
-  gl_Position = vec4((px.x / uRes.x * 2.0 - 1.0) * vz, (1.0 - px.y / uRes.y * 2.0) * vz, (flags & 4) == 4 ? -vz : depthClip(vz), vz);
-  vLocal = aCorner * vec2(r.zw);
-  vRect = ivec4(r);
+  // The box, relative to the foot, that holds both images.
+  vec2 mn = vec2(1e9), mx = vec2(-1e9);
+  for (int k = 0; k < 2; k++) {
+    uvec4 r = k == 0 ? rl : rh, a = k == 0 ? al : ah;
+    vec2 o = flip ? vec2(float(a.x) - float(r.z), -float(a.y)) : vec2(-float(a.x), -float(a.y));
+    mn = min(mn, o);
+    mx = max(mx, o + vec2(r.zw));
+  }
+  vec2 P = mix(mn, mx, aCorner), px = floor(sc + 0.5) + P;
+  gl_Position = vec4((px.x / uRes.x * 2.0 - 1.0) * vz, (1.0 - px.y / uRes.y * 2.0) * vz, top ? -vz : depthClip(vz), vz);
+  vP = P;
+  vLo = ivec4(rl);
+  vHi = ivec4(rh);
+  vA = ivec4(al.xy, ah.xy);
+  vF = f;
+  vVis = vis;
   vDepth = vz;
   vFlip = flip ? 1 : 0;
 }`;
 const SPRITE_FS = /* glsl */ `${COMMON}
-in vec2 vLocal;
-flat in ivec4 vRect;
-flat in float vDepth;
+in vec2 vP;
+flat in ivec4 vLo, vHi, vA;
+flat in float vF, vVis, vDepth;
 flat in int vFlip;
 uniform sampler2D uAtlas;
-uniform vec3 uParty; // screen x, y (from the top), depth
-flat in int vCut;
+uniform float uGhost;
 out vec4 oColor;
 void main() {
-  if (vCut == 1 && vDepth < uParty.z - 4.0) {
-    // Things standing between the camera and the party open a window onto them, its rim dithered.
-    vec2 px = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
-    float r = clamp(1800.0 / uParty.z, 14.0, 40.0), e = length((px - uParty.xy) / vec2(r, r * 1.35));
-    if (e < 1.0 || (e < 1.3 && bayer(ivec2(px)) < (1.3 - e) / 0.3)) discard;
-  }
-  ivec2 l = ivec2(floor(vLocal));
-  if (vFlip == 1) l.x = vRect.z - 1 - l.x;
-  vec4 t = texelFetch(uAtlas, vRect.xy + l, 0);
+  ivec2 p = ivec2(floor(vP));
+  if (bayer(p) >= vVis) discard;
+  bool hiSide = bayer(p + ivec2(2, 1)) < vF;
+  ivec4 r = hiSide ? vHi : vLo;
+  ivec2 a = hiSide ? vA.zw : vA.xy;
+  ivec2 l = ivec2(vFlip == 1 ? a.x - 1 - p.x : p.x + a.x, p.y + a.y);
+  if (l.x < 0 || l.y < 0 || l.x >= r.z || l.y >= r.w) discard;
+  vec4 t = texelFetch(uAtlas, r.xy + l, 0);
   if (t.a < 0.5) discard;
+  // The party seen through what stands in front of them: a pale silhouette.
+  if (uGhost > 0.5) { oColor = vec4(0.99, 0.94, 0.78, 0.55); return; }
   oColor = vec4(mix(t.rgb, uHaze, hazeT(vDepth)), 1.0);
 }`;
 
@@ -843,7 +859,7 @@ export class Renderer {
     return unit;
   }
 
-  draw(cam: Camera, lists: { sprites: Sprites; near: number; far: number }[], opt: { bands: boolean; wall: boolean; time: number; party: number[] }) {
+  draw(cam: Camera, lists: { sprites: Sprites; near: number; far: number; ghost?: boolean }[], opt: { bands: boolean; wall: boolean; time: number }) {
     const gl = this.gl,
       t = this.timer;
     if (t.ext && !t.q) {
@@ -918,15 +934,8 @@ export class Renderer {
       gl.uniform1i(this.u(p, "uAnchor"), 2);
       const sunRight = Math.cos(cam.yaw) * -0.45 + -Math.sin(cam.yaw) * -0.53 > 0;
       gl.uniform1f(this.u(p, "uSunFlip"), sunRight ? 1 : 0);
-      {
-        const [px, py, pz] = opt.party,
-          ex = px - cam.x,
-          ez = pz - cam.z,
-          d = ex * Math.sin(cam.yaw) + ez * Math.cos(cam.yaw),
-          l = ex * Math.cos(cam.yaw) - ez * Math.sin(cam.yaw);
-        gl.uniform3f(this.u(p, "uParty"), ART_W / 2 + (F * l) / Math.max(1, d), HORIZON - (F * (py + 0.9 - cam.y)) / Math.max(1, d), d > 1 ? d : 1e9);
-      }
       this.stats.sprites = 0;
+      gl.uniform1f(this.u(p, "uGhost"), 0);
       for (const l of lists) {
         if (!l.sprites.count) continue;
         gl.uniform1f(this.u(p, "uNear2"), l.near);
@@ -934,6 +943,24 @@ export class Renderer {
         gl.bindVertexArray(l.sprites.vao);
         gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, l.sprites.count);
         this.stats.sprites += l.sprites.count;
+      }
+      // Silhouettes: where something nearer hides them, paler, over it.
+      const ghosts = lists.filter((l) => l.ghost && l.sprites.count);
+      if (ghosts.length) {
+        gl.uniform1f(this.u(p, "uGhost"), 1);
+        gl.depthFunc(gl.GREATER);
+        gl.depthMask(false);
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        for (const l of ghosts) {
+          gl.uniform1f(this.u(p, "uNear2"), l.near);
+          gl.uniform1f(this.u(p, "uFar2"), l.far);
+          gl.bindVertexArray(l.sprites.vao);
+          gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, l.sprites.count);
+        }
+        gl.disable(gl.BLEND);
+        gl.depthMask(true);
+        gl.depthFunc(gl.LESS);
       }
     }
     gl.bindVertexArray(null);
