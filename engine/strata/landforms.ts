@@ -212,7 +212,7 @@ function unitOf(w: World, seed: number, k: number): Unit {
   if (form === L.HILLS) amp *= 0.85 + Math.min(0.45, z / 400);
   // Keep inside the world's sky.
   // Keep inside the world's sky, with room above the peaks to frame them.
-  amp = Math.min(amp, Math.max(15, 800 - z));
+  amp = Math.min(amp, Math.max(form === L.MOUNTAINS || form === L.GLACIAL || form === L.VOLCANO ? 120 : 15, 860 - z));
   u = {
     form,
     amp,
@@ -282,11 +282,12 @@ function shape(u: Unit, x: number) {
     }
     case L.GLACIAL: {
       // Broad flat-floored troughs between steep walls and sharp horns.
+      // Sharp ridges (aretes) and horns between broad, flat-floored troughs.
       const m = ridge(x / 1300, s),
         horn = ridge(x / 170, s + 1);
       return (
-        0.8 * smoothstep(0.35, 0.8, m) +
-        0.2 * horn * smoothstep(0.65, 0.95, m)
+        0.85 * Math.pow(smoothstep(0.3, 1, m), 1.6) +
+        0.15 * horn * smoothstep(0.5, 0.9, m)
       );
     }
     case L.VOLCANO: {

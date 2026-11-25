@@ -276,14 +276,18 @@ export function groundElevation(seed: number, x: number, channels = true) {
     form = landformAt(w, seed, x),
     right = landformAt(w, seed, x + 8),
     left = landformAt(w, seed, x - 8),
-    lf = form.L - form.cut,
-    lfSlope = Math.abs(right.L - right.cut - left.L + left.cut) / 16,
+    // Where the world's land already stands high, the landform is scaled
+    // down (shape kept) so its tops stay under the sky's ceiling.
+    base = smoothElevation(w, x),
+    room = Math.max(60, 880 - base) / Math.max(1, form.U),
+    lf = form.L * Math.min(1, room) - form.cut,
+    lfSlope = (Math.abs(right.L - left.L) * Math.min(1, room) + Math.abs(right.cut - left.cut)) / 16,
     slope = slopeAt(w, x) + lfSlope,
     amp = 2 + 26 * Math.min(0.5, slope);
   // The world's land, its landform (hills, mesas, peaks: landforms.ts), and
   // finer roughness, more on slopes.
   let z =
-    smoothElevation(w, x) +
+    base +
     lf +
     6 * (2 * fbm1(x / 300, seed + 503, 2) - 1) +
     amp * (2 * fbm1(x / 45, seed + 501, 3) - 1) +
@@ -311,7 +315,7 @@ export function groundElevation(seed: number, x: number, channels = true) {
     }
   }
   // Peaks bend under a soft ceiling, so there is sky above even the highest.
-  if (z > 800) z = 800 + 60 * Math.tanh((z - 800) / 60);
+  if (z > 860) z = 860 + 40 * Math.tanh((z - 860) / 40);
   if (channels && rv && Math.abs(x - rv.xc) < rv.hw) {
     const d = (x - rv.xc) / rv.hw;
     z -= rv.depth * (1 - d * d);
@@ -344,8 +348,9 @@ export function warmthAt(seed: number, x: number, row: number) {
 
 /** The land's shape at the scale of habitats: the world's land and its landform, without the fine detail. */
 function relief(w: World, seed: number, x: number) {
-  const f = landformAt(w, seed, x);
-  return smoothElevation(w, x) + f.L - f.cut;
+  const f = landformAt(w, seed, x),
+    base = smoothElevation(w, x);
+  return base + f.L * Math.min(1, Math.max(60, 880 - base) / Math.max(1, f.U)) - f.cut;
 }
 
 /** Is the place by the sea or a lake, or by a river? (Local: these keep their own edges.) */
