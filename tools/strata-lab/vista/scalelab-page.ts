@@ -7,8 +7,8 @@ const canvas = $("view") as HTMLCanvasElement,
   ctx = canvas.getContext("2d")!,
   objs = scene(),
   panels = new Map<Method, { img: ImageData; c: HTMLCanvasElement }>();
-let shown: Method[] = ["dither", "jumps", "seams", "voxel"],
-  single: Method | null = matchMedia("(max-width: 700px)").matches ? "seams" : null,
+let shown: Method[] = ["dither", "jumps", "pixel", "seams", "seams1", "seamsB24"],
+  single: Method | null = matchMedia("(max-width: 700px)").matches ? "seamsB24" : null,
   playing = !matchMedia("(prefers-reduced-motion: reduce)").matches,
   speed = 0.5,
   t = 0,
@@ -23,7 +23,7 @@ for (const m of shown) {
 function layout() {
   const area = $("stage").getBoundingClientRect(),
     dpr = window.devicePixelRatio || 1,
-    cols = single ? 1 : 2,
+    cols = single ? 1 : 3,
     rows = single ? 1 : 2,
     gap = single ? 0 : 6,
     w = cols * PW + (cols - 1) * gap,
@@ -50,8 +50,8 @@ function draw() {
       data = p.img.data;
     frame(objs, t, m, data);
     p.c.getContext("2d")!.putImageData(p.img, 0, 0);
-    const col = single ? 0 : i % 2,
-      row = single ? 0 : Math.floor(i / 2),
+    const col = single ? 0 : i % 3,
+      row = single ? 0 : Math.floor(i / 3),
       x = Math.round(col * (PW + L.gap) * L.k),
       y = Math.round(row * (PH + L.gap) * L.k);
     ctx.drawImage(p.c, x, y, Math.round(PW * L.k), Math.round(PH * L.k));
@@ -131,9 +131,9 @@ canvas.onclick = (e) => {
     single = null;
   } else {
     const r = canvas.getBoundingClientRect(),
-      col = e.clientX - r.left > r.width / 2 ? 1 : 0,
+      col = Math.min(2, Math.floor(((e.clientX - r.left) / r.width) * 3)),
       row = e.clientY - r.top > r.height / 2 ? 1 : 0;
-    single = shown[row * 2 + col];
+    single = shown[row * 3 + col];
   }
   setPressed("[data-view]", document.querySelector(`[data-view="${single ?? ""}"]`));
   L = layout();
@@ -149,20 +149,29 @@ window.addEventListener("keydown", (e: KeyboardEvent) => {
 if (!playing) $("play").textContent = "Play";
 setPressed("[data-view]", document.querySelector(`[data-view="${single ?? ""}"]`));
 
-// ---- Warm up: draw every size the loop will need, a little at a time, then play. ---------------------
-async function warm() {
+// ---- Warm up: draw every size the loop will need for the panels on screen, a little at a time, then
+// play; the other methods are drawn in the background after.
+async function warmUp(methods: Method[], progress: boolean) {
   const steps = 160,
     scratch = new Uint8ClampedArray(PW * PH * 4);
   for (let k = 0; k < steps; k++) {
-    for (const m of shown) frame(objs, (k / steps) * LOOP, m, scratch);
-    $("loading").textContent = `Drawing the sprites… ${Math.round(((k + 1) / steps) * 100)}%`;
+    for (const m of methods) frame(objs, (k / steps) * LOOP, m, scratch);
+    if (progress) $("loading").textContent = `Drawing the sprites… ${Math.round(((k + 1) / steps) * 100)}%`;
     if (k % 4 === 3) await new Promise((r) => setTimeout(r, 0));
   }
+}
+async function warm() {
+  const first = single ? [single] : shown;
+  await warmUp(first, true);
   $("loading").hidden = true;
   L = layout();
   requestAnimationFrame((n) => {
     last = n;
     loop(n);
   });
+  await warmUp(
+    shown.filter((m) => !first.includes(m)),
+    false,
+  );
 }
 void warm();

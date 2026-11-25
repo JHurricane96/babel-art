@@ -20,9 +20,13 @@ export const METHODS = [
   { id: "dither", name: "Size classes, dithered (Vista now)", note: "As Vista now: the two nearest sizes mixed pixel by pixel." },
   { id: "pixel", name: "Redrawn at every pixel size", note: "Drawn at its exact height in whole pixels; one layout, so it grows a pixel at a time." },
   { id: "nearest", name: "Scaled, nearest neighbour", note: "The next bigger size shrunk to fit by dropping rows and columns." },
-  { id: "seams", name: "Grown by rows and columns", note: "Drawn afresh every octave (6, 12, 24 … 384 px); between, it grows or shrinks one row and column at a time, spread evenly, the least visible first. Nothing is redrawn." },
+  { id: "seams", name: "Rows and columns, octave drawings", note: "Drawn afresh every octave (6, 12, 24 … 384 px); between, it grows or shrinks one row and column at a time, spread evenly. Switching to the next drawing pops a little." },
   { id: "voxel", name: "All voxels", note: "Everything as voxel models in 3D: trees from the same layouts as the sprites, bushes, ferns, grass, flowers, rocks and the walkers; lit by the sun, shaded in crevices and under their own crowns, outlined where they turn away, each level half the last." },
-  { id: "seams1", name: "Rows and columns, one drawing", note: "One big drawing; every smaller size takes out rows and columns one at a time, the least visible first." },
+  { id: "seams2", name: "Rows and columns, drawings every 2 octaves", note: "As rows and columns, drawn afresh only at 6, 24, 96 and 384 px: fewer switches between drawings, more taken out between them." },
+  { id: "seamsH", name: "Rows and columns, drawings every half octave", note: "As rows and columns, drawn afresh every half octave: less taken out, more switches." },
+  { id: "seamsB", name: "Rows and columns, big ones from one drawing", note: "Everything 48 px and over grows from one big drawing, so big things never switch drawings; small ones switch at 48, 24 and 12 px." },
+  { id: "seamsB24", name: "Rows and columns, one drawing from 24 px", note: "One big drawing (384 px) for every size from 24 px up, so trees in view never switch drawings; under 24 px, drawings made for 12 and 24 px. The only switches are at 12 and 24 px, and each changes about as much as a one-row step. Smooth, and right at every size." },
+  { id: "seams1", name: "Rows and columns, one drawing at every size", note: "One big drawing (384 px) for every size from 6 px up: it never switches drawings, so it is the smoothest, but under about 20 px it keeps only one row in 20 and trees come out wrong (thick trunks, lopsided crowns)." },
 ] as const;
 export type Method = (typeof METHODS)[number]["id"];
 
@@ -61,6 +65,13 @@ function lineDiff(im: Img, a: number, b: number, rows: boolean) {
   }
   return d;
 }
+/** How far from where the next line is due the removal may look for a less visible one (-1: 2.5% of the drawing).
+ * Kept to one line either side: given more freedom, it keeps avoiding distinct lines (a trunk's
+ * edges) and the proportions drift as the drawing shrinks a long way. */
+export let WINDOW = 1;
+export function setWindow(w: number) {
+  WINDOW = w;
+}
 /** Van der Corput: 1/2, 1/4, 3/4, 1/8 ... any prefix spread evenly over [0, 1). */
 function vdc(k: number) {
   let v = 0,
@@ -80,7 +91,7 @@ function removal(im: Img, rows: boolean, keepIdx: number) {
   const n = rows ? im.h : im.w,
     alive = Array.from({ length: n }, (_, i) => i),
     out: number[] = [],
-    win = Math.max(1, Math.round(n * 0.025));
+    win = WINDOW < 0 ? Math.max(1, Math.round(n * 0.025)) : WINDOW;
   for (let k = 1; alive.length > 1; k++) {
     const target = vdc(k) * n;
     let jt = 0;
@@ -130,14 +141,38 @@ function shrinkTo(src: Img, h: number, key: string): Img {
   shrunk.set(k, im);
   return im;
 }
-const OCTAVES = [6, 12, 24, 48, 96, 192, 384];
-/** A sprite at height H, grown by rows and columns from its drawing (octave drawings, or one). */
-export function seamImg(slot: number, H: number, oneDrawing: boolean, maxH: number): Img {
+/** Drawings to grow from: every octave, every two octaves, or every half octave. */
+export const KEYFRAMES: Record<string, number[]> = {
+  octave: [6, 12, 24, 48, 96, 192, 384],
+  two: [6, 24, 96, 384],
+  half: [6, 8, 12, 17, 24, 34, 48, 68, 96, 136, 192, 272, 384],
+};
+/** Or ranges: from a height up, grow from this drawing (big sizes all from the biggest, so they never switch). */
+export const RANGES: Record<string, [number, number][]> = {
+  big48: [[6, 12], [12, 24], [24, 48], [48, 384]],
+  big24: [[6, 12], [12, 24], [24, 384]],
+};
+/** Which drawing a picture came from (for measuring). */
+export const keyframeOf = new WeakMap<Img, number>();
+/** A sprite at height H, grown by rows and columns from the nearest drawing at or above it. */
+export function seamImg(slot: number, H: number, oneDrawing: boolean, maxH: number, spacing = "octave"): Img {
   if (H < 6 || maxH < 6) return imgAt(slot, Math.min(H, maxH));
-  const K = oneDrawing ? Math.max(48, Math.min(maxH, 384)) : OCTAVES.find((k) => k >= H) ?? 384,
+  const ks = KEYFRAMES[spacing],
+    rg = RANGES[spacing],
+    K = oneDrawing
+      ? Math.max(48, Math.min(maxH, 384))
+      : rg
+        ? (() => {
+            let src = rg[0][1];
+            for (const [from, d] of rg) if (H >= from) src = d;
+            return src;
+          })()
+        : ks.find((k) => k >= H) ?? 384,
     KK = Math.min(K, Math.max(6, maxH)),
-    src = imgAt(slot, KK);
-  return H >= src.h ? src : shrinkTo(src, H, `${slot}:${KK}`);
+    src = imgAt(slot, KK),
+    im = H >= src.h ? src : shrinkTo(src, H, `${slot}:${KK}`);
+  keyframeOf.set(im, KK);
+  return im;
 }
 
 // ---- The scene ---------------------------------------------------------------------------------
@@ -254,9 +289,10 @@ export function spriteImg(method: Method, slot: number, want: number, maxClass: 
   const maxH = CLASS_H[maxClass];
   if (method === "jumps") return imgAt(slot, CLASS_H[Math.min(maxClass, Math.max(0, Math.round(classFor(want))))]);
   if (method === "pixel") return imgAt(slot, Math.min(Math.max(maxH, 400), Math.max(1, Math.round(want))));
-  if (method === "seams" || method === "seams1") {
-    const cap = maxClass >= 25 ? 384 : maxH * 2;
-    return seamImg(slot, Math.min(Math.max(1, Math.round(want)), cap), method === "seams1", cap);
+  if (method.startsWith("seams")) {
+    const cap = maxClass >= 25 ? 384 : maxH * 2,
+      spacing = ({ seams2: "two", seamsH: "half", seamsB: "big48", seamsB24: "big24" } as Record<string, string>)[method] ?? "octave";
+    return seamImg(slot, Math.min(Math.max(1, Math.round(want)), cap), method === "seams1", cap, spacing);
   }
   if (method === "dither") {
     const cf = classFor(want),
