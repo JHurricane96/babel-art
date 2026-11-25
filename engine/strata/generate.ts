@@ -1,4 +1,4 @@
-// Strata region generator: six biomes and the transitions between them.
+// Strata region generator: a region of the world, built from its history.
 //
 // A region is REGION_W x WORLD_H cells generated from (seed, region index)
 // alone, so any region can be rebuilt on demand and saves only need what the
@@ -7,16 +7,18 @@
 // pools, trees and mushrooms that straddle a region edge come out the same
 // from both sides.
 //
-// The land is built in passes:
-//   1. ground height, blending the two biomes' shapes across a band at the edge,
-//      with each biome's own features: ridged peaks, dunes, ledges, and a basin
-//      (a lake, a river, a canyon, a frozen lake or a lava caldera);
-//   2. rock in horizontal strata of uneven thickness, with each stratum changing
-//      biome at its own place inside the band, so layers interfinger;
-//   3. caves from noise: wide caverns, sparse meandering tunnels, and a few
-//      sinkhole shafts that open to the sky;
-//   4. the basin's water or lava, then pools and deep lava that fill only true
-//      hollows, a row at a time from the bottom up; in frozen biomes, ice;
+// The world's history (history.ts, read through worldmap.ts) decides the
+// ground, the rock, the water and the climate; six looks (the BIOMES below)
+// are blended by the world's biomes for what grows and lives. The land is
+// built in passes:
+//   1. the ground from the world: its land roughened, cut by river channels,
+//      and stepped into benches and cliffs where hard beds cap soft ones;
+//   2. rock in the world's own beds (sandstone, shale, limestone, granite...),
+//      each running smoothly between the world's columns;
+//   3. caves from noise, opening most readily in limestone and least in
+//      granite: wide caverns, meandering tunnels, sinkhole shafts;
+//   4. the sea, lakes and rivers where the world has them, then pools and
+//      deep lava in hollows; in cold places, ice;
 //   5. plants on the surface (pines, broad and giant trees, giant mushrooms,
 //      cacti, dead trees, shrubs); in the caves moss, fungi, glowing vines,
 //      roots, stalactites or icicles, crystals and fossils.
@@ -42,6 +44,17 @@ import {
   raiseSurface,
   surfaceLandmarks,
 } from "./surface";
+import { ROCK as KIND, SEA_ROW } from "./history";
+import {
+  type RockColumn,
+  groundRow,
+  hard,
+  kindAt,
+  looksAt,
+  rockAt,
+  warmthAt,
+  waterAt,
+} from "./worldmap";
 
 export interface Biome {
   id: string;
@@ -407,73 +420,61 @@ const NUMERIC = (Object.keys(BIOMES[0]) as (keyof Biome)[]).filter(
     ].includes(k),
 ) as (keyof Params)[];
 
-/**
- * The biome of each region. Even regions draw freely from the list; odd ones
- * draw from the biomes their two neighbours are not, so neighbours always
- * differ. Each region depends only on its own index and its neighbours'.
- */
+/** Scratch for look weights. */
+const LW = new Float32Array(6);
+
+/** The look (an index into BIOMES) that carries most weight across region r. */
 export function regionBiome(seed: number, r: number): number {
-  const n = BIOMES.length,
-    pick = (q: number) => Math.floor(hash3(q, 7, seed + 1) * n);
-  if ((r & 1) === 0) return pick(r);
-  const a = pick(r - 1),
-    b = pick(r + 1),
-    choices: number[] = [];
-  for (let k = 0; k < n; k++) if (k !== a && k !== b) choices.push(k);
-  return choices[Math.floor(hash3(r, 8, seed + 1) * choices.length)];
+  const sum = new Float32Array(6);
+  for (let x = r * REGION_W + 32; x < (r + 1) * REGION_W; x += 64) {
+    looksAt(seed, x, LW);
+    for (let k = 0; k < 6; k++) sum[k] += LW[k];
+  }
+  let best = 0;
+  for (let k = 1; k < 6; k++) if (sum[k] > sum[best]) best = k;
+  return best;
 }
 
-/** The two regions whose shared edge is nearest x, and how far x is past it. */
-function nearestEdge(x: number) {
-  const r = Math.floor(x / REGION_W),
-    local = x - r * REGION_W;
-  return local < REGION_W / 2
-    ? { left: r - 1, right: r, past: local }
-    : { left: r, right: r + 1, past: local - REGION_W };
-}
-
-/** Biome parameters blended across region edges. */
+/** Look parameters at world column x, blended by the world's biomes there. */
 export function paramsAt(seed: number, x: number) {
-  const e = nearestEdge(x),
-    a = BIOMES[regionBiome(seed, e.left)],
-    b = BIOMES[regionBiome(seed, e.right)],
-    t = smoothstep(-BLEND, BLEND, e.past);
-  const p = {} as Params;
-  for (const k of NUMERIC) p[k] = lerp(a[k] as number, b[k] as number, t);
-  // Snow only blends where both sides have a snowline; otherwise the nearer side decides.
-  if (!a.snowline || !b.snowline) p.snowline = (t < 0.5 ? a : b).snowline;
-  return { p, t, left: e.left, right: e.right, past: e.past };
+  const w = looksAt(seed, x, LW),
+    p = {} as Params;
+  for (const k of NUMERIC) {
+    let v = 0;
+    for (let b = 0; b < 6; b++) v += w[b] * (BIOMES[b][k] as number);
+    p[k] = v;
+  }
+  const r = Math.floor(x / REGION_W);
+  return { p, t: 0, left: r, right: r, past: 0 };
 }
 
-/** Only the named parameters, blended: much cheaper than paramsAt when called often. */
-const GROUND_KEYS = [
-    "base",
-    "amp",
-    "detail",
-    "ridge",
-    "terrace",
-    "terraceStep",
-    "dunes",
-  ] as const,
-  CAVERN_KEYS = ["cavern", "cavernX", "cavernY"] as const;
+/** Only the named parameters, blended: cheaper than paramsAt when called often. */
+const CAVERN_KEYS = ["cavern", "cavernX", "cavernY"] as const;
 function blendOf<K extends keyof Params>(
   seed: number,
   x: number,
   keys: readonly K[],
 ) {
-  const e = nearestEdge(x),
-    a = BIOMES[regionBiome(seed, e.left)],
-    b = BIOMES[regionBiome(seed, e.right)],
-    t = smoothstep(-BLEND, BLEND, e.past),
+  const w = looksAt(seed, x, LW),
     p = {} as Pick<Params, K>;
-  for (const k of keys) p[k] = (a[k] + (b[k] - a[k]) * t) as Params[K];
+  for (const k of keys) {
+    let v = 0;
+    for (let b = 0; b < 6; b++) v += w[b] * (BIOMES[b][k] as number);
+    p[k] = v as Params[K];
+  }
   return p;
 }
 
-/** Which side's biome a surface column belongs to: patches that mix across the band. */
+/** Which look a surface column takes: the strongest, or in mixed country patches of the two strongest. */
 function columnBiome(seed: number, x: number) {
-  const { t, left, right } = paramsAt(seed, x);
-  return regionBiome(seed, noise1(x / 35, seed + 42) < t ? right : left);
+  const w = looksAt(seed, x, LW);
+  let a = 0,
+    b = -1;
+  for (let k = 1; k < 6; k++)
+    if (w[k] > w[a]) [a, b] = [k, a];
+    else if (b < 0 || w[k] > w[b]) b = k;
+  if (b < 0 || w[b] < 0.05) return a;
+  return noise1(x / 35, seed + 42) < w[b] / (w[a] + w[b]) ? b : a;
 }
 
 export interface Basin {
@@ -485,17 +486,11 @@ export interface Basin {
   liquid: number;
 }
 
+/** The old per-region basins are gone: the world's own water stands where it lies. */
 export function basinOf(seed: number, r: number): Basin | null {
-  const b = BIOMES[regionBiome(seed, r)];
-  if (!b.basin) return null;
-  return {
-    c: r * REGION_W + REGION_W * (0.3 + 0.4 * hash3(r, 11, seed)),
-    w: REGION_W * b.basinW * (0.8 + 0.4 * hash3(r, 12, seed)),
-    depth: b.basinDepth * (0.75 + 0.5 * hash3(r, 13, seed)),
-    steep: b.basinSteep,
-    fill: b.basinFill,
-    liquid: b.basinLiquid,
-  };
+  void seed;
+  void r;
+  return null;
 }
 
 /** Dunes: long windward slopes and short steep lee faces, heaped in sand. */
@@ -509,236 +504,7 @@ function duneAt(seed: number, x: number, dunes: number) {
 
 /** Ground height (cells from the top) at world column x, before caves. */
 export function groundAt(seed: number, x: number) {
-  return naturalGround(seed, x);
-}
-
-/** The land's own shape, before a river reshapes its course. */
-function naturalGround(seed: number, x: number) {
-  const p = blendOf(seed, x, GROUND_KEYS);
-  let n =
-    (fbm1(x / 600, seed + 1) - 0.5) * 2 * p.amp +
-    (fbm1(x / 110, seed + 2) - 0.5) * 2 * p.amp * p.detail;
-  if (p.ridge > 0) {
-    // Ridged noise: crests and peaks rather than rounded hills.
-    const r = 1 - Math.abs(2 * fbm1(x / 380, seed + 8, 4) - 1);
-    n -= p.ridge * p.amp * 1.5 * (r * Math.sqrt(r) - 0.4);
-  }
-  const basin = basinOf(seed, Math.floor(x / REGION_W));
-  let bowl = 0;
-  if (basin)
-    bowl = smoothstep(
-      1,
-      0.35 + 0.4 * basin.steep,
-      Math.abs(x - basin.c) / basin.w,
-    );
-  // A basin: flat-bottomed, with shelving sides (a lake) or sheer ones (a canyon).
-  const hs =
-    p.base +
-    n +
-    (bowl > 0
-      ? basin!.depth * bowl * (1 + 0.25 * (fbm1(x / 50, seed + 4) - 0.5))
-      : 0);
-  // Ledges: the height is snapped toward steps whose size drifts along the land,
-  // so cliffs come in different heights rather than one repeated stair.
-  const step = p.terraceStep * (0.7 + 0.6 * fbm1(x / 900, seed + 3)),
-    k = hs / step,
-    fi = Math.floor(k),
-    terr = (fi + smoothstep(0.8, 1, k - fi)) * step,
-    h = lerp(hs, terr, p.terrace * (1 - bowl * (1 - (basin?.steep ?? 0))));
-  const r = Math.floor(x / REGION_W),
-    sc = scarpOf(seed, r),
-    rise = (sc ? scarpRise(sc, x) : 0) + valleyRise(seed, r, x);
-  return Math.max(
-    150,
-    Math.min(WORLD_H - 420, h - duneAt(seed, x, p.dunes) - rise),
-  );
-}
-
-/** An escarpment: a plateau ending in a sheer cliff at the basin's edge. */
-interface Scarp {
-  xc: number;
-  dir: number;
-  height: number;
-  x0: number;
-}
-
-function scarpOf(seed: number, r: number): Scarp | null {
-  const b = BIOMES[regionBiome(seed, r)],
-    basin = basinOf(seed, r);
-  if (!b.scarp || !basin) return null;
-  const x0 = r * REGION_W,
-    // The plateau runs toward the roomier side of the region.
-    dir = basin.c > x0 + REGION_W / 2 ? -1 : 1;
-  return {
-    xc: basin.c + dir * (basin.w + 24),
-    dir,
-    height: b.scarp * (0.8 + 0.4 * hash3(r, 14, seed)),
-    x0,
-  };
-}
-
-function scarpRise(s: Scarp, x: number) {
-  const into = (x - s.xc) * s.dir;
-  if (into <= 0) return 0;
-  // The plateau rises gently away from its edge (so streams run to the cliff),
-  // and eases back down well before the region's edge.
-  const edge = s.dir > 0 ? s.x0 + REGION_W - x : x - s.x0;
-  return (
-    (s.height * smoothstep(0, 7, into) + Math.min(45, into * 0.09)) *
-    smoothstep(150, 650, edge)
-  );
-}
-
-/** A broad valley around the basin: the land rises away from it, easing out at the region's edges. */
-function valleyRise(seed: number, r: number, x: number) {
-  const b = BIOMES[regionBiome(seed, r)];
-  if (!b.valley) return 0;
-  const basin = basinOf(seed, r);
-  if (!basin) return 0;
-  const x0 = r * REGION_W,
-    edge = Math.min(x - x0, x0 + REGION_W - x);
-  return (
-    b.valley *
-    smoothstep(basin.w * 0.8, basin.w + 600, Math.abs(x - basin.c)) *
-    smoothstep(100, 500, edge)
-  );
-}
-
-/**
- * A river seen from the side lies along the ground. It rises at a spring on
- * the highest ground of its course and runs down to its outlet (the basin's
- * rim, or the top of the escarpment), then on into the basin. The land is
- * left as it is: the water's surface only ever falls along the flow, so the
- * river pools in dips and falls where the ground drops away.
- */
-export interface River {
-  xs: number;
-  xo: number;
-  ys: number;
-  yo: number;
-  /** Direction of flow along x. */
-  fdir: number;
-  depth: number;
-  /** The water's surface from spring to outlet, one height per column along the flow. */
-  surf: Int16Array;
-}
-
-const riverCache = new Map<string, River | null>();
-export function riverOf(seed: number, r: number): River | null {
-  const key = `${seed}:${r}`;
-  let rv = riverCache.get(key);
-  if (rv === undefined) {
-    rv = makeRiver(seed, r);
-    if (riverCache.size > 512) riverCache.clear();
-    riverCache.set(key, rv);
-  }
-  return rv;
-}
-
-function makeRiver(seed: number, r: number): River | null {
-  const b = BIOMES[regionBiome(seed, r)],
-    basin = basinOf(seed, r);
-  if (!b.river || !basin) return null;
-  const sc = scarpOf(seed, r),
-    x0 = r * REGION_W,
-    lo = x0 + 120,
-    hi = x0 + REGION_W - 120;
-  // Try the river from each side of the basin (only the plateau side if there
-  // is a cliff), and keep the side whose spring stands highest above the outlet.
-  let best: {
-    xs: number;
-    ys: number;
-    xo: number;
-    yo: number;
-    dir: number;
-  } | null = null;
-  for (const dir of sc ? [sc.dir] : [-1, 1]) {
-    // The outlet: the top of the cliff, or the basin's rim.
-    const xo = Math.round(sc ? sc.xc + dir * 8 : basin.c + dir * basin.w),
-      yo = Math.round(naturalGround(seed, xo));
-    // The spring: the highest ground within 700 cells upstream, inside the
-    // region, so nothing on the course stands above it.
-    let xs = 0,
-      ys = Infinity,
-      at = 0;
-    for (let d = 1; d <= 700; d += 2) {
-      const x = xo + dir * d;
-      if (x < lo || x > hi) break;
-      const g = naturalGround(seed, x);
-      if (g < ys) [ys, xs, at] = [g, x, d];
-    }
-    if (at >= 200 && (!best || yo - ys > best.yo - best.ys))
-      best = { xs, ys: Math.round(ys), xo, yo, dir };
-  }
-  // Water runs downhill: no river unless the spring stands above the outlet.
-  if (!best || best.yo - best.ys < (sc ? 8 : 30)) return null;
-  const { xs, ys, xo, yo, dir } = best,
-    fdir = -dir,
-    n = Math.abs(xo - xs),
-    depth = 3 + Math.floor(hash3(seed, r, 16) * 2),
-    surf = new Int16Array(n + 1);
-  // Work back from the outlet: the surface sits a stream's depth above the
-  // ground, or level with the water downstream where the ground dips (a pool).
-  for (let i = n; i >= 0; i--) {
-    const top = Math.round(naturalGround(seed, xs + fdir * i)) - depth;
-    surf[i] = i === n ? top : Math.min(top, surf[i + 1]);
-  }
-  return { xs, xo, ys, yo, fdir, depth, surf };
-}
-
-/** Whether x lies on the river's course. */
-export function inCourse(rv: River, x: number) {
-  const i = (x - rv.xs) * rv.fdir;
-  return i >= 0 && i < rv.surf.length;
-}
-
-/**
- * The liquid in a basin: its surface sits below the lower of the two highest
- * points either side, so it is held in on both sides wherever the land around
- * the bowl rises and falls; a part-filled basin sits lower, toward its bed.
- * Returns the level (cells from the top) and the stretch of columns between
- * those two high points.
- */
-const lakeCache = new Map<string, { level: number; x0: number; x1: number }>();
-export function lakeOf(seed: number, basin: Basin) {
-  const key = `${seed}:${basin.c}`;
-  let lake = lakeCache.get(key);
-  if (!lake) {
-    lake = measureLake(seed, basin);
-    if (lakeCache.size > 512) lakeCache.clear();
-    lakeCache.set(key, lake);
-  }
-  return lake;
-}
-
-function measureLake(seed: number, basin: Basin) {
-  let left = Infinity,
-    xl = 0,
-    right = Infinity,
-    xr = 0,
-    bed = 0;
-  for (let x = Math.round(basin.c); x >= basin.c - 1.4 * basin.w; x--) {
-    const g = groundAt(seed, x);
-    if (g < left) [left, xl] = [g, x];
-    bed = Math.max(bed, g);
-  }
-  for (let x = Math.round(basin.c); x <= basin.c + 1.4 * basin.w; x++) {
-    const g = groundAt(seed, x);
-    if (g < right) [right, xr] = [g, x];
-    bed = Math.max(bed, g);
-  }
-  const rim = Math.max(left, right) + 3;
-  return {
-    // Never deeper than the basin was dug: a lake in a deep valley fills only its floor.
-    level: Math.round(
-      Math.min(
-        bed - 3,
-        Math.max(rim + (1 - basin.fill) * (bed - rim), bed - 0.9 * basin.depth),
-      ),
-    ),
-    x0: xl,
-    x1: xr,
-  };
+  return Math.max(40, Math.min(WORLD_H - 60, groundRow(seed, x)));
 }
 
 export interface Region {
@@ -754,26 +520,10 @@ export interface Region {
   ms: number;
 }
 
-/** Strata: thickness varies from thin seams to thick beds, the same everywhere for a seed. */
-function strataTable(seed: number) {
-  const band = new Int32Array(2400),
-    /** How far through its stratum each depth is, 0 at the top to 1 at the bottom. */
-    within = new Float32Array(2400),
-    R = walkRandom(Math.floor(hash3(seed, 5, 5) * 4294967296));
-  let k = 0,
-    u = 0;
-  while (u < band.length) {
-    k++;
-    const r = R(),
-      thick =
-        r < 0.25 ? 4 + Math.floor(R() * 6) : 12 + Math.floor(R() * R() * 46);
-    for (let j = 0; j < thick && u < band.length; j++, u++) {
-      band[u] = k;
-      within[u] = (j + 0.5) / thick;
-    }
-  }
-  return { band, within };
-}
+/** How readily each rock kind (history.ts ROCK) opens into caves: water dissolves limestone and salt, lava leaves tubes in basalt, granite stays shut. */
+const SOLUBLE = [
+  -1.6, -1.6, 0.3, -0.3, 1.6, -0.8, -0.2, -0.8, -0.5, 0, -0.6, -0.3, -0.8, 1.0,
+];
 
 /** Cavern openness at a world point: positive inside a cavern. */
 function cavernAt(
@@ -782,13 +532,15 @@ function cavernAt(
   y: number,
   p: Pick<Params, "cavern" | "cavernX" | "cavernY">,
   g: number,
+  bias = 0,
 ) {
   const depth = y - g,
     thr = 0.74 - 0.2 * p.cavern,
     // Wide, low pockets; a few more of them deeper down.
     deepen = 0.05 * smoothstep(150, 700, depth),
     o =
-      (fbm2(wx / p.cavernX, y / p.cavernY, seed + 100, 3) - thr + deepen) * 14,
+      (fbm2(wx / p.cavernX, y / p.cavernY, seed + 100, 3) - thr + deepen) * 14 +
+      bias,
     // Keep a skin of rock under the ground and above the bedrock.
     env =
       smoothstep(16, 70, depth) *
@@ -906,20 +658,13 @@ function shaftsOf(seed: number, q: number): Shaft[] {
     out: Shaft[] = [];
   let n = Math.floor(b.sinkholes);
   if (R() < b.sinkholes - n) n++;
-  const basin = basinOf(seed, q);
   for (let i = 0; i < n; i++) {
     const cx = q * REGION_W + REGION_W * (0.12 + 0.76 * R()),
       g = groundAt(seed, cx),
       bottom = g + 120 + R() * 240,
       hw = 4 + R() * 6;
-    // Not under a lake or a river: the water would pour down the shaft.
-    if (basin && Math.abs(cx - basin.c) < 1.4 * basin.w + 30) continue;
-    const rv = riverOf(seed, q);
-    if (
-      rv &&
-      cx > Math.min(rv.xs, rv.xo) - 40 &&
-      cx < Math.max(rv.xs, rv.xo) + 40
-    )
+    // Not under the sea, a lake or a river: the water would pour down the shaft.
+    if (waterAt(seed, cx - 40) || waterAt(seed, cx) || waterAt(seed, cx + 40))
       continue;
     out.push({ cx, top: g - 6, bottom, hw });
   }
@@ -930,9 +675,9 @@ function shaftsOf(seed: number, q: number): Shaft[] {
 export function generateRegion(seed: number, r: number): Region {
   const t0 = performance.now();
   const w = generateWindow(seed, r * REGION_W, REGION_W);
-  let lake = -1;
-  const basin = basinOf(seed, r);
-  if (basin) lake = lakeOf(seed, basin).level;
+  const water = waterAt(seed, r * REGION_W + REGION_W / 2),
+    lake =
+      water && water.kind === "lake" ? Math.round(SEA_ROW - water.level) : -1;
   return {
     index: r,
     biome: regionBiome(seed, r),
@@ -953,102 +698,56 @@ export function generateWindow(seed: number, x0: number, width: number) {
     cells = new Uint8Array(WW * H),
     state = new Uint8Array(WW * H);
 
-  // 1. Ground, and the blended parameters for every column.
+  // 1. The ground and the look parameters for every column, and the world's
+  // rock under it.
   const ground = new Float64Array(WW + 4),
     params: Params[] = [],
-    edges: { left: number; right: number; past: number }[] = [];
+    rock: RockColumn[] = [];
   for (let i = 0; i < WW + 4; i++) ground[i] = groundAt(seed, X0 + i - 2);
   for (let x = 0; x < WW; x++) {
-    const e = paramsAt(seed, X0 + x);
-    params.push(e.p);
-    edges.push(e);
+    params.push(paramsAt(seed, X0 + x).p);
+    rock.push(rockAt(seed, X0 + x));
   }
   const surface = new Int16Array(WW);
   for (let x = 0; x < WW; x++) surface[x] = Math.round(ground[x + 2]);
 
-  // 2. Rock in strata. Layers stay roughly level (cliffs cut through them) with
-  // slow folds; across a biome edge each layer changes over at its own place.
-  const table = strataTable(seed),
-    colBiome = new Uint8Array(WW),
-    // The strata's smooth wobbles change slowly, so they are worked out every
-    // 4 cells on a grid fixed to the world and blended in between.
-    SG = 4,
-    sg0 = Math.floor(X0 / SG),
-    SGW = Math.ceil((X0 + WW) / SG) - sg0 + 2,
-    SGH = Math.ceil(H / SG) + 2,
-    foldN = new Float32Array(SGW * SGH),
-    wobN = new Float32Array(SGW * SGH);
-  for (let i = 0; i < SGW; i++)
-    for (let j = 0; j < SGH; j++) {
-      const gx = (sg0 + i) * SG,
-        gy = j * SG;
-      foldN[j * SGW + i] = fbm2(gx / 260, gy / 160, seed + 6, 2);
-      wobN[j * SGW + i] = fbm2(gx / 70, gy / 50, seed + 21, 2);
-    }
-  const grid = (a: Float32Array, wx: number, y: number) => {
-    const ix = Math.floor(wx / SG),
-      fx = (wx - ix * SG) / SG,
-      iy = Math.floor(y / SG),
-      fy = (y - iy * SG) / SG,
-      k = iy * SGW + ix - sg0,
-      p = a[k],
-      q = a[k + 1],
-      r = a[k + SGW],
-      t = a[k + SGW + 1];
-    return p + (q - p) * fx + (r - p) * fy + (p - q - r + t) * fx * fy;
-  };
+  // 2. Rock in the world's beds. A cell's state holds the rock's kind in its
+  // band bits (the renderer colours rock by it) and the column's look in its
+  // biome bits (cave life takes its colours from that).
+  const colBiome = new Uint8Array(WW);
   for (let x = 0; x < WW; x++) {
     const wx = X0 + x,
       p = params[x],
-      { left, right, past } = edges[x],
       s = surface[x],
       slope = Math.abs(ground[x + 4] - ground[x]),
       cb = (colBiome[x] = columnBiome(seed, wx)),
       cover = BIOMES[cb],
-      rv = riverOf(seed, Math.floor(wx / REGION_W)),
-      // A riverbed is gravel, not grass.
-      streambed = rv !== null && inCourse(rv, wx),
+      col = rock[x],
+      water = waterAt(seed, wx),
+      // Under water the bed is gravel and sand, not grass.
+      bed = water !== null && Math.round(SEA_ROW - water.level) < s,
       // Dunes are heaps of sand on the ground, so they are sand all through.
       soil = Math.round(
         p.soil * Math.max(0, 1 - slope / 10) + duneAt(seed, wx, p.dunes),
       ),
-      snowy = p.snowline > 0 && s < p.snowline,
-      bl = regionBiome(seed, left),
-      br = regionBiome(seed, right),
-      fold = 80 * (fbm1(wx / 1500, seed + 5) - 0.5) * 2,
+      snowy = !bed && warmthAt(seed, wx, s) < -1,
       bedrock = H - 22 - Math.floor(10 * fbm1(wx / 40, seed + 9));
-    // Strata are worked out a little above the ground too, so rock raised on
-    // the land (spires, boulders, arches) shows the same layers.
+    // Rock is worked out a little above the ground too, so rock raised on the
+    // land (spires, boulders, arches) shows the same beds.
+    let k = col.kinds.length - 1;
     for (let y = Math.max(0, s - 110); y < H; y++) {
       const i = y * WW + x,
-        depth = y - s,
-        u = Math.max(
-          0,
-          Math.min(
-            table.band.length - 1,
-            Math.round(y + 300 + fold + 30 * (grid(foldN, wx, y) - 0.5) * 2),
-          ),
-        ),
-        k = table.band[u];
-      let biome = past > 0 ? br : bl;
-      if (bl !== br && Math.abs(past) < BLEND) {
-        // Each layer's end is lens-shaped: it reaches furthest at mid-layer and
-        // pinches out toward its top and bottom, like a bed thinning away.
-        const shift = (hash3(k, left, seed + 23) - 0.5) * 1.2 * BLEND,
-          f = table.within[u] - 0.5,
-          tongue = hash3(k, left, seed + 24) < 0.5 ? 1 : -1,
-          wob =
-            past +
-            shift -
-            tongue * (140 * (1 - 4 * f * f) - 70) +
-            50 * (grid(wobN, wx, y) - 0.5) * 2;
-        biome = wob > 0 ? br : bl;
-      }
-      state[i] = stateOf(k & 15, biome);
+        z = SEA_ROW - y;
+      while (k > 0 && z <= col.tops[k - 1]) k--;
+      state[i] = stateOf(
+        k >= 0 && z > col.b ? col.kinds[k] : KIND.BASEMENT,
+        cb,
+      );
+      const depth = y - s;
       if (depth < 0) continue;
       if (y >= bedrock) cells[i] = M.BEDROCK;
       else if (depth === 0)
-        cells[i] = streambed
+        cells[i] = bed
           ? M.GRAVEL
           : snowy
             ? M.SNOW
@@ -1056,7 +755,7 @@ export function generateWindow(seed: number, x0: number, width: number) {
               ? cover.top
               : M.ROCK;
       else if (snowy && depth < 3) cells[i] = M.SNOW;
-      else if (depth < soil) cells[i] = cover.sub;
+      else if (depth < soil && !bed) cells[i] = cover.sub;
       else cells[i] = M.ROCK;
     }
   }
@@ -1082,7 +781,15 @@ export function generateWindow(seed: number, x0: number, width: number) {
     const near = shafts.filter((s) => Math.abs(s.cx - wx) < s.hw * 2.2 + 40);
     for (let gy = 0; gy < GH; gy++) {
       const y = gy * G;
-      let o = cavernAt(seed, wx, y, p, g);
+      // Caves open most readily in limestone, least in granite.
+      let o = cavernAt(
+        seed,
+        wx,
+        y,
+        p,
+        g,
+        SOLUBLE[kindAt(rock[lx], SEA_ROW - y)],
+      );
       for (const s of near) {
         if (y < s.top || y > s.bottom) continue;
         const cx =
@@ -1154,37 +861,31 @@ export function generateWindow(seed: number, x0: number, width: number) {
   };
   carveSurface(win);
 
-  // 4. The lake, then pools and lava in hollows.
-  for (
-    let q = Math.floor(X0 / REGION_W);
-    q <= Math.floor((X0 + WW - 1) / REGION_W);
-    q++
-  ) {
-    const basin = basinOf(seed, q);
-    if (!basin) continue;
-    const { level, x0: lx0, x1: lx1 } = lakeOf(seed, basin),
-      lava = basin.liquid === M.LAVA;
-    for (let wx = lx0 + 1; wx < lx1; wx++) {
-      const x = wx - X0;
-      if (x < 0 || x >= WW || surface[x] <= level) continue; // dry land above the waterline
-      for (let y = level; y < surface[x]; y++)
-        if (cells[y * WW + x] === M.AIR) cells[y * WW + x] = basin.liquid;
-      // A sealed bed: sand at the shore, gravel deeper (or bare rock under
-      // lava); no cave breaks through it.
-      const shore = surface[x] - level < 8;
-      for (let y = surface[x]; y < Math.min(H, surface[x] + 12); y++) {
-        const i = y * WW + x;
-        if (cells[i] === M.BEDROCK) break;
-        if (y < surface[x] + 5 || cells[i] === M.AIR)
-          cells[i] = lava ? M.ROCK : shore ? M.SAND : M.GRAVEL;
-      }
+  // 4. The sea, lakes and rivers where the world has them: water stands from
+  // its level down to the ground, on a sealed bed of sand and gravel; then
+  // pools and lava in hollows.
+  for (let x = 0; x < WW; x++) {
+    const wx = X0 + x,
+      water = waterAt(seed, wx);
+    if (!water) continue;
+    const level = Math.round(SEA_ROW - water.level);
+    if (surface[x] <= level) continue; // dry land above the waterline
+    for (let y = Math.max(0, level); y < surface[x]; y++)
+      if (cells[y * WW + x] === M.AIR) cells[y * WW + x] = M.WATER;
+    const shore = surface[x] - level < 8;
+    for (let y = surface[x]; y < Math.min(H, surface[x] + 12); y++) {
+      const i = y * WW + x;
+      if (cells[i] === M.BEDROCK) break;
+      if (y < surface[x] + 4 || cells[i] === M.AIR)
+        cells[i] = shore ? M.SAND : M.GRAVEL;
     }
   }
+  sealWater(cells, WW, H);
   fillHollows(cells, WW, H, X0, seed, params, surface);
-  // In frozen biomes, lakes carry a thick sheet of ice under drifts of snow,
-  // and cave pools freeze, until the rock grows warm with depth.
+  // Where it is cold, lakes and seas carry a thick sheet of ice under drifts
+  // of snow, and cave pools freeze, until the rock grows warm with depth.
   for (let x = 0; x < WW; x++) {
-    if (params[x].ice < 0.5) continue;
+    if (warmthAt(seed, X0 + x, surface[x]) > -3) continue;
     const wx = X0 + x,
       sheet = 8 + Math.floor(8 * noise1(wx / 60, seed + 95));
     let run = 0;
@@ -1202,15 +903,6 @@ export function generateWindow(seed: number, x0: number, width: number) {
         for (let k = 1; k <= drift; k++) put(cells, WW, x, y - k, M.SNOW);
       }
     }
-  }
-  // Rivers: streams along their beds, waterfalls, and on into the basin.
-  for (
-    let q = Math.floor(X0 / REGION_W) - 1;
-    q <= Math.floor((X0 + WW) / REGION_W) + 1;
-    q++
-  ) {
-    const rv = riverOf(seed, q);
-    if (rv) pourRiver(seed, cells, WW, X0, q, rv);
   }
   // Fossils in the rock, on a fixed world grid.
   for (
@@ -1502,6 +1194,24 @@ function fillHollows(
  * islands smaller than minRock, so the rock reads as solid and caves as spaces.
  * Anything touching the window's sides is kept: it may continue beyond.
  */
+/** Water may stand only on something: any air beside or under it fills with sand. */
+function sealWater(cells: Uint8Array, WW: number, H: number) {
+  for (let pass = 0; pass < 3; pass++) {
+    let changed = false;
+    for (let y = 1; y < H - 1; y++)
+      for (let x = 0; x < WW; x++) {
+        const i = y * WW + x;
+        if (cells[i] !== M.WATER) continue;
+        for (const j of [x > 0 ? i - 1 : -1, x < WW - 1 ? i + 1 : -1, i + WW])
+          if (j >= 0 && cells[j] === M.AIR) {
+            cells[j] = M.SAND;
+            changed = true;
+          }
+      }
+    if (!changed) break;
+  }
+}
+
 function tidy(
   cells: Uint8Array,
   before: Uint8Array,
@@ -1944,95 +1654,6 @@ function crystals(
   }
 }
 
-/**
- * Pour a river: water on its course, flowing on top and still in its pools,
- * a falling sheet wherever its surface drops, and past its outlet rapids
- * down slopes and falls off drops until it reaches the basin's water. Worked
- * out from world functions alone, so every window agrees; only cells inside
- * this window are written.
- */
-function pourRiver(
-  seed: number,
-  cells: Uint8Array,
-  WW: number,
-  X0: number,
-  q: number,
-  rv: River,
-) {
-  const H = WORLD_H,
-    set = (wx: number, y: number, m: number) => {
-      const lx = wx - X0;
-      if (lx < 0 || lx >= WW || y < 0 || y >= H) return;
-      const i = y * WW + lx;
-      if (cells[i] === M.AIR) cells[i] = m;
-    },
-    ground = (wx: number) => Math.round(groundAt(seed, wx)),
-    f = rv.fdir,
-    D = rv.depth;
-  // A sheet of falling water from the lip at wx: it leaves moving outward, so
-  // it curves clear of the rock (out with the square root of the drop), and
-  // spreads as it falls; spray heaps up where it lands in water.
-  const sheet = (wx: number, from: number, to: number, splash: boolean) => {
-    for (let y = from; y < to; y++) {
-      const fallen = y - from,
-        out = Math.round(Math.sqrt(fallen)),
-        w = D + 2 + Math.min(6, Math.floor(fallen / 25));
-      for (let k = 0; k < w; k++) set(wx + f * (k + out), y, M.FALLS);
-    }
-    if (!splash) return;
-    const land = wx + f * (Math.round(Math.sqrt(to - from)) + (D + 2) / 2);
-    for (let dy = 1; dy <= 3; dy++)
-      for (let k = -(6 - dy * 2); k <= 6 - dy * 2 + D; k++)
-        set(Math.round(land + f * k), to - dy, M.FALLS);
-  };
-  // Along the course.
-  for (let i = 0; i < rv.surf.length; i++) {
-    const wx = rv.xs + f * i,
-      top = rv.surf[i],
-      g = ground(wx);
-    if (i > 0 && top - rv.surf[i - 1] > 2)
-      sheet(wx, rv.surf[i - 1], top, false);
-    for (let y = top; y < g; y++) set(wx, y, y - top < D ? M.STREAM : M.WATER);
-  }
-  // Past the outlet: on into the basin.
-  const basin = basinOf(seed, q),
-    lake = basin ? lakeOf(seed, basin) : null,
-    inLake = (wx: number, g: number) =>
-      lake !== null && wx > lake.x0 && wx < lake.x1 && g > lake.level;
-  let level = rv.surf[rv.surf.length - 1];
-  for (let n = 0, wx = rv.xo + f; n < 500; n++, wx += f) {
-    const g = ground(wx);
-    if (inLake(wx, g)) {
-      if (lake!.level - level > 2) sheet(wx, level, lake!.level, true);
-      return;
-    }
-    if (g < level + D - 1) return; // the land rises: the water pools against it
-    if (g - (level + D) > 3) {
-      // The ground drops away: find the foot of the drop (or the water below)
-      // and fall there in one sheet from the lip.
-      let foot = wx,
-        bottom = g;
-      for (let k = 1; k < 60; k++) {
-        const x2 = wx + f * k,
-          g2 = ground(x2);
-        if (inLake(x2, g2)) {
-          sheet(wx, level, lake!.level, true);
-          return;
-        }
-        if (g2 - bottom <= 2) break;
-        foot = x2;
-        bottom = g2;
-      }
-      sheet(wx, level, bottom, false);
-      wx = foot;
-      level = bottom - D;
-      continue;
-    }
-    for (let k = 1; k <= D; k++) set(wx, g - k, M.STREAM);
-    level = g - D;
-  }
-}
-
 /** A small brown mushroom on the floor at (x, y + 1). */
 function smallShroom(
   cells: Uint8Array,
@@ -2136,23 +1757,11 @@ function glowworm(
 
 /** A region's landmarks (for tools and, later, the director): basin, lake, cliff, river. */
 export function regionFeatures(seed: number, r: number) {
-  const basin = basinOf(seed, r),
-    lake = basin ? lakeOf(seed, basin) : null,
-    scarp = scarpOf(seed, r),
-    river = riverOf(seed, r);
   return {
     biome: BIOMES[regionBiome(seed, r)].id,
-    basin: basin && { x: Math.round(basin.c), level: lake?.level ?? -1 },
-    cliff: scarp && { x: Math.round(scarp.xc), plateauSide: scarp.dir },
     ...surfaceLandmarks(seed, r),
-    river: river && {
-      spring: river.xs,
-      outlet: river.xo,
-      falls: river.surf.reduce(
-        (n, w, i) => n + (i > 0 && w - river.surf[i - 1] > 2 ? 1 : 0),
-        0,
-      ),
-    },
+    /** Rivers no longer run along the ground: they cross it, in the world's channels. */
+    river: null as { spring: number; outlet: number; falls: number } | null,
   };
 }
 

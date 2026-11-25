@@ -20,20 +20,33 @@ import { groundAt } from "../../engine/strata/generate.ts";
 
 const hex = (h: string) =>
   [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
-// Rock strata per biome, in BIOMES order: highlands sandstone, fungal violet
-// shale, canyon red beds, forest limestone, peaks granite, basalt.
-const ROCK = [
-  ["#b98a5e", "#a8784f", "#c29a6a", "#9c6c4a", "#b08560", "#8f6448"],
-  ["#6f5f86", "#5f5578", "#7a6a90", "#574d6e", "#6a5c80", "#4f4766"],
-  ["#c8643c", "#d98a4e", "#b5523a", "#e0a066", "#a84a32", "#cf7a48"],
-  ["#b4ad90", "#a29c80", "#c2bb9e", "#958f76", "#aca68a", "#8a846c"],
-  ["#9aa3b2", "#8a93a3", "#a9b1bf", "#7c8596", "#949db0", "#6f7889"],
-  ["#6e6670", "#7d7280", "#625b68", "#8a7068", "#5a5462", "#94746a"],
-].map((p) => p.map(hex));
-/** Each biome's rock averaged over its strata: a cave's back wall leans to it. */
-const ROCK_AVG = ROCK.map((p) =>
-  [0, 1, 2].map((k) => p.reduce((s, c) => s + c[k], 0) / p.length),
+// Rock by kind (the band bits of a cell's state hold it; history.ts ROCK
+// order): basement gneiss, granite, basalt, volcanic ash, limestone, shale,
+// sandstone, mudstone, red beds, dune sandstone, coal, conglomerate, glacial
+// till, salt.
+const KIND = [
+  "#5a5468",
+  "#a88480",
+  "#4a4450",
+  "#c4b8a2",
+  "#c2bb98",
+  "#6e6c80",
+  "#c4925c",
+  "#8e7a66",
+  "#b0583c",
+  "#d8b07a",
+  "#2c2830",
+  "#9a8a76",
+  "#9a9ea8",
+  "#e2dcd2",
+].map(hex);
+const rockOf = (st: number) => KIND[bandOf(st) % KIND.length];
+/** All rock averaged: a cave's back wall leans to it. */
+const KIND_AVG = [0, 1, 2].map(
+  (k) => KIND.reduce((s, c) => s + c[k], 0) / KIND.length,
 );
+/** Looks (generate.ts BIOMES) that leaves and caps take their colours from. */
+const LOOKS = 6;
 const SOLID: number[][] = [];
 for (const [m, c] of [
   [M.SOIL, "#6b4a34"],
@@ -331,7 +344,12 @@ export interface MotionLayers {
  * plant together, row by row, in the wind at its base. Plants held along
  * much of their length (ivy on a cliff) or by rope (a bridge) stay still.
  */
-function swayField(W: number, H: number, cells: Uint8Array, surface: Int16Array) {
+function swayField(
+  W: number,
+  H: number,
+  cells: Uint8Array,
+  surface: Int16Array,
+) {
   const h = new Uint8Array(W * H),
     ax = new Uint8Array(W * H).fill(128),
     mark = new Uint8Array(W * H);
@@ -344,7 +362,8 @@ function swayField(W: number, H: number, cells: Uint8Array, surface: Int16Array)
       if (SILHOUETTE[m] || (m === M.SNOW && mark[i + W])) mark[i] = 1;
     }
   const comp: number[] = [],
-    support = (j: number) => j >= 0 && j < W * H && !mark[j] && cells[j] !== M.AIR;
+    support = (j: number) =>
+      j >= 0 && j < W * H && !mark[j] && cells[j] !== M.AIR;
   for (let i0 = 0; i0 < W * H; i0++) {
     if (!mark[i0] || h[i0]) continue;
     // Gather the plant: every marked cell joined to this one.
@@ -360,7 +379,15 @@ function swayField(W: number, H: number, cells: Uint8Array, surface: Int16Array)
         for (let dx = -1; dx <= 1; dx++) {
           const nx = x + dx,
             j = i + dy * W + dx;
-          if ((dx || dy) && nx >= 0 && nx < W && j >= 0 && j < W * H && mark[j] && !h[j]) {
+          if (
+            (dx || dy) &&
+            nx >= 0 &&
+            nx < W &&
+            j >= 0 &&
+            j < W * H &&
+            mark[j] &&
+            !h[j]
+          ) {
             h[j] = 1;
             comp.push(j);
           }
@@ -374,7 +401,12 @@ function swayField(W: number, H: number, cells: Uint8Array, surface: Int16Array)
     for (const i of comp) {
       const x = i % W,
         y = (i - x) / W;
-      if (!(support(i + W) || (x > 0 && support(i - 1)) || (x < W - 1 && support(i + 1)))) continue;
+      if (!(
+        support(i + W) ||
+        (x > 0 && support(i - 1)) ||
+        (x < W - 1 && support(i + 1))
+      ))
+        continue;
       held++;
       if (y > baseY) {
         baseY = y;
@@ -399,15 +431,10 @@ function swayField(W: number, H: number, cells: Uint8Array, surface: Int16Array)
 
 /** Render land to RGBA, one pixel per cell. */
 export const renderTimes: Record<string, number> = {};
-export function renderLand({
-  W,
-  H,
-  cells,
-  state,
-  surface,
-  x0,
-  seed = 0,
-}: Land, layers?: MotionLayers) {
+export function renderLand(
+  { W, H, cells, state, surface, x0, seed = 0 }: Land,
+  layers?: MotionLayers,
+) {
   let tt = performance.now();
   const lap = (k: string) => {
     const n = performance.now();
@@ -510,7 +537,9 @@ export function renderLand({
     far[x] =
       50 + 70 * r1 * r1 + 40 * r2 * r2 * r1 + 10 * fbm1(wx / 60, seed + 702, 2);
     near[x] =
-      22 + 28 * fbm1(wx / 520, seed + 703, 3) + 12 * fbm1(wx / 90, seed + 704, 2);
+      22 +
+      28 * fbm1(wx / 520, seed + 703, 3) +
+      12 * fbm1(wx / 90, seed + 704, 2);
   }
   for (let y = 0; y < H; y++) {
     const cut = 0.6 - 0.24 * Math.min(1, Math.max(0, (y - 400) / 900));
@@ -525,7 +554,7 @@ export function renderLand({
         wx = x0 + x,
         m = cells[i],
         st = state[i],
-        biome = biomeOf(st) % ROCK.length,
+        biome = biomeOf(st) % LOOKS,
         bay = BAYER[(y & 3) * 4 + (wx & 3)];
       const skyCell = y < surface[x];
       let cr: number, cg: number, cb: number;
@@ -593,7 +622,7 @@ export function renderLand({
         // Water: tinted, darker with depth, a bright line where it meets the air.
         const top = wd === 0 && y > 0 && cells[i - W] === M.AIR,
           f = Math.min(1, wd / 36),
-          rock = ROCK[biome][bandOf(st) % 6];
+          rock = rockOf(st);
         if (top) {
           cr = 0.75 * WATER[0] + 0.35;
           cg = 0.75 * WATER[1] + 0.35;
@@ -668,19 +697,14 @@ export function renderLand({
       } else {
         // Rock and everything solid, or the back wall of a cave behind open space.
         const mottle = 0.6 * fine.at(wx) + 0.4 * coarse.at(wx),
-          rock = ROCK[biome][bandOf(st) % 6],
+          rock = rockOf(st),
           h = grain(wx, y),
           seam =
             y > 0 &&
             cells[i - W] === M.ROCK &&
             bandOf(state[i - W]) !== bandOf(st),
-          // Basalt cools into columns: in some flows (strata), dark joints every
-          // 4 to 8 cells, spaced and offset by the flow.
-          bnd = bandOf(st),
-          joint =
-            biome === 5 &&
-            (bnd * 7) % 5 < 3 &&
-            (wx + bnd * 13) % (4 + ((bnd * 5) % 5)) === 0,
+          // Basalt cools into columns: dark joints every few cells.
+          joint = bandOf(st) === 2 && wx % 5 === 0,
           tex =
             (1 + (0.05 * ((h & 3) - 1.5)) / 1.5 + 0.12 * (mottle - 0.5)) *
             ((h >>> 8) % 97 === 0 ? 1.25 : 1) *
@@ -696,7 +720,7 @@ export function renderLand({
           // building's masonry. The cave's strata show only faintly on it,
           // and its ambient light dims with depth as the rock's does, so open
           // space always reads as a hole in the rock, however deep.
-          const avg = ROCK_AVG[biome],
+          const avg = KIND_AVG,
             back =
               m === M.BACKWALL
                 ? BRICK.map((v) => v * mortar * 1.1)
@@ -826,7 +850,8 @@ export function renderLand({
         } else if (m === M.AIR && skyCell) c = MOTION.SKY;
         // Water under the open sky glints and shimmers; in a cave no sunlight
         // reaches it, and under ice it is held, so there it lies still.
-        else if (m === M.WATER && skyCell && !frozen[x]) c = y > 0 && cells[i - W] === M.AIR ? MOTION.WATER_TOP : MOTION.WATER;
+        else if (m === M.WATER && skyCell && !frozen[x])
+          c = y > 0 && cells[i - W] === M.AIR ? MOTION.WATER_TOP : MOTION.WATER;
         else if (m === M.STREAM) c = MOTION.STREAM;
         else if (m === M.FALLS) c = MOTION.FALLS;
         else if (m === M.LAVA) c = MOTION.LAVA;

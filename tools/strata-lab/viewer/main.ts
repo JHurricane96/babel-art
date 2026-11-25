@@ -6,7 +6,8 @@
 // are unavailable) and uploaded to the GPU as layers. Every frame the WebGL2
 // renderer draws them with the sky, water, lava and plants moving; particles
 // and creatures go on top; a 2D overlay carries the wall mask and markers.
-import { BIOMES, BLEND, groundAt, regionBiome } from "../../../engine/strata/generate.ts";
+import { groundAt } from "../../../engine/strata/generate.ts";
+import { biomeNameAt } from "../../../engine/strata/worldmap.ts";
 import { REGION_W, WORLD_H } from "../../../engine/strata/world.ts";
 import { Renderer, type GpuTile } from "./gl.ts";
 import { Life } from "./life.ts";
@@ -14,16 +15,22 @@ import { APRON, buildTile, type Emitters, type Tile } from "./tile.ts";
 
 declare const WORKER_SOURCE: string;
 
-const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+const $ = <T extends HTMLElement>(id: string) =>
+  document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>("view"),
   overlay = $<HTMLCanvasElement>("overlay"),
   octx = overlay.getContext("2d")!,
-  gl = canvas.getContext("webgl2", { antialias: false, alpha: false, preserveDrawingBuffer: true });
+  gl = canvas.getContext("webgl2", {
+    antialias: false,
+    alpha: false,
+    preserveDrawingBuffer: true,
+  });
 
 /** The view: centre in art pixels, and screen (device) pixels per art pixel. */
 const view = {
   seed: 7,
-  x: 2 * REGION_W - 150,
+  // Inland, past the ocean at the world's left end.
+  x: 40 * REGION_W + 1000,
   y: 560,
   scale: 4,
   drift: false,
@@ -35,7 +42,9 @@ const view = {
 const DRIFT = 6; // art pixels per second
 
 let renderer: Renderer | null = null,
-  failure = gl ? "" : "This viewer needs WebGL2, which this browser hasn't made available.";
+  failure = gl
+    ? ""
+    : "This viewer needs WebGL2, which this browser hasn't made available.";
 try {
   if (gl) renderer = new Renderer(gl);
 } catch (e) {
@@ -61,7 +70,12 @@ function accept(t: Tile) {
   pending.delete(key(t.seed, t.r));
   if (!renderer) return;
   last = `region ${t.r}: land ${(t.genMs / 1000).toFixed(1)} s, light ${(t.lightMs / 1000).toFixed(1)} s`;
-  cache.set(key(t.seed, t.r), { gpu: renderer.upload(t), surface: t.surface, emit: t.emit, used: performance.now() });
+  cache.set(key(t.seed, t.r), {
+    gpu: renderer.upload(t),
+    surface: t.surface,
+    emit: t.emit,
+    used: performance.now(),
+  });
   evict();
 }
 
@@ -80,7 +94,9 @@ let workers = 0,
   mainThread = false,
   mainBusy = false;
 try {
-  const url = URL.createObjectURL(new Blob([WORKER_SOURCE], { type: "text/javascript" })),
+  const url = URL.createObjectURL(
+      new Blob([WORKER_SOURCE], { type: "text/javascript" }),
+    ),
     n = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 1));
   for (let k = 0; k < n; k++) {
     const w = new Worker(url);
@@ -179,8 +195,22 @@ function frame_(t: number, dt: number) {
     sources.push(e.emit);
   }
   if (view.motion)
-    life.update(dt, t, { left, top, right: left + W / s, bottom: top + H / s }, sources, ground);
-  renderer!.draw(visible, { left, top, scale: s, W, H }, t, view.seed, view.motion, life.buf, life.count);
+    life.update(
+      dt,
+      t,
+      { left, top, right: left + W / s, bottom: top + H / s },
+      sources,
+      ground,
+    );
+  renderer!.draw(
+    visible,
+    { left, top, scale: s, W, H },
+    t,
+    view.seed,
+    view.motion,
+    life.buf,
+    life.count,
+  );
 
   // Overlay: regions still building, region edges, the wall mask.
   octx.clearRect(0, 0, W, H);
@@ -200,7 +230,12 @@ function frame_(t: number, dt: number) {
     for (let r = r0; r <= r1 + 1; r++) {
       const x = r * REGION_W * s - ox;
       for (let y = 0; y < H; y += 12 * devicePixelRatio)
-        octx.fillRect(x, y, Math.max(1, Math.round(devicePixelRatio)), 6 * devicePixelRatio);
+        octx.fillRect(
+          x,
+          y,
+          Math.max(1, Math.round(devicePixelRatio)),
+          6 * devicePixelRatio,
+        );
     }
   }
   if (view.wall) {
@@ -230,17 +265,9 @@ function frame_(t: number, dt: number) {
 // ---- HUD -----------------------------------------------------------------
 
 const fmt = new Intl.NumberFormat("en");
+/** The world's biome here, and the one it is turning into. */
 function biomeLabel(x: number) {
-  const r = Math.floor(x / REGION_W),
-    local = x - r * REGION_W,
-    here = BIOMES[regionBiome(view.seed, r)].name;
-  const nearLeft = local < BLEND,
-    nearRight = REGION_W - local < BLEND;
-  if (nearLeft || nearRight) {
-    const other = BIOMES[regionBiome(view.seed, nearLeft ? r - 1 : r + 1)].name;
-    if (other !== here) return nearLeft ? `${other} → ${here}` : `${here} → ${other}`;
-  }
-  return here;
+  return biomeNameAt(view.seed, x);
 }
 
 let hudText = "",
@@ -252,20 +279,31 @@ function updateHud() {
     status = failure
       ? failure
       : busy
-      ? `Building ${busy} region${busy > 1 ? "s" : ""}${mainThread ? " on the page (workers unavailable)" : ""}…`
-      : last
-        ? `Ready · ${last}`
-        : "Ready",
+        ? `Building ${busy} region${busy > 1 ? "s" : ""}${mainThread ? " on the page (workers unavailable)" : ""}…`
+        : last
+          ? `Ready · ${last}`
+          : "Ready",
     gpu = renderer?.gpuMs ? ` · GPU ${renderer.gpuMs.toFixed(1)} ms` : "",
     perf = `${Math.round(fps)} fps · frame ${cpuMs.toFixed(1)} ms${gpu} · ${life.count} sprites`,
     where = `region ${region} · x ${fmt.format(Math.round(view.x))} · y ${fmt.format(Math.round(view.y))}`,
-    text = [biomeLabel(view.x), where, view.scale, status, perf, view.drift, view.edges, view.wall, view.motion].join("|");
+    text = [
+      biomeLabel(view.x),
+      where,
+      view.scale,
+      status,
+      perf,
+      view.drift,
+      view.edges,
+      view.wall,
+      view.motion,
+    ].join("|");
   if (text === hudText) return;
   hudText = text;
   $("biome").textContent = biomeLabel(view.x);
   $("where").textContent = where;
   $("scale").textContent = `${view.scale}`;
-  $("scale-note").textContent = `${fmt.format(Math.round(1920 / view.scale))} art px across a 1920 px screen`;
+  $("scale-note").textContent =
+    `${fmt.format(Math.round(1920 / view.scale))} art px across a 1920 px screen`;
   $("status").textContent = status;
   $("perf").textContent = perf;
   for (const [id, on] of [
@@ -288,7 +326,11 @@ const ro = new ResizeObserver((entries) => {
   const e = entries[0],
     box = e.devicePixelContentBoxSize?.[0];
   if (box) resize(box.inlineSize, box.blockSize);
-  else resize(Math.round(e.contentRect.width * devicePixelRatio), Math.round(e.contentRect.height * devicePixelRatio));
+  else
+    resize(
+      Math.round(e.contentRect.width * devicePixelRatio),
+      Math.round(e.contentRect.height * devicePixelRatio),
+    );
 });
 try {
   ro.observe(canvas, { box: "device-pixel-content-box" });
@@ -313,7 +355,8 @@ function toSurface() {
 }
 function toEdge(dir: number) {
   const k = view.x / REGION_W;
-  view.x = (dir > 0 ? Math.floor(k + 1e-6) + 1 : Math.ceil(k - 1e-6) - 1) * REGION_W;
+  view.x =
+    (dir > 0 ? Math.floor(k + 1e-6) + 1 : Math.ceil(k - 1e-6) - 1) * REGION_W;
   toSurface();
   life.reset();
 }
@@ -375,7 +418,11 @@ overlay.addEventListener(
     e.preventDefault();
     wheel += e.deltaY;
     if (Math.abs(wheel) < 60) return;
-    setScale(view.scale + (wheel < 0 ? 1 : -1), e.offsetX * devicePixelRatio, e.offsetY * devicePixelRatio);
+    setScale(
+      view.scale + (wheel < 0 ? 1 : -1),
+      e.offsetX * devicePixelRatio,
+      e.offsetY * devicePixelRatio,
+    );
     wheel = 0;
   },
   { passive: false },
@@ -399,7 +446,8 @@ addEventListener("keydown", (e) => {
   else if (k === "]") toEdge(1);
   else if (k === "Home") toSurface();
   else if (k === "PageDown") $("deeper").click();
-  else if (k === "PageUp") view.y = Math.max(0, view.y - (0.5 * canvas.height) / view.scale);
+  else if (k === "PageUp")
+    view.y = Math.max(0, view.y - (0.5 * canvas.height) / view.scale);
   else if (k === " ") {
     e.preventDefault();
     toggle("drift");
@@ -448,7 +496,9 @@ Object.assign(window, {
   },
 });
 $<HTMLInputElement>("seed").value = String(view.seed);
-$("workers").textContent = mainThread ? "on the page" : `${workers} worker${workers === 1 ? "" : "s"}`;
+$("workers").textContent = mainThread
+  ? "on the page"
+  : `${workers} worker${workers === 1 ? "" : "s"}`;
 requestAnimationFrame((t) => {
   prev = t;
   toSurface();

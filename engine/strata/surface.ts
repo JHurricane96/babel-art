@@ -7,16 +7,8 @@
 // the order a window is filled in, so every window that covers a feature
 // builds it the same way. Features reach at most ~120 cells from where they
 // are decided, well inside a window's margin.
-import {
-  BIOMES,
-  type Params,
-  basinOf,
-  groundAt,
-  inCourse,
-  lakeOf,
-  regionBiome,
-  riverOf,
-} from "./generate";
+import { BIOMES, type Params, groundAt, regionBiome } from "./generate";
+import { riversIn, waterAt } from "./worldmap";
 import {
   M,
   REGION_W,
@@ -45,15 +37,12 @@ const H = WORLD_H;
 const rng = (a: number, b: number, c: number) =>
   walkRandom(Math.floor(hash3(a, b, c) * 4294967296));
 
-/** Near a basin or on a river's course: keep clear. */
+/** Near water (the sea, a lake, a river's channel): keep clear. */
 export function reserved(seed: number, wx: number, pad = 20) {
-  const r = Math.floor(wx / REGION_W),
-    basin = basinOf(seed, r);
-  if (basin && Math.abs(wx - basin.c) < 1.4 * basin.w + pad) return true;
-  const rv = riverOf(seed, r);
   return (
-    rv !== null &&
-    (inCourse(rv, wx) || inCourse(rv, wx - pad) || inCourse(rv, wx + pad))
+    waterAt(seed, wx) !== null ||
+    waterAt(seed, wx - pad) !== null ||
+    waterAt(seed, wx + pad) !== null
   );
 }
 
@@ -425,7 +414,8 @@ function ruin(w: Win, q: number) {
 
 function ruinSite(seed: number, q: number) {
   const b = BIOMES[regionBiome(seed, q)];
-  if (hash3(seed, q, 750) > b.ruins) return null;
+  // Ruins are rare until the world has people of its own.
+  if (hash3(seed, q, 750) > 0.25 * b.ruins) return null;
   const R = rng(seed, q, 751),
     tower = R() < 0.45,
     fw = tower ? 12 + Math.floor(R() * 8) : 26 + Math.floor(R() * 22);
@@ -513,28 +503,38 @@ function buildRuin(
         }
 }
 
-/** A rope bridge across a canyon, rim to rim, sagging, with a few planks gone. */
+/**
+ * A rope bridge across a river's canyon, rim to rim, sagging, with a few
+ * planks gone: wherever a river has cut a gorge deep and narrow enough to
+ * be worth bridging, now and then.
+ */
 function bridgeSite(seed: number, q: number) {
-  const b = BIOMES[regionBiome(seed, q)];
-  if (!b.bridge || hash3(seed, q, 760) > 0.8) return null;
-  const basin = basinOf(seed, q);
-  if (!basin) return null;
-  // The rims: the highest ground on each side of the canyon.
-  const rim = (dir: number) => {
-    let x = 0,
-      y = Infinity;
-    for (let d = basin.w * 0.7; d <= basin.w * 1.6; d += 2) {
-      const xx = Math.round(basin.c + dir * d),
-        gy = groundAt(seed, xx);
-      if (gy < y) [x, y] = [xx, gy];
-    }
-    return { x, y: Math.round(y) };
-  };
-  const L = rim(-1),
-    Rt = rim(1),
-    span = Rt.x - L.x;
-  if (span < 40 || Math.abs(Rt.y - L.y) > span * 0.25) return null;
-  return { L, Rt, span };
+  for (const rv of riversIn(
+    seed,
+    q * REGION_W + 150,
+    (q + 1) * REGION_W - 150,
+  )) {
+    if (hash3(seed, Math.round(rv.xc), 760) > 0.6) continue;
+    // The rims: the highest ground on each side within reach.
+    const rim = (dir: number) => {
+      let x = 0,
+        y = Infinity;
+      for (let d = rv.hw + 4; d <= rv.hw + 140; d += 2) {
+        const xx = Math.round(rv.xc + dir * d),
+          gy = groundAt(seed, xx);
+        if (gy < y) [x, y] = [xx, gy];
+      }
+      return { x, y: Math.round(y) };
+    };
+    const L = rim(-1),
+      Rt = rim(1),
+      span = Rt.x - L.x,
+      floor = groundAt(seed, rv.xc);
+    if (span < 40 || Math.abs(Rt.y - L.y) > span * 0.25) continue;
+    if (floor - Math.max(L.y, Rt.y) < 45) continue; // not a gorge
+    return { L, Rt, span };
+  }
+  return null;
 }
 
 function bridge(w: Win, q: number) {

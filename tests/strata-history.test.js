@@ -81,7 +81,7 @@ test("climate makes a varied world, not one biome", () => {
   }
 });
 
-test("mountains are colder than the plains either side", () => {
+test("a range's peak is colder than the low ground near it", () => {
   let ranges = 0,
     colder = 0;
   for (const seed of [1, 2, 3, 4, 5, 6]) {
@@ -89,14 +89,18 @@ test("mountains are colder than the plains either side", () => {
     for (const ev of w.events) {
       if (ev.kind !== "range") continue;
       const c = Math.round(ev.c),
-        half = Math.round(ev.w / 2),
-        a = Math.max(0, c - half - 20),
-        b = Math.min(w.n - 1, c + half + 20);
-      if (w.wet[a] || w.wet[b]) continue;
+        half = Math.round(ev.w / 2);
+      let at = c;
+      for (let i = c - half; i < c + half; i++)
+        if (w.surface[i] > w.surface[at]) at = i;
+      // The lowest land within a region of the peak.
+      let low = at;
+      for (let i = at - 32; i <= at + 32; i++)
+        if (i >= 0 && i < w.n && !w.wet[i] && w.surface[i] < w.surface[low])
+          low = i;
+      if (w.surface[at] - w.surface[low] < 100) continue;
       ranges++;
-      const peak = Math.max(...w.surface.slice(c - half, c + half)),
-        at = w.surface.indexOf(peak);
-      if (w.T[at] < Math.min(w.T[a], w.T[b])) colder++;
+      if (w.T[at] < w.T[low]) colder++;
     }
   }
   assert.ok(ranges >= 3, `only ${ranges} ranges to check`);

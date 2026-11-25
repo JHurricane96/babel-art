@@ -103,7 +103,7 @@ export const BIOMES: { name: string; color: string }[] = [
 // ---- The plan: what this world's history will hold --------------------------
 
 export type EventKind =
-  "range" | "rift" | "arc" | "pluton" | "basin" | "plateau";
+  "range" | "hills" | "rift" | "arc" | "pluton" | "basin" | "plateau";
 export interface WorldEvent {
   kind: EventKind;
   /** Centre and width, in cells. */
@@ -154,6 +154,27 @@ export interface WorldOptions {
   regions?: number;
   /** Keep a snapshot of every era (for the overview's history slider). */
   record?: boolean;
+}
+
+/** Land biome runs longer than `max` regions, as column ranges. */
+function longRuns(biome: Uint8Array, n: number, wet: Uint8Array, max = 12) {
+  const per = REGION_W / CELL,
+    regions = Math.floor(n / per),
+    main: number[] = [];
+  for (let r = 0; r < regions; r++) {
+    const count = new Map<number, number>();
+    for (let i = r * per; i < (r + 1) * per; i++)
+      if (wet[i] !== 3) count.set(biome[i], (count.get(biome[i]) ?? 0) + 1);
+    main.push(count.size ? [...count].sort((a, b) => b[1] - a[1])[0][0] : -1);
+  }
+  const out: [number, number][] = [];
+  for (let r = 0; r < regions;) {
+    let e = r;
+    while (e < regions && main[e] === main[r]) e++;
+    if (main[r] >= 0 && e - r > max) out.push([r * per, e * per]);
+    r = e;
+  }
+  return out;
 }
 
 /** One era's state, as the overview draws it. */
@@ -223,9 +244,9 @@ function planWorld(seed: number, regions: number) {
       return n / 2;
     };
   const perRegion = REGION_W / CELL;
-  const ranges = 1 + Math.floor(r(10) * 3);
+  const ranges = 2 + Math.floor(r(10) * 4);
   for (let i = 0; i < ranges; i++) {
-    const w = perRegion * (6 + 20 * r(11 + i)),
+    const w = perRegion * (2 + 6 * r(11 + i)),
       e0 = Math.floor(6 + 26 * r(12 + i)),
       d = Math.floor(6 + 10 * r(13 + i));
     events.push({
@@ -235,14 +256,14 @@ function planWorld(seed: number, regions: number) {
       e0,
       e1: Math.min(ERAS, e0 + d),
       amp: 350 + 400 * r(14 + i),
-      fold: perRegion * (2 + 5 * r(15 + i)),
+      fold: perRegion * (0.8 + 1.5 * r(15 + i)),
       foldAmp: 0.15 + 0.25 * r(16 + i),
       phase: 6.283 * r(17 + i),
     });
   }
   const rifts = Math.floor(r(20) * 2.6);
   for (let i = 0; i < rifts; i++) {
-    const w = perRegion * (2 + 6 * r(21 + i)),
+    const w = perRegion * (1 + 3 * r(21 + i)),
       e0 = Math.floor(10 + 30 * r(22 + i));
     events.push({
       kind: "rift",
@@ -254,7 +275,7 @@ function planWorld(seed: number, regions: number) {
     });
   }
   if (r(30) < 0.6) {
-    const w = perRegion * (6 + 8 * r(31)),
+    const w = perRegion * (3 + 4 * r(31)),
       e0 = Math.floor(14 + 24 * r(32));
     events.push({
       kind: "arc",
@@ -273,7 +294,7 @@ function planWorld(seed: number, regions: number) {
     events.push({
       kind: "basin",
       c: n * (0.15 + 0.7 * r(52 + i)),
-      w: perRegion * (20 + 40 * r(53 + i)),
+      w: perRegion * (8 + 17 * r(53 + i)),
       e0,
       e1: Math.min(ERAS, e0 + 15 + Math.floor(15 * r(54 + i))),
       amp: 120 + 140 * r(55 + i),
@@ -284,15 +305,50 @@ function planWorld(seed: number, regions: number) {
     events.push({
       kind: "plateau",
       c: n * (0.2 + 0.6 * r(62)),
-      w: perRegion * (20 + 30 * r(63)),
+      w: perRegion * (8 + 12 * r(63)),
       e0,
       e1: Math.min(ERAS, e0 + 6 + Math.floor(6 * r(64))),
       amp: 250 + 200 * r(65),
     });
   }
+  // No long stretch without relief: hills fill any gap of more than about 10
+  // regions, so the land (and with it the rain and the warmth) keeps changing.
+  {
+    const relief = events
+        .filter((ev) => ev.kind !== "basin")
+        .map((ev) => [ev.c - ev.w / 2, ev.c + ev.w / 2] as [number, number])
+        .sort((a, b) => a[0] - b[0]),
+      gaps: [number, number][] = [];
+    let from = n * 0.05;
+    for (const [a, b] of relief) {
+      if (a > from) gaps.push([from, a]);
+      from = Math.max(from, b);
+    }
+    if (n * 0.95 > from) gaps.push([from, n * 0.95]);
+    let k = 0;
+    for (const [a, b] of gaps) {
+      const len = b - a,
+        count = Math.floor(len / (perRegion * 10));
+      for (let j = 0; j < count; j++, k++) {
+        const w = perRegion * (1 + 2 * r(600 + k)),
+          e0 = Math.floor(14 + 26 * r(601 + k));
+        events.push({
+          kind: "hills",
+          c: a + ((j + 0.5 + 0.5 * (r(602 + k) - 0.5)) * len) / count,
+          w,
+          e0,
+          e1: Math.min(ERAS, e0 + 4 + Math.floor(6 * r(603 + k))),
+          amp: 150 + 200 * r(604 + k),
+          fold: perRegion * (0.5 + 1 * r(605 + k)),
+          foldAmp: 0.1 + 0.2 * r(606 + k),
+          phase: 6.283 * r(607 + k),
+        });
+      }
+    }
+  }
   const plutons = 1 + Math.floor(r(40) * 3);
   for (let i = 0; i < plutons; i++) {
-    const w = perRegion * (1 + 3 * r(41 + i)),
+    const w = perRegion * (0.6 + 1.5 * r(41 + i)),
       e = Math.floor(8 + 36 * r(42 + i));
     events.push({
       kind: "pluton",
@@ -426,13 +482,19 @@ export function simulateWorld(seed: number, opts: WorldOptions = {}): World {
     Mb = new Float32Array(n);
   for (let i = 0; i < n; i++) {
     const u = i / (n - 1);
+    // The world's own curve, long swells along it, and shorter ones about a
+    // dozen regions long, so the climate keeps moving.
     T0[i] =
       plan.tMean +
       plan.tAmp *
-        (plan.shape.f(u) + 0.25 * (2 * fbm1(u * 6, seed + 70, 3) - 1));
-    // How much moisture reaches each stretch from seas beside the strip.
+        (plan.shape.f(u) + 0.25 * (2 * fbm1(u * 6, seed + 70, 3) - 1)) +
+      5 * (2 * fbm1(i / 240, seed + 72, 2) - 1);
+    // How much moisture reaches each stretch from seas beside the strip:
+    // wet and dry stretches, sharpened so neither runs on too long.
+    const v = fbm1(i / 260, seed + 71, 3),
+      sharp = clamp(0.5 + 1.9 * (v - 0.5), 0, 1);
     Mb[i] = clamp(
-      plan.wetness * (1.7 * fbm1(i / 420, seed + 71, 3) - 0.2) + 0.5 * edge(i),
+      plan.wetness * (1.5 * sharp - 0.05) + 0.5 * edge(i),
       0.04,
       1.2,
     );
@@ -550,7 +612,7 @@ export function simulateWorld(seed: number, opts: WorldOptions = {}): World {
             0,
             1,
           );
-          if (ev.kind === "range") {
+          if (ev.kind === "range" || ev.kind === "hills") {
             const half = ev.w / 2,
               ramp = ev.w * 0.35,
               body =
@@ -815,7 +877,7 @@ export function simulateWorld(seed: number, opts: WorldOptions = {}): World {
       for (let i = 0; i < n - 1; i++) {
         const za = surfaceOf(cols[i]),
           zb = surfaceOf(cols[i + 1]),
-          excess = (Math.abs(za - zb) - 0.45 * CELL) / 2;
+          excess = (Math.abs(za - zb) - 0.8 * CELL) / 2;
         if (excess <= 0) continue;
         const [hi, lo] = za > zb ? [i, i + 1] : [i + 1, i];
         // Rock that falls into a river is carried off; elsewhere it piles up as scree.
@@ -826,23 +888,41 @@ export function simulateWorld(seed: number, opts: WorldOptions = {}): World {
 
       // 6. What grows in place: limestone in warm shallow seas, coal in warm
       // swamps, wind-blown sand in deserts.
+      // The kind of sea floor goes by the depth smoothed over a few columns,
+      // so it changes over broad stretches, not from one column to the next.
+      for (let i = 0; i < n; i++) z[i] = surfaceOf(cols[i]);
+      for (let i = 0; i < n; i++) {
+        let sum = 0,
+          cnt = 0;
+        for (let k = Math.max(0, i - 4); k <= Math.min(n - 1, i + 4); k++) {
+          sum += s - z[k];
+          cnt++;
+        }
+        sed[i] = sum / cnt;
+      }
       for (let i = 0; i < n; i++) {
         const c = cols[i],
-          h = surfaceOf(c);
+          h = z[i];
         if (wet[i] === 3) {
-          const depth = s - h;
-          if (T[i] > 14 && depth > 4 && depth < 140)
-            addLayer(c, ROCK.LIMESTONE, 3.5 * dt * (1 - depth / 140), e);
-          // Mud and sand from rivers we don't see settle in shallow seas,
-          // until they build up into coastal flats.
-          if (depth < 220)
+          const depth = s - h,
+            broad = sed[i];
+          // One kind a step: limestone on warm shallow shelves; elsewhere mud
+          // and sand from rivers we don't see, building up into coastal flats.
+          if (T[i] > 14 && broad > 4 && broad < 140 && depth < 140)
             addLayer(
               c,
-              depth < 30 ? ROCK.SANDSTONE : ROCK.SHALE,
+              ROCK.LIMESTONE,
+              Math.min(depth + 3, 3.5 * dt * (1 - depth / 140)),
+              e,
+            );
+          else if (depth < 220)
+            addLayer(
+              c,
+              broad < 30 ? ROCK.SANDSTONE : ROCK.SHALE,
               Math.min(depth + 3, 3.6 * dt * (1 - depth / 220)),
               e,
             );
-          else if (depth >= 220) addLayer(c, ROCK.SHALE, 0.4 * dt, e);
+          else addLayer(c, ROCK.SHALE, 0.4 * dt, e);
         } else if (wet[i] === 0) {
           const a = i > 0 ? z[i - 1] : z[i],
             b = i < n - 1 ? z[i + 1] : z[i],
@@ -887,7 +967,77 @@ export function simulateWorld(seed: number, opts: WorldOptions = {}): World {
   }
   offsets[n] = o;
 
-  const { biome, biome2, blend } = biomesOf(n, surface, W, wet, T, P);
+  // Today's climate on today's land, with local features where one biome
+  // would otherwise run on for too long.
+  const tFinal = T0.map((t) => t + tg[ERAS - 1]),
+    climateToday = () => {
+      for (let i = 0; i < n; i++) {
+        T[i] = tFinal[i] - 0.025 * Math.max(0, surface[i]);
+        Tsea[i] = tFinal[i];
+      }
+      rainfall(P, W, wet, Tsea, Mb, plan.windFromLeft);
+      return biomesOf(n, surface, W, wet, T, P);
+    };
+  let today = climateToday();
+  const features: { c: number; kind: "warm" | "cold" | "wet" | "dry" }[] = [];
+  for (let pass = 0; pass < 8; pass++) {
+    const long = longRuns(today.biome, n, wet);
+    if (!long.length) break;
+    for (const [from, to] of long) {
+      // Try each kind of local feature in the middle of the run; keep the one
+      // that changes the most of the middle stretch.
+      const mid = (from + to) / 2,
+        sigma = (3 * REGION_W) / CELL,
+        lo = Math.max(0, Math.floor(mid - 3 * sigma)),
+        hi = Math.min(n, Math.ceil(mid + 3 * sigma)),
+        was = today.biome[Math.round(mid)];
+      let best: (typeof features)[number]["kind"] | null = null,
+        bestChanged = 0;
+      const saveT = tFinal.slice(lo, hi),
+        saveM = Mb.slice(lo, hi);
+      let bestStrength = 1;
+      const apply = (
+        kind: (typeof features)[number]["kind"],
+        strength: number,
+      ) => {
+        for (let i = lo; i < hi; i++) {
+          const g = strength * Math.exp(-0.5 * ((i - mid) / sigma) ** 2);
+          tFinal[i] =
+            saveT[i - lo] +
+            (kind === "warm" ? 6 : kind === "cold" ? -6 : 0) * g;
+          Mb[i] =
+            kind === "wet"
+              ? saveM[i - lo] + 0.6 * g
+              : saveM[i - lo] *
+                (kind === "dry" ? Math.max(0.05, 1 - 0.75 * g) : 1);
+        }
+      };
+      // A gentle feature first; a stronger one if that barely shows.
+      for (const strength of [1, 1.8])
+        if (bestChanged < 0.4 * 2 * sigma)
+          for (const kind of ["wet", "dry", "warm", "cold"] as const) {
+            apply(kind, strength);
+            const b = climateToday().biome;
+            let changed = 0;
+            for (let i = Math.floor(mid - sigma); i < mid + sigma; i++)
+              if (b[i] !== was) changed++;
+            if (changed > bestChanged) {
+              bestChanged = changed;
+              best = kind;
+              bestStrength = strength;
+            }
+          }
+      if (best) {
+        apply(best, bestStrength);
+        features.push({ c: mid, kind: best });
+      } else {
+        tFinal.set(saveT, lo);
+        Mb.set(saveM, lo);
+      }
+    }
+    today = climateToday();
+  }
+  const { biome, biome2, blend } = today;
   return {
     seed,
     regions,
@@ -1091,7 +1241,11 @@ export function describeWorld(w: World) {
   const where = (c: number) => `region ${Math.floor((c * CELL) / REGION_W)}`;
   for (const ev of w.events) {
     const span = `${Math.round((ev.w * CELL) / REGION_W)} regions wide`;
-    if (ev.kind === "range")
+    if (ev.kind === "hills")
+      lines.push(
+        `Hills rose around ${where(ev.c)}, ${span}, in eras ${ev.e0} to ${ev.e1 - 1}.`,
+      );
+    else if (ev.kind === "range")
       lines.push(
         `A mountain range rose around ${where(ev.c)}, ${span}, in eras ${ev.e0} to ${ev.e1 - 1}.`,
       );
