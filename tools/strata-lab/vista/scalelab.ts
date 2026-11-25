@@ -4,7 +4,9 @@
 // in the ways that trouble pixel art in perspective: towards the scene, sideways, turning,
 // and back. Each method draws the same frame its own way, on the CPU, so the lab renders to
 // video here and runs as an interactive page anywhere.
-import { CLASS_H, NC, type Img, TREE_NAMES, drawParts, slotDefs, slotIndex } from "./sprites";
+import { M } from "../../../engine/strata/world";
+import { hex, rampOf, shiftColor } from "./color";
+import { CLASS_H, LEAF_HEX, NC, type Img, type Part, TREE_NAMES, drawParts, rampsFor, slotDefs, slotIndex } from "./sprites";
 import { TREE_KINDS, mulberry } from "./valley";
 import { drawVoxel, setView, voxelModel } from "./voxels";
 
@@ -28,6 +30,7 @@ export const METHODS = [
   { id: "seamsB24", name: "Rows and columns, one drawing from 24 px", note: "One big drawing (384 px) for every size from 24 px up, so trees in view never switch drawings; under 24 px, drawings made for 12 and 24 px. The only switches are at 12 and 24 px, and each changes about as much as a one-row step. Smooth, and right at every size." },
   { id: "parts", name: "Trees in clumps, placed exactly", note: "Trees 24 px and over are taken apart into the leaf clumps, trunk and branches their big drawing was made from. At every size each part goes back at its own place, scaled and rounded to the pixel, and shrinks by its own rows and columns, so each glides at a steady pace as it would in 3D, and the tree never tears along a row. Under 24 px, and for everything that is not a tree: rows and columns, one drawing from 24 px." },
   { id: "all", name: "Everything, each in its own way", note: "Trees and shrubs as clumps placed exactly (trees under 24 px: rows and columns). Grass, flowers and ferns are strokes, and rocks flat facets: redrawn at their exact size, since lines and flat shapes have nothing to shimmer; a rock's grain, moss and cracks stay fixed to the stone. People and the ox redrawn at their exact size: their walk changes them every few frames anyway." },
+  { id: "forest", name: "Everything, every tree its own", note: "As everything, but no two trees alike: each takes its species' drawing apart and puts it back its own way, with its own leaf colour, a few clumps gone or turned for autumn, its crown a little wider or narrower. Nothing is redrawn." },
   { id: "masses", name: "Trees in leaf masses, placed exactly", note: "As trees in parts, but the parts are the leaf masses each crown is heaped from (and the trunk and branches), not every clump: fewer parts sliding against each other, each mass growing by its own rows and columns. Shrunk a long way, a mass keeps only one line in several and goes lacy, so clumps are better." },
   { id: "seams1", name: "Rows and columns, one drawing at every size", note: "One big drawing (384 px) for every size from 6 px up: it never switches drawings, so it is the smoothest, but under about 20 px it keeps only one row in 20 and trees come out wrong (thick trunks, lopsided crowns)." },
 ] as const;
@@ -295,7 +298,7 @@ export function frame(objs: Obj[], t: number, method: Method, rgba: Uint8Clamped
     let slot = o.slot;
     if (o.walker >= 0) slot = SLOT.get(`person ${o.walker} 0 ${Math.floor((it.x + 100) / 0.6) & 3}`)!;
     const vm = method === "voxel" ? voxelModel(DEFS[slot].name, slot) : null,
-      local = vm ? drawVoxel(vm, o.h, { x: it.x, z: o.z }, cam, F) : spriteImg(method === "voxel" ? "seams" : method, slot, it.want, o.maxClass);
+      local = vm ? drawVoxel(vm, o.h, { x: it.x, z: o.z }, cam, F) : spriteImg(method === "voxel" ? "seams" : method, slot, it.want, o.maxClass, o.id);
     blit(rgba, local, ax, ay);
     log?.set(o.id, local);
   }
@@ -304,7 +307,7 @@ export function frame(objs: Obj[], t: number, method: Method, rgba: Uint8Clamped
 
 /** The image a method shows for a thing wanting to be `want` px tall. */
 const made = new Map<string, Img>();
-export function spriteImg(method: Method, slot: number, want: number, maxClass: number): Img {
+export function spriteImg(method: Method, slot: number, want: number, maxClass: number, id?: number): Img {
   const maxH = CLASS_H[maxClass];
   if (method === "jumps") return imgAt(slot, CLASS_H[Math.min(maxClass, Math.max(0, Math.round(classFor(want))))]);
   if (method === "pixel") return imgAt(slot, Math.min(Math.max(maxH, 400), Math.max(1, Math.round(want))));
@@ -312,6 +315,14 @@ export function spriteImg(method: Method, slot: number, want: number, maxClass: 
     const cap = maxClass >= 25 ? 384 : maxH * 2,
       H = Math.min(Math.max(1, Math.round(want)), cap);
     if (IS_TREE[slot]) return H >= PARTS_MIN ? partsImg(slot, H, cap) : seamImg(slot, H, false, cap, "big24");
+    if (IS_SHRUB[slot] && H >= PARTS_MIN) return partsImg(slot, H, cap);
+    return imgAt(slot, Math.min(Math.max(maxH, 400), H));
+  }
+  if (method === "forest") {
+    const cap = maxClass >= 25 ? 384 : maxH * 2,
+      H = Math.min(Math.max(1, Math.round(want)), cap),
+      v = variantOf(id ?? 0);
+    if (IS_TREE[slot]) return H >= PARTS_MIN ? variantImg(slot, H, cap, v) : recolour(slot, seamImg(slot, H, false, cap, "big24"), v);
     if (IS_SHRUB[slot] && H >= PARTS_MIN) return partsImg(slot, H, cap);
     return imgAt(slot, Math.min(Math.max(maxH, 400), H));
   }
@@ -355,7 +366,7 @@ export function spriteImg(method: Method, slot: number, want: number, maxClass: 
 export const PARTS_MIN = 24;
 const IS_TREE = DEFS.map((d) => TREE_NAMES.includes(d.name.split(" ")[0])),
   IS_SHRUB = DEFS.map((d) => d.name.startsWith("shrub")),
-  partsOf = new Map<string, Img[]>();
+  partsOf = new Map<string, Part[]>();
 export type PartLevel = "clump" | "mass";
 export function treeParts(slot: number, K: number, level: PartLevel = "clump") {
   const key = `${slot}|${K}|${level}`;
@@ -432,6 +443,109 @@ export function partsImg(slot: number, H: number, K: number, level: PartLevel = 
   keyframeOf.set(im, K);
   return im;
 }
+
+// ---- One drawing, many trees ------------------------------------------------------------------------
+// The parts keep each pixel's material and shade, so a tree in a forest can put its species' drawing
+// back together its own way: its own leaf colour (lighter or darker, a little turned), some clumps
+// left out (a thinner crown) or turned for autumn, its crown a little wider or narrower. It grows
+// exactly as before, part by part.
+export interface Variant {
+  seed: number;
+  dL: number;
+  dHue: number;
+  chroma: number;
+  autumn: number;
+  keep: number;
+  widen: number;
+}
+export function variantOf(seed: number, autumn = 0.25): Variant {
+  const R = mulberry(seed * 7919 + 3);
+  return { seed, dL: (R() - 0.5) * 0.09, dHue: (R() - 0.5) * 0.4, chroma: 0.8 + 0.35 * R(), autumn: R() < 0.3 ? autumn * R() : 0, keep: 0.8 + 0.2 * R(), widen: 0.88 + 0.24 * R() };
+}
+const AUTUMN = [rampOf(hex("#c89a32")), rampOf(hex("#b8582c")), rampOf(hex("#a8b040"))];
+const hash01 = (a: number, b: number) => {
+  let h = Math.imul(a | 0, 0x27d4eb2d) ^ Math.imul(b | 0, 0x165667b1);
+  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
+  return ((h ^ (h >>> 13)) >>> 0) / 4294967296;
+};
+const rgba = (c: number[]) => (255 << 24) | (Math.round(c[2] * 255) << 16) | (Math.round(c[1] * 255) << 8) | Math.round(c[0] * 255);
+function leafRamp(slot: number, v: Variant) {
+  return rampOf(shiftColor(hex(LEAF_HEX[DEFS[slot].name.split(" ")[0]]), v.dL, v.dHue, v.chroma));
+}
+export function variantImg(slot: number, H: number, K: number, v: Variant): Img {
+  const key = `v${slot}|${H}|${K}|${v.seed}`;
+  let im = made.get(key);
+  if (im) return im;
+  const s = H / K,
+    parts = treeParts(slot, K),
+    leafR = leafRamp(slot, v).map(rgba),
+    woodR = rampsFor(DEFS[slot].name.split(" ")[0])[M.WOOD].map(rgba),
+    autumnR = AUTUMN.map((r) => r.map(rgba)),
+    leaves = parts.filter((p) => p.leaf),
+    crownX = leaves.reduce((a, p) => a + (-p.ax + p.w / 2), 0) / Math.max(1, leaves.length);
+  const placed: { p: Part; x: number; y: number; rows: number[]; cols: number[]; ramp: number[] | null }[] = [];
+  let x0 = 1e9,
+    y0 = 1e9,
+    x1 = -1e9,
+    y1 = -1e9;
+  parts.forEach((p, i) => {
+    if (p.leaf && hash01(i, v.seed) > v.keep) return;
+    const l = linesOf(p, Math.max(1, Math.round(p.h * s))),
+      cc = Math.floor(p.w / 2),
+      sx = cc - p.ax + 0.5,
+      wx = p.leaf ? crownX + (sx - crownX) * v.widen : sx,
+      x = Math.round(wx * s - 0.5) - l.c,
+      y = Math.round((Math.floor(p.h / 2) - p.ay + 0.5) * s - 0.5) - l.r,
+      ramp = p.leaf && hash01(i, v.seed + 1) < v.autumn ? autumnR[Math.floor(hash01(i, v.seed + 2) * 3)] : null;
+    placed.push({ p, x, y, rows: l.rows, cols: l.cols, ramp });
+    x0 = Math.min(x0, x);
+    y0 = Math.min(y0, y);
+    x1 = Math.max(x1, x + l.cols.length);
+    y1 = Math.max(y1, y + l.rows.length);
+  });
+  const w = x1 - x0,
+    h = y1 - y0,
+    data = new Uint8ClampedArray(w * h * 4),
+    out = new Uint32Array(data.buffer);
+  for (const { p, x, y, rows, cols, ramp } of placed) {
+    const src = wordsOf(p);
+    for (let yy = 0; yy < rows.length; yy++)
+      for (let xx = 0; xx < cols.length; xx++) {
+        const q = rows[yy] * p.w + cols[xx],
+          mt = p.mt[q];
+        if (!mt) continue;
+        const m = mt >> 3,
+          t = (mt & 7) - 1;
+        out[(y - y0 + yy) * w + x - x0 + xx] = m === M.LEAF ? (ramp ?? leafR)[t] : m === M.WOOD ? woodR[t] : src[q];
+      }
+  }
+  im = { w, h, ax: -x0, ay: -y0, data };
+  made.set(key, im);
+  keyframeOf.set(im, K);
+  return im;
+}
+/** A small tree's drawing in a variant's leaf colour (its shape is the species' own). */
+function recolour(slot: number, src: Img, v: Variant): Img {
+  const key = `r${slot}|${v.seed}`;
+  let byImg = recoloured.get(src);
+  if (!byImg) recoloured.set(src, (byImg = new Map()));
+  let im = byImg.get(key);
+  if (im) return im;
+  const from = rampsFor(DEFS[slot].name.split(" ")[0])[M.LEAF].map(rgba),
+    to = leafRamp(slot, v).map(rgba),
+    map = new Map(from.map((c, k) => [c >>> 0, to[k]])),
+    data = new Uint8ClampedArray(src.data),
+    u = new Uint32Array(data.buffer);
+  for (let k = 0; k < u.length; k++) {
+    const c = map.get(u[k] >>> 0);
+    if (c !== undefined) u[k] = c;
+  }
+  im = { ...src, data };
+  byImg.set(key, im);
+  keyframeOf.set(im, keyframeOf.get(src) ?? 0);
+  return im;
+}
+const recoloured = new WeakMap<Img, Map<string, Img>>();
 
 function dithered(lo: Img, hi: Img, f: number, vis: number): Img {
   const x0 = Math.min(-lo.ax, -hi.ax),

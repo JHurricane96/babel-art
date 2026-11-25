@@ -24,6 +24,13 @@ export interface Img {
   ay: number;
   data: Uint8ClampedArray;
 }
+/** A piece of a drawing (sprites.ts drawParts), with each pixel's material and shade kept
+ * (material * 8 + shade, 0 where empty), so it can be coloured again, differently, later. */
+export interface Part extends Img {
+  mt: Uint8Array;
+  /** Mostly leaves (a clump, a strand), not wood. */
+  leaf: boolean;
+}
 export interface SlotDef {
   name: string;
   /** Its height in the world, metres (what the size class is chosen by). */
@@ -218,6 +225,7 @@ const BARK: Record<string, string> = {
   oak: "#5a4636", beech: "#8a8478", maple: "#5e4c3e", birch: "#e4e0d4",
   spruce: "#4a3a2e", fir: "#4a3a30", pine: "#9a6040",
 };
+export const LEAF_HEX = LEAF;
 export const rampsFor = (name: string) => ({
   [M.LEAF]: rampOf(hex(LEAF[name])),
   [M.WOOD]: rampOf(hex(BARK[name])),
@@ -512,7 +520,7 @@ function treeDraw(name: string) {
  * image anchored at the tree's foot like the whole, in drawing order; painted in order they make
  * the whole drawing again.
  */
-export function drawParts(def: SlotDef, H: number, seed: number, level: "clump" | "mass" = "clump"): Img[] {
+export function drawParts(def: SlotDef, H: number, seed: number, level: "clump" | "mass" = "clump"): Part[] {
   PART_LEVEL = level;
   REC = [];
   PART = 0;
@@ -528,7 +536,7 @@ export function drawParts(def: SlotDef, H: number, seed: number, level: "clump" 
   if (!cv || !ramps) return [];
   // Each part is drawn whole before the next begins, so its pixels are one run of the record;
   // a pixel set twice within a part keeps the later value, as on the canvas.
-  const parts: Img[] = [];
+  const parts: Part[] = [];
   for (let a = 0; a < rec.length; ) {
     let b = a;
     while (b < rec.length && rec[b] === rec[a]) b += 5;
@@ -544,16 +552,21 @@ export function drawParts(def: SlotDef, H: number, seed: number, level: "clump" 
     }
     const w = x1 - x0 + 1,
       h = y1 - y0 + 1,
-      data = new Uint8ClampedArray(w * h * 4);
+      data = new Uint8ClampedArray(w * h * 4),
+      mt = new Uint8Array(w * h);
+    let leafPx = 0;
     for (let i = a; i < b; i += 5) {
       const c = (ramps[rec[i + 3]] ?? ramps[M.LEAF])[rec[i + 4] - 1],
-        o = ((rec[i + 2] - y0) * w + rec[i + 1] - x0) * 4;
+        q = (rec[i + 2] - y0) * w + rec[i + 1] - x0,
+        o = q * 4;
       data[o] = c[0] * 255;
       data[o + 1] = c[1] * 255;
       data[o + 2] = c[2] * 255;
       data[o + 3] = 255;
+      mt[q] = rec[i + 3] * 8 + rec[i + 4];
     }
-    parts.push({ w, h, ax: cv.ox - x0, ay: cv.oy - y0, data });
+    for (let q = 0; q < mt.length; q++) if (mt[q] >> 3 === M.LEAF) leafPx++;
+    parts.push({ w, h, ax: cv.ox - x0, ay: cv.oy - y0, data, mt, leaf: leafPx * 2 > (b - a) / 5 });
     a = b;
   }
   return parts;

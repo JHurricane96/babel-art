@@ -40,3 +40,12 @@ export function rampOf(base: number[], spread = 1): number[][] {
   }
   return out;
 }
+
+/** A colour moved in OKLab: lighter or darker by dL, turned by dHue radians, chroma scaled. */
+export function shiftColor(base: number[], dL: number, dHue: number, chroma = 1): number[] {
+  const [L, a, b] = oklab(toLin(base[0]), toLin(base[1]), toLin(base[2])),
+    c = Math.cos(dHue),
+    s = Math.sin(dHue),
+    [r, g, bb] = fromOklab(Math.min(0.97, Math.max(0.05, L + dL)), (a * c - b * s) * chroma, (a * s + b * c) * chroma);
+  return [r, g, bb].map((v) => toSrgb(Math.min(1, Math.max(0, v))));
+}

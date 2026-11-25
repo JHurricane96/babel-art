@@ -13,7 +13,9 @@ let shown: Method[] = ["dither", "jumps", "pixel", "seamsB24", "parts", "all"],
   speed = 0.5,
   t = 0,
   zoom = 0;
-for (const m of shown) {
+// Views that only show alone (not in the six), drawn when first asked for.
+const extra: Method[] = ["forest"];
+for (const m of [...shown, ...extra]) {
   const c = document.createElement("canvas");
   c.width = PW;
   c.height = PH;
