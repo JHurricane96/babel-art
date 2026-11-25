@@ -8,7 +8,7 @@
 // crowns heaped from shaded leaf clumps); small ones, conifers, people,
 // ground cover, the ox and the cart are drawn here.
 import { M } from "../../../engine/strata/world";
-import { TREES, type Canvas, type CrownStyle, boulder, branch, crown, fern, trunk } from "../../../engine/strata/art";
+import { TREES, type Canvas, type CrownStyle, boulder, branch, fern, trunk } from "../../../engine/strata/art";
 import { hex, rampOf } from "./color";
 import { mulberry } from "./valley";
 
@@ -101,6 +101,96 @@ const canvasFor = (H: number, wide: number, seed: number) => {
     h = H + 16;
   return { c: new MatCanvas(w, h, Math.floor(w / 2), h - 4, seed), foot: [0, 0] as [number, number] };
 };
+
+// ---- Crowns that keep their detail as they grow ----------------------------------------------
+// The forest slice's crown (art.ts) heaps leaf clumps; here each clump has its own fixed random
+// values (adding a clump at a bigger size leaves the others alone) and its texture, holes,
+// speckles and dither are fixed to the clump's own centre, so one pixel more of tree moves each
+// clump a little instead of reshuffling what is inside it.
+const LEAF_TEX = [
+  "0+0-00+0+00-",
+  "++0--0++00--",
+  "+0-00+0+-0+0",
+  "0-00++0-0+++",
+  "-0+0+--00+0-",
+  "0++0-00+0-00",
+  "+00--0+++0-0",
+  "0-0+0++0-00+",
+].map((r) => [...r].map((ch) => (ch === "+" ? 1 : ch === "-" ? -1 : 0)));
+const NEEDLE_TEX = [
+  "0+00-0+00-",
+  "0+0--0+0-0",
+  "+0-00+00-0",
+  "0-00+0-0+0",
+  "-00+0-0+00",
+].map((r) => [...r].map((ch) => (ch === "+" ? 1 : ch === "-" ? -1 : 0)));
+const LX = -0.55,
+  LY = -0.7,
+  LZ = 0.45;
+const EDGE_V = new Float32Array(32);
+function crownV(c: MatCanvas, cx: number, cy: number, rx: number, ry: number, st: CrownStyle, seed: number) {
+  const n = Math.max(3, Math.round((Math.PI * rx * ry * st.density) / (st.r0 * st.r1))),
+    clumps: { x: number; y: number; r: number; z: number; s: number }[] = [];
+  for (let k = 0; k < n; k++) {
+    const R = mulberry(seed * 1009 + k * 7919),
+      a = R() * Math.PI * 2,
+      d = Math.sqrt(R()),
+      x = cx + Math.cos(a) * d * Math.max(0, rx - st.r0 * 0.6),
+      y = cy + Math.sin(a) * d * Math.max(0, ry - st.r0 * 0.6),
+      r = st.r0 + (st.r1 - st.r0) * R() * (1 - 0.4 * d);
+    clumps.push({ x, y, r, z: R() + (0.3 * (y - cy)) / ry, s: Math.floor(R() * 1e9) });
+  }
+  clumps.sort((p, q) => p.z - q.z);
+  for (const q of clumps) {
+    const pos = 0.5 - 0.5 * ((q.x - cx) / rx) * 0.45 - 0.5 * ((q.y - cy) / ry) * 0.9;
+    clumpV(c, q.x, q.y, q.r, pos, st, q.s);
+  }
+}
+function clumpV(c: MatCanvas, cx: number, cy: number, r: number, pos: number, st: CrownStyle, seed: number) {
+  const R = mulberry(seed),
+    ox = Math.floor(R() * 12),
+    oy = Math.floor(R() * 8),
+    salt = Math.floor(R() * 1e9),
+    tex = st.needles ? NEEDLE_TEX : LEAF_TEX,
+    lobes = 5 + Math.floor(R() * 4),
+    phase = R() * 6.28,
+    rag = (0.12 + 0.08 * R()) * (st.rag ?? 1),
+    ix = Math.round(cx),
+    iy = Math.round(cy);
+  for (let k = 0; k < 32; k++) {
+    const a = (k / 32) * Math.PI * 2 - Math.PI;
+    EDGE_V[k] = r * (1 + rag * Math.sin(lobes * a + phase) + rag * 0.5 * Math.sin(2.3 * lobes * a));
+  }
+  const holes = st.holes * 0.02,
+    speck = st.speckle * 0.25,
+    tw = tex[0].length,
+    th = tex.length;
+  for (let y = Math.floor(cy - r - 1); y <= Math.ceil(cy + r + 1); y++)
+    for (let x = Math.floor(cx - r - 1); x <= Math.ceil(cx + r + 1); x++) {
+      const dx = x + 0.5 - cx,
+        dy = y + 0.5 - cy,
+        rr = dx * dx + dy * dy;
+      if (rr > r * r * 1.45) continue;
+      const bin = ((Math.atan2(dy, dx) + Math.PI) * (32 / (Math.PI * 2))) | 0,
+        d = Math.sqrt(rr) / EDGE_V[bin > 31 ? 31 : bin];
+      if (d > 1) continue;
+      // Everything below is fixed to the clump's own centre.
+      const lx = x - ix,
+        ly = y - iy,
+        hc = hashCell(lx, ly, salt);
+      if (holes && d < 0.8 && hc < holes) continue;
+      const nz = Math.sqrt(Math.max(0, 1 - d * d)),
+        nx = dx / EDGE_V[bin > 31 ? 31 : bin],
+        ny = dy / EDGE_V[bin > 31 ? 31 : bin],
+        lam = Math.max(0, nx * LX + ny * LY + nz * LZ),
+        v = 0.55 * lam + 0.45 * pos,
+        tx = tex[(((ly + oy) % th) + th) % th][(((lx + ox) % tw) + tw) % tw];
+      let t = 1 + Math.floor(v * 5 + bay(lx & 3, ly & 3) - 0.25) + tx;
+      if (d > 0.82 && nx * LX + ny * LY < 0) t -= 1 + (d > 0.93 ? 1 : 0);
+      if (t >= 4 && hc > 1 - speck) t = 6;
+      c.set(x, y, M.LEAF, Math.max(1, Math.min(6, t)));
+    }
+}
 
 // ---- Trees ---------------------------------------------------------------------------------
 const LEAF: Record<string, string> = {
@@ -229,10 +319,12 @@ function massSmall(c: MatCanvas, m: Mass, H: number, salt: number, needles: bool
       if (d > 1) continue;
       const nz = Math.sqrt(Math.max(0, 1 - d * d)),
         lam = Math.max(0, -0.55 * dx - 0.7 * dy + 0.45 * nz);
-      let t = 1 + Math.floor(lam * 4.2 + 1 + bay(x, y) - 0.4);
+      const lx = x - Math.round(m.x),
+        ly = y - Math.round(m.y);
+      let t = 1 + Math.floor(lam * 4.2 + 1 + bay(lx & 3, ly & 3) - 0.4);
       if (d > 0.78 && dx * -0.55 + dy * -0.7 < 0) t -= 1;
-      if (H >= 10 && t >= 4 && hashCell(x, y, salt) > (needles ? 0.92 : 0.86)) t = 6;
-      if (H >= 12 && d < 0.85 && hashCell(x, y, salt + 1) < 0.05) t = Math.max(1, t - 2);
+      if (H >= 10 && t >= 4 && hashCell(lx, ly, salt) > (needles ? 0.92 : 0.86)) t = 6;
+      if (H >= 12 && d < 0.85 && hashCell(lx, ly, salt + 1) < 0.05) t = Math.max(1, t - 2);
       c.set(x, y, M.LEAF, t);
     }
 }
@@ -268,8 +360,7 @@ function broadleaf(name: string, H: number, seed: number): Img {
     }
   plan.masses.forEach((m, i) => {
     const mm = { x: m.x * H, y: m.y * H, rx: m.rx * H, ry: m.ry * H };
-    c.R = mulberry(seed * 7 + i * 131);
-    if (big) crown(c, mm.x, mm.y, mm.rx, mm.ry, st);
+    if (big) crownV(c, mm.x, mm.y, mm.rx, mm.ry, st, seed * 7 + i * 131);
     else massSmall(c, mm, H, seed + i * 17, false);
   });
   if (plan.fringe && H >= 20) {
@@ -319,12 +410,10 @@ function conifer(name: string, H: number, seed: number): Img {
         for (let j = 0; j < n; j++) {
           const u = n === 1 ? 0.55 : 0.35 + 0.45 * j,
             droop = th * 0.35 * u * u;
-          c.R = mulberry(seed * 13 + k * 7 + j * 3 + (side + 1));
-          crown(c, side * w * u, y + droop, Math.max(1.5, w * (n === 1 ? 0.5 : 0.36)), Math.max(1.2, th * 0.5), st);
+          crownV(c, side * w * u, y + droop, Math.max(1.5, w * (n === 1 ? 0.5 : 0.36)), Math.max(1.2, th * 0.5), st, seed * 13 + k * 7 + j * 3 + (side + 1));
         }
       }
-      c.R = mulberry(seed * 17 + k);
-      crown(c, 0, y - th * 0.15, Math.max(1.2, w * 0.35), Math.max(1.2, th * 0.55), st);
+      crownV(c, 0, y - th * 0.15, Math.max(1.2, w * 0.35), Math.max(1.2, th * 0.55), st, seed * 17 + k);
     } else {
       // The tier as one drooping shape: wide at its foot, lit on the left, shadowed beneath.
       const rows = Math.max(1, Math.round(th));
@@ -342,8 +431,7 @@ function conifer(name: string, H: number, seed: number): Img {
     }
   }
   if (big) {
-    c.R = mulberry(seed + 5);
-    crown(c, 0, -H + H * 0.05, Math.max(1, p.W * H * 0.05), Math.max(1.5, H * 0.06), st);
+    crownV(c, 0, -H + H * 0.05, Math.max(1, p.W * H * 0.05), Math.max(1.5, H * 0.06), st, seed + 5);
   } else c.set(0, -H, M.LEAF, 4);
   return c.toImg(rampsFor(name), 0, 0);
 }
@@ -379,8 +467,7 @@ function pine(H: number, seed: number): Img {
   if (big || H >= 12) for (const l of p.limbs) branch(c, l.x0 * H, l.y0 * H, l.x2 * H, l.y2 * H, big ? Math.max(1, Math.round(l.w * H)) : 1);
   p.pads.forEach((m, i) => {
     const mm = { x: m.x * H, y: m.y * H, rx: Math.max(1.2, m.rx * H), ry: Math.max(1, m.ry * H) };
-    c.R = mulberry(seed * 7 + i * 131);
-    if (big) crown(c, mm.x, mm.y, mm.rx, mm.ry, st);
+    if (big) crownV(c, mm.x, mm.y, mm.rx, mm.ry, st, seed * 7 + i * 131);
     else massSmall(c, mm, H, seed + i * 17, true);
   });
   return c.toImg(rampsFor("pine"), 0, 0);
@@ -460,9 +547,8 @@ function shrubDraw(H: number, seed: number): Img {
   if (H < 5) {
     for (let x = -1; x <= 1; x++) for (let y = -H; y < 0; y++) c.set(x, y, M.LEAF, 4 - (x > 0 ? 2 : 0) - (y === -1 ? 1 : 0));
   } else {
-    c.R = mulberry(seed);
     const k = Math.max(0.6, H / 14);
-    crown(c, 0, -H / 2, H * 0.7, H / 2, { r0: 2.2 * k, r1: 3.6 * k, density: 1.8, speckle: 0.35, holes: 0 });
+    crownV(c, 0, -H / 2, H * 0.7, H / 2, { r0: 2.2 * k, r1: 3.6 * k, density: 1.8, speckle: 0.35, holes: 0 }, seed);
   }
   return c.toImg({ [M.LEAF]: SHRUB_R }, 0, 0);
 }
