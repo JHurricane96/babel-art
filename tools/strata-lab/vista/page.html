@@ -43,6 +43,9 @@ dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; f
 dt { color: var(--muted); }
 dd { margin: 0; font-variant-numeric: tabular-nums; min-width: 0; }
 #mode-note { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+.check-out { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--muted); border-top: 1px solid var(--line); padding-top: 8px; }
+.check-out b { color: var(--fg); font-weight: 500; }
+button:disabled { opacity: 0.5; cursor: default; }
 .controls { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; }
 .group { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
 .group > span { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-right: 4px; }
@@ -89,6 +92,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
           <dt>Drawn</dt><dd id="r-drawn">–</dd>
         </dl>
         <p id="mode-note"></p>
+        <p id="check-out" class="check-out">Check motion plays three stretches to time the frames on this device, then steps one shot frame by frame to count flickering pixels. It takes about half a minute and saves the numbers for Claude.</p>
       </div>
     </aside>
   </div>
@@ -114,6 +118,10 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
       <button id="t-bands" data-toggle="bands" aria-pressed="true">Layer bands</button>
       <button id="t-marker" data-toggle="marker" aria-pressed="true">Party marker</button>
       <button id="t-wall" data-toggle="wall" aria-pressed="true">Wall frame</button>
+    </div>
+    <div class="group" role="group" aria-label="Measure">
+      <span>Measure</span>
+      <button id="check">Check motion</button>
     </div>
   </div>
 </div>

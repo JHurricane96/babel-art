@@ -274,6 +274,52 @@ function coverTile(tx: number, tz: number): Float32Array {
 }
 const coverCache = new Map<number, Float32Array>();
 let coverKey = "";
+/** Is a disc (centre x, z, radius r) at all in view of a camera at (cx, cz) facing yaw, within far? */
+function inView(x: number, z: number, r: number, cx: number, cz: number, yaw: number, far: number) {
+  const ex = x - cx,
+    ez = z - cz,
+    d = ex * Math.sin(yaw) + ez * Math.cos(yaw),
+    l = ex * Math.cos(yaw) - ez * Math.sin(yaw);
+  return d > -r && d < far + r && Math.abs(l) < Math.max(0, d) * Math.tan(FOV / 2 + 0.15) + r * 1.5;
+}
+
+// Trees, kept by 128 m buckets so a frame hands the GPU only those in view.
+const TBK = 128,
+  TNB = Math.ceil((FINE.n * FINE.cell) / TBK);
+let treeAll = new Float32Array(0),
+  treeStart = new Int32Array(TNB * TNB + 1),
+  treeOut = new Float32Array(0),
+  lastCull = { x: 1e9, z: 0, yaw: 0 };
+function bucketTrees(t: Float32Array) {
+  const n = t.length / 6,
+    count = new Int32Array(TNB * TNB + 1),
+    bk = (i: number) => Math.min(TNB - 1, Math.max(0, Math.floor(t[i * 6 + 2] / TBK))) * TNB + Math.min(TNB - 1, Math.max(0, Math.floor(t[i * 6] / TBK)));
+  for (let i = 0; i < n; i++) count[bk(i) + 1]++;
+  for (let b = 0; b < TNB * TNB; b++) count[b + 1] += count[b];
+  treeStart = count.slice();
+  treeAll = new Float32Array(t.length);
+  treeOut = new Float32Array(t.length);
+  const fill = count.slice();
+  for (let i = 0; i < n; i++) treeAll.set(t.subarray(i * 6, i * 6 + 6), fill[bk(i)]++ * 6);
+}
+function cullTrees(c: Camera) {
+  let dy = c.yaw - lastCull.yaw;
+  while (dy > Math.PI) dy -= 2 * Math.PI;
+  while (dy < -Math.PI) dy += 2 * Math.PI;
+  if (Math.hypot(c.x - lastCull.x, c.z - lastCull.z) < 15 && Math.abs(dy) < 0.05) return null;
+  lastCull = { x: c.x, z: c.z, yaw: c.yaw };
+  let n = 0;
+  for (let bz = 0; bz < TNB; bz++)
+    for (let bx = 0; bx < TNB; bx++) {
+      const b = bz * TNB + bx,
+        a0 = treeStart[b],
+        a1 = treeStart[b + 1];
+      if (a0 === a1 || !inView(bx * TBK + TBK / 2, bz * TBK + TBK / 2, TBK * 0.75, c.x, c.z, c.yaw, 6000)) continue;
+      treeOut.set(treeAll.subarray(a0 * 6, a1 * 6), n);
+      n += (a1 - a0) * 6;
+    }
+  return treeOut.subarray(0, n);
+}
 function coverAround(x: number, z: number, yaw: number) {
   const RAD = 210,
     fx = Math.sin(yaw),
@@ -284,7 +330,7 @@ function coverAround(x: number, z: number, yaw: number) {
     t1x = Math.floor((cx + RAD) / TILE),
     t0z = Math.floor((cz - RAD) / TILE),
     t1z = Math.floor((cz + RAD) / TILE),
-    key = `${t0x},${t0z}`;
+    key = `${t0x},${t0z},${Math.round(yaw * 8)}`;
   if (key === coverKey) return null;
   coverKey = key;
   const parts: Float32Array[] = [],
@@ -292,6 +338,7 @@ function coverAround(x: number, z: number, yaw: number) {
   for (let tz = t0z; tz <= t1z; tz++)
     for (let tx = t0x; tx <= t1x; tx++) {
       const k = tz * 100000 + tx;
+      if (!inView(tx * TILE + TILE / 2, tz * TILE + TILE / 2, TILE, x, z, yaw, RAD * 1.6)) continue;
       keep.add(k);
       let t = coverCache.get(k);
       if (!t) coverCache.set(k, (t = coverTile(tx, tz)));
@@ -623,7 +670,8 @@ function onDone() {
       trees.set([t[i], t[i + 1], t[i + 2], t[i + 3], t[i + 4] * 3 + t[i + 5], 2], o);
       o += 6;
     }
-  treesList = renderer.sprites(trees);
+  bucketTrees(trees);
+  treesList = renderer.sprites(new Float32Array(0));
   coverList = renderer.sprites(new Float32Array(0));
   actorList = renderer.sprites(new Float32Array(0));
   buildMap();
@@ -670,9 +718,196 @@ void MID;
 void FAR;
 void hash2;
 
+// ---- Checking motion on this device ----------------------------------------------------------------
+/**
+ * How much of a frame does not move like pixel art: for each 8 x 8 block, the best whole-pixel shift
+ * of the frame before it (up to 4 px across, 2 up or down), and the pixels that shift still leaves
+ * wrong. Rigid layers scrolling by whole pixels leave none; shimmer, crawling edges and popping do.
+ */
+export function unexplained(prev: Uint8Array, cur: Uint8Array, W: number, H: number) {
+  const a = new Uint32Array(prev.buffer, prev.byteOffset, W * H),
+    b = new Uint32Array(cur.buffer, cur.byteOffset, W * H),
+    BS = 8,
+    quarters = [0, 0, 0, 0],
+    totals = [0, 0, 0, 0];
+  let bad = 0,
+    all = 0,
+    changed = 0;
+  for (let i = 0; i < W * H; i++) if (a[i] !== b[i]) changed++;
+  for (let by = 0; by + BS <= H; by += BS)
+    for (let bx = 0; bx + BS <= W; bx += BS) {
+      let best = BS * BS;
+      for (let dy = 0; dy <= 4 && best > 0; dy++)
+        for (let dx = 0; dx <= 8 && best > 0; dx++) {
+          const sy = dy & 1 ? -((dy + 1) >> 1) : dy >> 1,
+            sx = dx & 1 ? -((dx + 1) >> 1) : dx >> 1;
+          if (bx + sx < 0 || by + sy < 0 || bx + sx + BS > W || by + sy + BS > H) continue;
+          let m = 0;
+          for (let y = 0; y < BS && m < best; y++) {
+            let i = (by + y) * W + bx,
+              j = (by + y + sy) * W + bx + sx;
+            for (let x = 0; x < BS; x++, i++, j++) if (b[i] !== a[j]) m++;
+          }
+          if (m < best) best = m;
+        }
+      // readPixels rows run bottom-up: quarter 0 is the top of the picture.
+      const q = Math.min(3, Math.floor(((H - 1 - by) / H) * 4));
+      quarters[q] += best;
+      totals[q] += BS * BS;
+      bad += best;
+      all += BS * BS;
+    }
+  return { unexplained: bad / all, changed: changed / (W * H), byQuarter: quarters.map((v, i) => v / Math.max(1, totals[i])) };
+}
+const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+async function runCheck(o: { quick?: boolean; timing?: boolean; settle?: number; frames?: number } = {}) {
+  const quick = !!o.quick;
+  const btn = $("check") as HTMLButtonElement,
+    outEl = $("check-out"),
+    say = (t: string) => (outEl.textContent = t),
+    keep = { mode, speed, paused, snap: opt.snap, s };
+  btn.disabled = true;
+  const gl = renderer.gl,
+    dbg = gl.getExtension("WEBGL_debug_renderer_info"),
+    result: Record<string, unknown> = {
+      at: new Date().toISOString(),
+      device: {
+        gpu: String(dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)),
+        agent: navigator.userAgent,
+        cores: navigator.hardwareConcurrency || 0,
+        dpr: window.devicePixelRatio || 1,
+        screen: `${screen.width}x${screen.height}`,
+        canvas: `${view.width}x${view.height}`,
+      },
+      buildMs: Math.round(buildMs),
+    };
+  try {
+    // 1. Frame times as it runs, on three stretches (the loop must be running).
+    if (hold) {
+      hold = false;
+      requestAnimationFrame((t) => {
+        last = t;
+        frame(t);
+      });
+    }
+    const stretches = [];
+    for (const name of o.timing === false ? [] : ["Riverside", "Town", "Switchbacks"]) {
+      say(`Timing frames: ${name}…`);
+      mode = "auto";
+      speed = 6;
+      paused = false;
+      s = CHAPTERS.find((c) => c.name === name)!.s;
+      snap = true;
+      await pause(quick ? 300 : 1200);
+      frameLog = [];
+      await pause(quick ? 1500 : 5000);
+      const log = frameLog;
+      frameLog = null;
+      const dts = log.map((l) => l[0]).sort((x, y) => x - y),
+        mean = dts.reduce((x, y) => x + y, 0) / Math.max(1, dts.length);
+      stretches.push({
+        name,
+        frames: dts.length,
+        meanMs: +mean.toFixed(1),
+        p95Ms: +(dts[Math.floor(dts.length * 0.95)] ?? 0).toFixed(1),
+        maxMs: +(dts[dts.length - 1] ?? 0).toFixed(1),
+        cpuMs: +(log.reduce((x, l) => x + l[1], 0) / Math.max(1, log.length)).toFixed(1),
+        gpuMs: renderer.timer.ext ? +renderer.timer.ms.toFixed(1) : null,
+        triangles: renderer.stats.tris,
+        sprites: renderer.stats.sprites,
+      });
+    }
+    result.stretches = stretches;
+    // 2. Stability: step one shot frame by frame, with whole-pixel snapping on and off.
+    hold = true;
+    const stability = [];
+    for (const [shot, m] of [["Up the valley", "turn"], ["Town", "follow"]] as const)
+      for (const snapOn of [true, false]) {
+        say(`Counting pixels that don't move like pixel art: ${shot}, snapping ${snapOn ? "on" : "off"}…`);
+        opt.snap = snapOn;
+        mode = m;
+        speed = 3;
+        paused = false;
+        s = CHAPTERS.find((c) => c.name === shot)!.s;
+        snap = true;
+        for (let k = 0; k < (o.settle ?? (quick ? 3 : 30)); k++) frame(performance.now(), 1 / 60);
+        let prev = renderer.readArt(),
+          sumU = 0,
+          sumC = 0;
+        const q = [0, 0, 0, 0],
+          N = o.frames ?? (quick ? 2 : 20);
+        for (let k = 0; k < N; k++) {
+          frame(performance.now(), 1 / 60);
+          const cur = renderer.readArt(),
+            r = unexplained(prev, cur, ART_W, ART_H);
+          sumU += r.unexplained;
+          sumC += r.changed;
+          r.byQuarter.forEach((v, i) => (q[i] += v));
+          prev = cur;
+          if (k % 4 === 3) await pause(0);
+        }
+        stability.push({
+          shot,
+          camera: m,
+          snap: snapOn,
+          unexplainedPct: +((sumU / N) * 100).toFixed(2),
+          changedPct: +((sumC / N) * 100).toFixed(1),
+          byQuarterPct: q.map((v) => +((v / N) * 100).toFixed(2)),
+        });
+      }
+    result.stability = stability;
+  } finally {
+    hold = false;
+    mode = keep.mode;
+    speed = keep.speed;
+    paused = keep.paused;
+    opt.snap = keep.snap;
+    s = keep.s;
+    snap = true;
+    frameLog = null;
+    requestAnimationFrame((t) => {
+      last = t;
+      frame(t);
+    });
+  }
+  // Show it, and save it where Claude can read it.
+  const st = result.stretches as { meanMs: number; p95Ms: number }[],
+    stab = result.stability as { snap: boolean; unexplainedPct: number }[],
+    timed = st.filter((x) => x.meanMs > 0),
+    fpsMean = timed.length ? 1000 / (timed.reduce((x, y) => x + y.meanMs, 0) / timed.length) : 0,
+    p95 = timed.length ? Math.max(...timed.map((x) => x.p95Ms)) : 0,
+    on = stab.filter((x) => x.snap).reduce((x, y) => x + y.unexplainedPct, 0) / 2,
+    off = stab.filter((x) => !x.snap).reduce((x, y) => x + y.unexplainedPct, 0) / 2;
+  outEl.innerHTML = "";
+  const line = (label: string, value: string) => {
+    const b = document.createElement("b");
+    b.textContent = value;
+    outEl.append(label, b, document.createElement("br"));
+  };
+  line("Frames: ", timed.length ? `${fpsMean.toFixed(0)} fps on average, slowest 5% ${p95.toFixed(0)} ms` : "not timed");
+  line("Not moving like pixel art: ", `${on.toFixed(1)}% of pixels a frame snapped, ${off.toFixed(1)}% not`);
+  const saved = document.createElement("span");
+  saved.textContent = "Saving for Claude…";
+  outEl.append(saved);
+  try {
+    const db = await (window as unknown as { claude?: { use: (n: string) => Promise<any> } }).claude?.use("db");
+    if (!db) saved.textContent = "Not saved: this page can't store data here (open it on claude.ai, signed in).";
+    else {
+      await db.collection("checks").add(result);
+      saved.textContent = "Saved for Claude.";
+    }
+  } catch (err) {
+    saved.textContent = `Not saved (${(err as { code?: string }).code ?? "error"}).`;
+  }
+  btn.disabled = false;
+  return result;
+}
+$("check").onclick = () => void runCheck();
+
 // ---- The loop ---------------------------------------------------------------------------------------
 let last = 0,
-  hold = false;
+  hold = false,
+  frameLog: number[][] | null = null;
 function frame(now: number, forced = -1) {
   if (hold && forced < 0) return;
   const dtReal = forced >= 0 ? forced : Math.min(0.1, (now - last) / 1000 || 0);
@@ -700,6 +935,8 @@ function frame(now: number, forced = -1) {
   }
   updateCamera(dt);
   const rc = renderCamera();
+  const visTrees = cullTrees(rc);
+  if (visTrees && treesList) renderer.sprites(visTrees, treesList);
   const cover = coverAround(rc.x, rc.z, rc.yaw);
   if (cover && coverList) renderer.sprites(cover, coverList);
   if (actorList) renderer.sprites(actors(rc), actorList);
@@ -713,7 +950,9 @@ function frame(now: number, forced = -1) {
     { bands: opt.bands, wall: opt.wall, time: simTime, party: (() => { const p = routeAt(s); return [p.x, partyY(s), p.z]; })() },
   );
   drawMap(rc);
-  cpuMs = cpuMs * 0.9 + (performance.now() - t1) * 0.1;
+  const cpuNow = performance.now() - t1;
+  cpuMs = cpuMs * 0.9 + cpuNow * 0.1;
+  if (frameLog && forced < 0) frameLog.push([dtReal * 1000, cpuNow]);
   fps = fps * 0.93 + (dtReal > 0 ? 1 / dtReal : 60) * 0.07;
   hud(now, rc);
   if (forced < 0) requestAnimationFrame((t) => frame(t));
@@ -760,5 +999,10 @@ Object.assign(window, {
     step(dt: number) {
       frame(performance.now(), dt);
     },
+    crop(r: number[] | null) {
+      renderer.crop = r;
+    },
+    unexplained,
+    check: (o = {}) => runCheck(o),
   },
 });

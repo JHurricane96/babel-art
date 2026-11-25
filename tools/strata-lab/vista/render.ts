@@ -478,6 +478,8 @@ export class Renderer {
   anchorTex: WebGLTexture | null = null;
   timer: { ext: any; q: WebGLQuery | null; ms: number } = { ext: null, q: null, ms: 0 };
   stats = { patches: 0, tris: 0, sprites: 0 };
+  /** Draw only this part of the picture (x, y from the top, w, h in art pixels): for checks under software GL. */
+  crop: number[] | null = null;
 
   constructor(public canvas: HTMLCanvasElement) {
     const gl = canvas.getContext("webgl2", { antialias: false, alpha: false, depth: false, powerPreference: "high-performance" });
@@ -850,6 +852,10 @@ export class Renderer {
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
     gl.viewport(0, 0, ART_W, ART_H);
+    if (this.crop) {
+      gl.enable(gl.SCISSOR_TEST);
+      gl.scissor(this.crop[0], ART_H - this.crop[1] - this.crop[3], this.crop[2], this.crop[3]);
+    }
     gl.disable(gl.DEPTH_TEST);
     gl.depthMask(true);
     gl.clearDepth(1);
@@ -932,6 +938,7 @@ export class Renderer {
     }
     gl.bindVertexArray(null);
     // Up to the screen, the wall's frame round it.
+    gl.disable(gl.SCISSOR_TEST);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.disable(gl.DEPTH_TEST);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
