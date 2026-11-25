@@ -11,7 +11,9 @@
 //   from a six-shade ramp: pixel art that does not shimmer as the camera moves.
 //   Steep faces show the rock's beds.
 // - Haze comes in eight bands of distance, so the land reads as layers.
-// - Sprites are drawn pixel for pixel at their size class, on whole pixels.
+// - Sprites are drawn pixel for pixel at their exact height, on whole pixels: small ones from
+//   images made for each height, bigger ones by whole rows and columns of one drawing, trees
+//   near the camera in parts (pack.ts).
 import { GRIDS, type Building, type GridSpec, KIND_COUNT } from "./valley";
 
 export const ART_W = 980,
@@ -301,20 +303,50 @@ void main() {
   oColor = vec4(mix(c, uHaze, hazeT(d)), 1.0);
 }`;
 
-// Sprites: each picks the two size classes around its size on screen and hands over from one to
-// the other pixel by pixel (a fixed dither pattern that moves with the sprite), so growing and
-// shrinking is gradual; it fades in the same way as it grows from 1 to 3 px, and out near the camera.
+// Sprites, at their exact height in whole pixels (pack.ts): small ones as images made for each
+// height; bigger ones from one drawing, the rows and columns each height keeps read from a table;
+// trees and shrubs near the camera in parts, a second pass (PARTS_VS) putting each group of clumps
+// at its own place. Trees, shrubs and ground cover are stored as material and shade, and coloured
+// here: each tree its own leaf colour (one of 16 per kind), some with a few cells turned for autumn.
+// They fade in as they grow from 1 to 3 px, and out near the camera and far off.
+const SPRITE_COLOUR = /* glsl */ `
+uniform highp usampler2D uIdx, uMat;
+uniform sampler2D uRgb, uSPal;
+uniform int uAutumn0;
+uniform float uGhost;
+ivec2 wrap(int i) { return ivec2(i & 4095, i >> 12); }
+vec4 spriteColour(int atlas, ivec2 src, int slot, uint seed) {
+  if (atlas == 1) return texelFetch(uRgb, src, 0);
+  uvec2 v = texelFetch(uIdx, src, 0).rg;
+  if (v.r == 0u) return vec4(0.0);
+  uint m = v.r >> 3, t = v.r & 7u;
+  uint re = texelFetch(uMat, ivec2(int(m), slot), 0).r;
+  int ramp = int(re & 0x7fffu);
+  if ((re & 0x8000u) != 0u) {
+    ramp += int(seed & 15u);
+    // About one tree in ten turning: some of its cells, all in one shade.
+    if (m == 11u && ((seed >> 8) & 255u) < 26u) {
+      float a = 0.15 + float((seed >> 16) & 255u) / 255.0 * 0.35;
+      if (float(hashu(uvec2(v.g, seed)) & 1023u) / 1024.0 < a) ramp = uAutumn0 + int((seed >> 24) % 3u);
+    }
+  }
+  return vec4(texelFetch(uSPal, ivec2(int(t) - 1, ramp), 0).rgb, 1.0);
+}
+uint treeSeed(vec3 p) { return hashu(uvec2(ivec2(floor(p.xz * 4.0)) + ivec2(1 << 20))); }
+`;
 const SPRITE_VS = /* glsl */ `${COMMON}
 in vec2 aCorner;
 in vec4 iPos;
 in vec2 iInfo;
-uniform usampler2D uRect, uAnchor;
+uniform highp usampler2D uEntry;
 uniform float uSunFlip, uFar2, uNear2;
 out vec2 vP;
-flat out ivec4 vLo, vHi, vA;
-flat out float vF, vVis, vDepth;
-flat out int vFlip;
-const int NC = ${26};
+flat out ivec4 vRect, vMap;
+flat out ivec2 vA;
+flat out float vVis, vDepth;
+flat out int vFlip, vSlot;
+flat out uint vSeed;
+uint treeSeed(vec3 p) { return hashu(uvec2(ivec2(floor(p.xz * 4.0)) + ivec2(1 << 20))); }
 void main() {
   float vz;
   project(iPos.xyz, vz);
@@ -323,57 +355,122 @@ void main() {
   vec3 v = iPos.xyz - uCam;
   float want = iPos.w * uF / max(vz, 0.01);
   if (vz < 1.5 || vz > uFar2 || (want < 1.0 && !top)) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  int slot = int(iInfo.x + 0.5);
+  int K = int(texelFetch(uEntry, ivec2(0, slot), 0).x);
+  int H = clamp(int(floor(want + 0.5)), 1, K);
+  uvec4 e0 = texelFetch(uEntry, ivec2(H * 2, slot), 0), e1 = texelFetch(uEntry, ivec2(H * 2 + 1, slot), 0);
+  int mode = int(e1.x & 15u);
+  if (mode == 0 || mode == 3) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
   vec2 sc = vec2(uRes.x * 0.5 + uF * dot(v.xz, uRight) / vz, uHz - uF * v.y / vz);
-  float cf = log2(max(want, 3.0) / 3.0) * 4.0;
-  int lo = min(int(floor(cf)), NC - 1), hi = min(lo + 1, NC - 1);
-  float f = lo == hi ? 0.0 : smoothstep(0.3, 0.7, fract(cf));
   float vis = clamp((want - 1.0) / 2.0, 0.0, 1.0) * clamp((vz - uNear2) / (uNear2 * 0.5), 0.0, 1.0) * clamp((uFar2 - vz) / (uFar2 * 0.15), 0.0, 1.0);
   if (top) vis = 1.0;
-  int slot = int(iInfo.x + 0.5);
-  uvec4 rl = texelFetch(uRect, ivec2(lo, slot), 0), al = texelFetch(uAnchor, ivec2(lo, slot), 0);
-  uvec4 rh = texelFetch(uRect, ivec2(hi, slot), 0), ah = texelFetch(uAnchor, ivec2(hi, slot), 0);
   bool flip = (flags & 1) == 1;
   if ((flags & 2) == 2 && uSunFlip > 0.5) flip = !flip;
-  // The box, relative to the foot, that holds both images.
-  vec2 mn = vec2(1e9), mx = vec2(-1e9);
-  for (int k = 0; k < 2; k++) {
-    uvec4 r = k == 0 ? rl : rh, a = k == 0 ? al : ah;
-    vec2 o = flip ? vec2(float(a.x) - float(r.z), -float(a.y)) : vec2(-float(a.x), -float(a.y));
-    mn = min(mn, o);
-    mx = max(mx, o + vec2(r.zw));
-  }
-  vec2 P = mix(mn, mx, aCorner), px = floor(sc + 0.5) + P;
+  ivec2 sz = ivec2(e0.z & 0xffffu, e0.z >> 16), a = ivec2(int(e0.w & 0xffffu) - 32768, int(e0.w >> 16) - 32768);
+  vec2 o = flip ? vec2(float(a.x - sz.x), -float(a.y)) : vec2(-float(a.x), -float(a.y));
+  vec2 P = o + aCorner * vec2(sz), px = floor(sc + 0.5) + P;
   gl_Position = vec4((px.x / uRes.x * 2.0 - 1.0) * vz, (1.0 - px.y / uRes.y * 2.0) * vz, top ? -vz : depthClip(vz), vz);
   vP = P;
-  vLo = ivec4(rl);
-  vHi = ivec4(rh);
-  vA = ivec4(al.xy, ah.xy);
-  vF = f;
+  vRect = ivec4(int(e0.x & 0xffffu), int(e0.x >> 16), sz);
+  vMap = ivec4(mode, int(e1.x >> 4), int(e1.y), int(e1.z));
+  vA = a;
   vVis = vis;
   vDepth = vz;
   vFlip = flip ? 1 : 0;
+  vSlot = slot;
+  vSeed = treeSeed(iPos.xyz);
 }`;
-const SPRITE_FS = /* glsl */ `${COMMON}
+const SPRITE_FS = /* glsl */ `${COMMON}${SPRITE_COLOUR}
 in vec2 vP;
-flat in ivec4 vLo, vHi, vA;
-flat in float vF, vVis, vDepth;
-flat in int vFlip;
-uniform sampler2D uAtlas;
-uniform float uGhost;
+flat in ivec4 vRect, vMap;
+flat in ivec2 vA;
+flat in float vVis, vDepth;
+flat in int vFlip, vSlot;
+flat in uint vSeed;
+uniform highp usampler2D uTab;
 out vec4 oColor;
 void main() {
   ivec2 p = ivec2(floor(vP));
   if (bayer(p) >= vVis) discard;
-  bool hiSide = bayer(p + ivec2(2, 1)) < vF;
-  ivec4 r = hiSide ? vHi : vLo;
-  ivec2 a = hiSide ? vA.zw : vA.xy;
-  ivec2 l = ivec2(vFlip == 1 ? a.x - 1 - p.x : p.x + a.x, p.y + a.y);
-  if (l.x < 0 || l.y < 0 || l.x >= r.z || l.y >= r.w) discard;
-  vec4 t = texelFetch(uAtlas, r.xy + l, 0);
-  if (t.a < 0.5) discard;
+  ivec2 l = ivec2(vFlip == 1 ? vA.x - 1 - p.x : p.x + vA.x, p.y + vA.y);
+  if (l.x < 0 || l.y < 0 || l.x >= vRect.z || l.y >= vRect.w) discard;
+  ivec2 s = l;
+  if (vMap.x == 2) s = ivec2(int(texelFetch(uTab, wrap(vMap.w + l.x), 0).r), int(texelFetch(uTab, wrap(vMap.z + l.y), 0).r));
+  vec4 c = spriteColour(vMap.y, vRect.xy + s, vSlot, vSeed);
+  if (c.a < 0.5) discard;
   // The party seen through what stands in front of them: a pale silhouette.
   if (uGhost > 0.5) { oColor = vec4(0.99, 0.94, 0.78, 0.55); return; }
-  oColor = vec4(mix(t.rgb, uHaze, hazeT(vDepth)), 1.0);
+  oColor = vec4(mix(c.rgb, uHaze, hazeT(vDepth)), 1.0);
+}`;
+// Parts: one instance per group of clumps per tree (trees of one kind and variant per draw). The
+// tree's height on screen is worked out exactly as SPRITE_VS does, so each tree is drawn by one
+// pass or the other; each part's size and place follow from it in whole numbers, as in pack.ts.
+const PARTS_VS = /* glsl */ `${COMMON}
+in vec2 aCorner;
+uniform highp usampler2D uMeta, uPer;
+uniform sampler2D uTrees;
+uniform int uNC, uPartBase, uTreeBase, uK, uT;
+uniform float uSunFlip, uFar2, uNear2;
+out vec2 vP;
+flat out ivec4 vRect;
+flat out ivec2 vOrg, vTab;
+flat out float vVis, vDepth;
+flat out int vFlip;
+flat out uint vSeed;
+ivec2 wrap(int i) { return ivec2(i & 4095, i >> 12); }
+uint treeSeed(vec3 p) { return hashu(uvec2(ivec2(floor(p.xz * 4.0)) + ivec2(1 << 20))); }
+void main() {
+  int ti = gl_InstanceID / uNC, pi = gl_InstanceID - ti * uNC, tb = (uTreeBase + ti) * 2;
+  vec4 tp = texelFetch(uTrees, wrap(tb), 0), tq = texelFetch(uTrees, wrap(tb + 1), 0);
+  float vz;
+  project(tp.xyz, vz);
+  vec3 v = tp.xyz - uCam;
+  float want = tp.w * uF / max(vz, 0.01);
+  if (vz < 1.5 || vz > uFar2 || want < 1.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  int H = clamp(int(floor(want + 0.5)), 1, uK);
+  if (H < uT) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  int gi = uPartBase + pi;
+  uvec4 m0 = texelFetch(uMeta, wrap(gi * 2), 0), m1 = texelFetch(uMeta, wrap(gi * 2 + 1), 0);
+  int ph = int(m0.y >> 16), h = max(1, (2 * ph * H + uK) / (2 * uK));
+  uvec4 pe = texelFetch(uPer, wrap(int(m1.x) + h - int(m0.w)), 0);
+  int nc = int(pe.z & 0xffffu), ci = int(pe.z >> 16), ri = int(pe.w);
+  int cx = int(m0.z & 0xffffu) - 32768, cy = int(m0.z >> 16) - 32768;
+  int x = int(floor(float((2 * cx + 1) * H) / float(2 * uK))) - ci, y = int(floor(float((2 * cy + 1) * H) / float(2 * uK))) - ri;
+  int flags = int(tq.y + 0.5);
+  bool flip = (flags & 1) == 1;
+  if ((flags & 2) == 2 && uSunFlip > 0.5) flip = !flip;
+  vec2 sc = vec2(uRes.x * 0.5 + uF * dot(v.xz, uRight) / vz, uHz - uF * v.y / vz);
+  vec2 o = flip ? vec2(float(-x - nc), float(y)) : vec2(float(x), float(y));
+  vec2 P = o + aCorner * vec2(float(nc), float(h)), px = floor(sc + 0.5) + P;
+  gl_Position = vec4((px.x / uRes.x * 2.0 - 1.0) * vz, (1.0 - px.y / uRes.y * 2.0) * vz, depthClip(vz), vz);
+  vP = P;
+  vRect = ivec4(int(m0.x & 0xffffu), int(m0.x >> 16), nc, h);
+  vOrg = ivec2(x, y);
+  vTab = ivec2(int(pe.x), int(pe.y));
+  vVis = clamp((vz - uNear2) / (uNear2 * 0.5), 0.0, 1.0) * clamp((uFar2 - vz) / (uFar2 * 0.15), 0.0, 1.0);
+  vDepth = vz;
+  vFlip = flip ? 1 : 0;
+  vSeed = treeSeed(tp.xyz);
+}`;
+const PARTS_FS = /* glsl */ `${COMMON}${SPRITE_COLOUR}
+in vec2 vP;
+flat in ivec4 vRect;
+flat in ivec2 vOrg, vTab;
+flat in float vVis, vDepth;
+flat in int vFlip;
+flat in uint vSeed;
+uniform highp usampler2D uPTab;
+uniform int uSlot;
+out vec4 oColor;
+void main() {
+  ivec2 p = ivec2(floor(vP));
+  if (bayer(p) >= vVis) discard;
+  ivec2 l = ivec2(vFlip == 1 ? -vOrg.x - 1 - p.x : p.x - vOrg.x, p.y - vOrg.y);
+  if (l.x < 0 || l.y < 0 || l.x >= vRect.z || l.y >= vRect.w) discard;
+  ivec2 s = ivec2(int(texelFetch(uPTab, wrap(vTab.y + l.x), 0).r), int(texelFetch(uPTab, wrap(vTab.x + l.y), 0).r));
+  vec4 c = spriteColour(0, vRect.xy + s, uSlot, vSeed);
+  if (c.a < 0.5) discard;
+  oColor = vec4(mix(c.rgb, uHaze, hazeT(vDepth)), 1.0);
 }`;
 
 const SKY_VS = /* glsl */ `#version 300 es
@@ -457,15 +554,23 @@ const RAMP_COLOURS: [string, number][] = [
 ];
 
 // ---- The renderer ------------------------------------------------------------------------------
-export interface SpriteAtlas {
-  w: number;
-  h: number;
-  data: Uint8Array;
-  /** Per slot, per class: x, y, w, h; and ax, ay. */
-  rects: Uint16Array;
-  anchors: Uint16Array;
-  slots: number;
-  classes: number;
+/** Everything the sprite passes read, made from the workers' packs (main.ts). */
+export interface SpriteData {
+  idx: { w: number; h: number; data: Uint8Array };
+  rgb: { w: number; h: number; data: Uint8Array };
+  entry: { w: number; h: number; data: Uint32Array };
+  tab: { w: number; h: number; data: Uint16Array };
+  ptab: { w: number; h: number; data: Uint8Array };
+  mat: { w: number; h: number; data: Uint16Array };
+  pal: { h: number; data: Uint8Array };
+  meta: { w: number; h: number; data: Uint32Array };
+  per: { w: number; h: number; data: Uint32Array };
+  autumn0: number;
+}
+/** Trees drawn in parts this frame: one draw per slot. */
+export interface PartsFrame {
+  trees: Float32Array;
+  draws: { slot: number; partBase: number; nc: number; treeBase: number; count: number; K: number; T: number; near: number; far: number }[];
 }
 export interface Sprites {
   buf: WebGLBuffer;
@@ -488,12 +593,14 @@ export class Renderer {
   buildCount = 0;
   quadBuf: WebGLBuffer;
   skyVao: WebGLVertexArrayObject;
+  partsVao: WebGLVertexArrayObject;
   clouds: WebGLTexture | null = null;
-  atlas: WebGLTexture | null = null;
-  rectTex: WebGLTexture | null = null;
-  anchorTex: WebGLTexture | null = null;
+  spr: Record<string, WebGLTexture> | null = null;
+  autumn0 = 0;
+  treesTex: WebGLTexture | null = null;
+  treesCap = 0;
   timer: { ext: any; q: WebGLQuery | null; ms: number } = { ext: null, q: null, ms: 0 };
-  stats = { patches: 0, tris: 0, sprites: 0 };
+  stats = { patches: 0, tris: 0, sprites: 0, parts: 0, partTrees: 0 };
   /** Draw only this part of the picture (x, y from the top, w, h in art pixels): for checks under software GL. */
   crop: number[] | null = null;
 
@@ -505,6 +612,7 @@ export class Renderer {
       ["terrain", TERRAIN_VS, TERRAIN_FS],
       ["build", BUILD_VS, BUILD_FS],
       ["sprite", SPRITE_VS, SPRITE_FS],
+      ["parts", PARTS_VS, PARTS_FS],
       ["sky", SKY_VS, SKY_FS],
       ["blit", SKY_VS, BLIT_FS],
     ]) this.progs[name] = this.program(vs, fs);
@@ -536,6 +644,12 @@ export class Renderer {
     this.quadBuf = gl.createBuffer()!;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW);
+    this.partsVao = gl.createVertexArray()!;
+    gl.bindVertexArray(this.partsVao);
+    const lc = gl.getAttribLocation(this.progs.parts, "aCorner");
+    gl.enableVertexAttribArray(lc);
+    gl.vertexAttribPointer(lc, 2, gl.FLOAT, false, 0, 0);
+    gl.bindVertexArray(null);
     this.skyVao = gl.createVertexArray()!;
     gl.bindVertexArray(this.skyVao);
     const fs = gl.createBuffer()!;
@@ -746,11 +860,30 @@ export class Renderer {
     gl.bindVertexArray(null);
   }
 
-  setAtlas(a: SpriteAtlas) {
+  setSprites(d: SpriteData) {
+    const gl = this.gl,
+      t = (internal: number, fmt: number, type: number, x: { w: number; h: number; data: ArrayBufferView }) => this.tex2d(internal, x.w, x.h, fmt, type, x.data, gl.NEAREST);
+    this.spr = {
+      idx: t(gl.RG8UI, gl.RG_INTEGER, gl.UNSIGNED_BYTE, d.idx),
+      rgb: t(gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, d.rgb),
+      entry: t(gl.RGBA32UI, gl.RGBA_INTEGER, gl.UNSIGNED_INT, d.entry),
+      tab: t(gl.R16UI, gl.RED_INTEGER, gl.UNSIGNED_SHORT, d.tab),
+      ptab: t(gl.R8UI, gl.RED_INTEGER, gl.UNSIGNED_BYTE, d.ptab),
+      mat: t(gl.R16UI, gl.RED_INTEGER, gl.UNSIGNED_SHORT, d.mat),
+      pal: t(gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, { w: 6, h: d.pal.h, data: d.pal.data }),
+      meta: t(gl.RGBA32UI, gl.RGBA_INTEGER, gl.UNSIGNED_INT, d.meta),
+      per: t(gl.RGBA32UI, gl.RGBA_INTEGER, gl.UNSIGNED_INT, d.per),
+    };
+    this.autumn0 = d.autumn0;
+  }
+  private bindSpriteTextures(p: WebGLProgram, names: [string, string][]) {
     const gl = this.gl;
-    this.atlas = this.tex2d(gl.RGBA8, a.w, a.h, gl.RGBA, gl.UNSIGNED_BYTE, a.data, gl.NEAREST);
-    this.rectTex = this.tex2d(gl.RGBA16UI, a.classes, a.slots, gl.RGBA_INTEGER, gl.UNSIGNED_SHORT, a.rects, gl.NEAREST);
-    this.anchorTex = this.tex2d(gl.RGBA16UI, a.classes, a.slots, gl.RGBA_INTEGER, gl.UNSIGNED_SHORT, a.anchors, gl.NEAREST);
+    names.forEach(([u, k], i) => {
+      gl.activeTexture(gl.TEXTURE0 + i);
+      gl.bindTexture(gl.TEXTURE_2D, k === "trees" ? this.treesTex : this.spr![k]);
+      gl.uniform1i(this.u(p, u), i);
+    });
+    gl.uniform1i(this.u(p, "uAutumn0"), this.autumn0);
   }
   setClouds(w: number, h: number, data: Uint8Array) {
     this.clouds = this.tex2d(this.gl.RGBA8, w, h, this.gl.RGBA, this.gl.UNSIGNED_BYTE, data, this.gl.NEAREST);
@@ -859,7 +992,7 @@ export class Renderer {
     return unit;
   }
 
-  draw(cam: Camera, lists: { sprites: Sprites; near: number; far: number; ghost?: boolean }[], opt: { bands: boolean; wall: boolean; time: number }) {
+  draw(cam: Camera, lists: { sprites: Sprites; near: number; far: number; ghost?: boolean }[], opt: { bands: boolean; wall: boolean; time: number }, parts?: PartsFrame) {
     const gl = this.gl,
       t = this.timer;
     if (t.ext && !t.q) {
@@ -920,18 +1053,10 @@ export class Renderer {
       gl.drawArrays(gl.TRIANGLES, 0, this.buildCount);
     }
     // Sprites.
-    if (this.atlas) {
+    if (this.spr) {
       p = this.progs.sprite;
       this.common(p, cam, opt);
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, this.atlas);
-      gl.uniform1i(this.u(p, "uAtlas"), 0);
-      gl.activeTexture(gl.TEXTURE1);
-      gl.bindTexture(gl.TEXTURE_2D, this.rectTex);
-      gl.uniform1i(this.u(p, "uRect"), 1);
-      gl.activeTexture(gl.TEXTURE2);
-      gl.bindTexture(gl.TEXTURE_2D, this.anchorTex);
-      gl.uniform1i(this.u(p, "uAnchor"), 2);
+      this.bindSpriteTextures(p, [["uIdx", "idx"], ["uRgb", "rgb"], ["uMat", "mat"], ["uSPal", "pal"], ["uEntry", "entry"], ["uTab", "tab"]]);
       const sunRight = Math.cos(cam.yaw) * -0.45 + -Math.sin(cam.yaw) * -0.53 > 0;
       gl.uniform1f(this.u(p, "uSunFlip"), sunRight ? 1 : 0);
       this.stats.sprites = 0;
@@ -943,6 +1068,48 @@ export class Renderer {
         gl.bindVertexArray(l.sprites.vao);
         gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, l.sprites.count);
         this.stats.sprites += l.sprites.count;
+      }
+      // Trees near the camera, in parts; drawn in order, so each part covers those before it.
+      this.stats.parts = 0;
+      this.stats.partTrees = 0;
+      if (parts && parts.draws.length) {
+        const n = parts.trees.length / 4,
+          rows = Math.ceil(n / 4096);
+        if (!this.treesTex || this.treesCap < rows) {
+          if (this.treesTex) gl.deleteTexture(this.treesTex);
+          this.treesCap = Math.max(1, rows);
+          this.treesTex = this.tex2d(gl.RGBA32F, 4096, this.treesCap, gl.RGBA, gl.FLOAT, null, gl.NEAREST);
+        }
+        gl.bindTexture(gl.TEXTURE_2D, this.treesTex);
+        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+        const full = Math.floor(n / 4096),
+          rest = n - full * 4096;
+        if (full) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 4096, full, gl.RGBA, gl.FLOAT, parts.trees.subarray(0, full * 4096 * 4));
+        if (rest) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, full, rest, 1, gl.RGBA, gl.FLOAT, parts.trees.subarray(full * 4096 * 4, n * 4));
+        p = this.progs.parts;
+        this.common(p, cam, opt);
+        this.bindSpriteTextures(p, [["uIdx", "idx"], ["uRgb", "rgb"], ["uMat", "mat"], ["uSPal", "pal"], ["uMeta", "meta"], ["uPer", "per"], ["uPTab", "ptab"], ["uTrees", "trees"]]);
+        gl.uniform1f(this.u(p, "uSunFlip"), sunRight ? 1 : 0);
+        gl.uniform1f(this.u(p, "uGhost"), 0);
+        gl.depthFunc(gl.LEQUAL);
+        gl.bindVertexArray(this.partsVao);
+        for (const d of parts.draws) {
+          gl.uniform1i(this.u(p, "uSlot"), d.slot);
+          gl.uniform1i(this.u(p, "uNC"), d.nc);
+          gl.uniform1i(this.u(p, "uPartBase"), d.partBase);
+          gl.uniform1i(this.u(p, "uTreeBase"), d.treeBase);
+          gl.uniform1i(this.u(p, "uK"), d.K);
+          gl.uniform1i(this.u(p, "uT"), d.T);
+          gl.uniform1f(this.u(p, "uNear2"), d.near);
+          gl.uniform1f(this.u(p, "uFar2"), d.far);
+          gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, d.count * d.nc);
+          this.stats.parts += d.count * d.nc;
+          this.stats.partTrees += d.count;
+        }
+        gl.depthFunc(gl.LESS);
+        p = this.progs.sprite;
+        gl.useProgram(p);
+        this.bindSpriteTextures(p, [["uIdx", "idx"], ["uRgb", "rgb"], ["uMat", "mat"], ["uSPal", "pal"], ["uEntry", "entry"], ["uTab", "tab"]]);
       }
       // Silhouettes: where something nearer hides them, paler, over it.
       const ghosts = lists.filter((l) => l.ghost && l.sprites.count);

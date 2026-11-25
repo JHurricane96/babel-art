@@ -60,9 +60,21 @@ let REC: number[] | null = null,
   REC_CANVAS: MatCanvas | null = null,
   REC_RAMPS: Record<number, number[][]> | null = null,
   PART = 0,
-  /** "clump": every leaf clump its own part; "mass": the clumps heaped into one leaf mass together. */
-  PART_LEVEL: "clump" | "mass" = "clump";
+  /** "clump": every leaf clump its own part; "mass": the clumps heaped into one leaf mass together;
+   * "cluster": a leaf mass's clumps grouped by the cell of a grid (CLUSTER_PX, fixed to the foot)
+   * their centres fall in, each group drawn together, the groups in order of their depth. */
+  PART_LEVEL: "clump" | "mass" | "cluster" = "clump",
+  CLUSTER_PX = 32,
+  /** Images made in materials and shades (red: material * 8 + shade; alpha 255), not colours. */
+  INDEX = false,
+  LAST_RAMPS: Record<number, number[][]> | null = null;
 const newPart = () => void PART++;
+/** Draw in materials and shades instead of colours (for a renderer that colours them itself). */
+export function indexMode(on: boolean) {
+  INDEX = on;
+}
+/** The material ramps the last drawing was coloured (or would have been coloured) with. */
+export const lastRamps = () => LAST_RAMPS;
 
 class MatCanvas implements Canvas {
   m: Uint8Array;
@@ -86,6 +98,7 @@ class MatCanvas implements Canvas {
   /** Crop to what was drawn and colour it, each material by its ramp. The foot at (fx, fy) in drawing coordinates. */
   toImg(ramps: Record<number, number[][]>, fx: number, fy: number): Img {
     if (REC && REC_CANVAS === this) REC_RAMPS = ramps;
+    LAST_RAMPS = ramps;
     let x0 = this.w,
       y0 = this.h,
       x1 = -1,
@@ -107,9 +120,14 @@ class MatCanvas implements Canvas {
         const i = (y + y0) * this.w + x + x0,
           m = this.m[i];
         if (!m) continue;
+        const o = (y * w + x) * 4;
+        if (INDEX) {
+          data[o] = m * 8 + this.t[i];
+          data[o + 3] = 255;
+          continue;
+        }
         const ramp = ramps[m] ?? ramps[M.LEAF],
-          c = ramp[this.t[i] - 1],
-          o = (y * w + x) * 4;
+          c = ramp[this.t[i] - 1];
         data[o] = c[0] * 255;
         data[o + 1] = c[1] * 255;
         data[o + 2] = c[2] * 255;
@@ -164,10 +182,21 @@ function crownV(c: MatCanvas, cx: number, cy: number, rx: number, ry: number, st
     clumps.push({ x, y, r, z: R() + (0.3 * (y - cy)) / ry, s: Math.floor(R() * 1e9) });
   }
   clumps.sort((p, q) => p.z - q.z);
-  for (const q of clumps) {
-    const pos = 0.5 - 0.5 * ((q.x - cx) / rx) * 0.45 - 0.5 * ((q.y - cy) / ry) * 0.9;
-    clumpV(c, q.x, q.y, q.r, pos, st, q.s);
-  }
+  const draw = (q: (typeof clumps)[0]) => clumpV(c, q.x, q.y, q.r, 0.5 - 0.5 * ((q.x - cx) / rx) * 0.45 - 0.5 * ((q.y - cy) / ry) * 0.9, st, q.s);
+  if (PART_LEVEL === "cluster" && REC) {
+    const groups = new Map<number, typeof clumps>();
+    for (const q of clumps) {
+      const k = Math.floor(q.x / CLUSTER_PX) * 4096 + Math.floor(q.y / CLUSTER_PX);
+      let g = groups.get(k);
+      if (!g) groups.set(k, (g = []));
+      g.push(q);
+    }
+    const mean = (g: typeof clumps) => g.reduce((a, q) => a + q.z, 0) / g.length;
+    for (const g of [...groups.values()].sort((a, b) => mean(a) - mean(b))) {
+      newPart();
+      for (const q of g) draw(q);
+    }
+  } else for (const q of clumps) draw(q);
 }
 function clumpV(c: MatCanvas, cx: number, cy: number, r: number, pos: number, st: CrownStyle, seed: number) {
   if (PART_LEVEL === "clump") newPart();
@@ -520,8 +549,9 @@ function treeDraw(name: string) {
  * image anchored at the tree's foot like the whole, in drawing order; painted in order they make
  * the whole drawing again.
  */
-export function drawParts(def: SlotDef, H: number, seed: number, level: "clump" | "mass" = "clump"): Part[] {
+export function drawParts(def: SlotDef, H: number, seed: number, level: "clump" | "mass" | "cluster" = "clump"): Part[] {
   PART_LEVEL = level;
+  CLUSTER_PX = H / 12;
   REC = [];
   PART = 0;
   REC_CANVAS = null;
@@ -533,6 +563,7 @@ export function drawParts(def: SlotDef, H: number, seed: number, level: "clump" 
   REC = null;
   REC_CANVAS = null;
   REC_RAMPS = null;
+  PART_LEVEL = "clump";
   if (!cv || !ramps) return [];
   // Each part is drawn whole before the next begins, so its pixels are one run of the record;
   // a pixel set twice within a part keeps the later value, as on the canvas.

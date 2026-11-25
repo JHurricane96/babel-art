@@ -1,16 +1,20 @@
 // Strata Vista: the page. Builds the valley in workers, packs the sprites,
 // walks the party along the route, directs the camera, and draws.
-import { ART_H, ART_W, F, FOV, Renderer, type Camera, type Sprites, type SpriteAtlas } from "./render";
+import { ART_H, ART_W, F, FOV, Renderer, type Camera, type PartsFrame, type Sprites, type SpriteData } from "./render";
 import {
   BRIDGE, FAR, FINE, GRIDS, KIND, MID, ROAD2, ROUTE, along, bridgeOf, cumulative, hash2, layoutBuildings, mulberry,
 } from "./valley";
-import { COVER, NC, type Img, slotDefs, slotIndex } from "./sprites";
+import { M } from "../../../engine/strata/world";
+import { hex, rampOf, shiftColor } from "./color";
+import { HMAX, type Plan, type SlotPack } from "./pack";
+import { COVER, LEAF_HEX, TREE_NAMES, slotDefs, slotIndex } from "./sprites";
 
 declare const WORKER_SOURCE: string;
 const $ = (id: string) => document.getElementById(id)!;
 
 // ---- State ------------------------------------------------------------------------------------
 const opt = { snap: true, bands: true, marker: true, ghost: true, wall: true };
+let stepOnce = false;
 let mode: "auto" | "follow" | "turn" = "auto",
   speed = 6,
   paused = matchMedia("(prefers-reduced-motion: reduce)").matches,
@@ -193,43 +197,224 @@ function renderCamera(): Camera {
 // ---- Sprites ----------------------------------------------------------------------------------
 const SLOTS = slotIndex(),
   DEFS = slotDefs();
-function packAtlas(all: { slot: number; imgs: Img[] }[]): SpriteAtlas {
-  const nS = DEFS.length,
-    W = 2048,
-    items: { slot: number; k: number; im: Img; x: number; y: number }[] = [];
-  for (const s of all) s.imgs.forEach((im, k) => items.push({ slot: s.slot, k, im, x: 0, y: 0 }));
-  items.sort((a, b) => b.im.h - a.im.h);
-  let x = 0,
-    y = 0,
-    rowH = 0;
-  for (const it of items) {
-    if (x + it.im.w > W) {
-      x = 0;
-      y += rowH + 1;
+// Plans by slot (filled from the packs): how each is drawn, and from what height in parts.
+let PLANS: Plan[] = [],
+  PART_BASE: number[] = [],
+  PART_N: number[] = [];
+/** The packs, as textures: atlases (material-and-shade, and colour), the table of what each slot shows at each height, the rows and columns tables, the parts, the palette. */
+function buildSprites(packs: SlotPack[]): SpriteData {
+  const nS = DEFS.length;
+  packs.sort((a, b) => a.slot - b.slot);
+  PLANS = [];
+  for (const pk of packs) PLANS[pk.slot] = pk.plan;
+  // Palette: every ramp once; each kind of tree's leaves in 16 colours, one ramp after another.
+  const rampRows: number[][][] = [],
+    rampIds = new Map<string, number>(),
+    addRamp = (r: number[][]) => {
+      const key = r.map((c) => c.map((v) => Math.round(v * 255)).join(",")).join(";");
+      let id = rampIds.get(key);
+      if (id === undefined) {
+        id = rampRows.length;
+        rampRows.push(r);
+        rampIds.set(key, id);
+      }
+      return id;
+    },
+    family = new Map<string, number>();
+  const leafFamily = (name: string) => {
+    let base = family.get(name);
+    if (base !== undefined) return base;
+    base = rampRows.length;
+    const R = mulberry(TREE_NAMES.indexOf(name) * 7919 + 3);
+    for (let v = 0; v < 16; v++) {
+      const dL = (R() - 0.5) * 0.09,
+        dH = (R() - 0.5) * 0.4,
+        ch = 0.8 + 0.35 * R();
+      rampRows.push(rampOf(v === 0 ? hex(LEAF_HEX[name]) : shiftColor(hex(LEAF_HEX[name]), dL, dH, ch)));
+    }
+    family.set(name, base);
+    return base;
+  };
+  const autumn0 = rampRows.length;
+  for (const c of ["#c89a32", "#b8582c", "#a8b040"]) rampRows.push(rampOf(hex(c)));
+  const mat = new Uint16Array(32 * nS);
+  for (const pk of packs) {
+    const kind = DEFS[pk.slot].name.split(" ")[0],
+      tree = TREE_NAMES.includes(kind);
+    let first = -1;
+    for (const [m, r] of pk.ramps) {
+      const id = tree && m === M.LEAF ? leafFamily(kind) | 0x8000 : addRamp(r);
+      if (first < 0) first = id & 0x7fff;
+      mat[pk.slot * 32 + m] = id;
+    }
+    for (let m = 0; m < 32; m++) if (!pk.ramps.some(([q]) => q === m)) mat[pk.slot * 32 + m] = Math.max(0, first);
+  }
+  const pal = new Uint8Array(rampRows.length * 6 * 4);
+  rampRows.forEach((r, i) => r.forEach((c, t) => pal.set([...c.map((v) => Math.round(v * 255)), 255], (i * 6 + t) * 4)));
+  // Atlases: shelves 4096 wide, tallest first.
+  type Item = { pic: { w: number; h: number; data: Uint8Array }; rgb: boolean; x: number; y: number };
+  const items: Item[] = [],
+    item = (pic: Item["pic"], rgb: boolean) => {
+      const it = { pic, rgb, x: 0, y: 0 };
+      items.push(it);
+      return it;
+    };
+  const slotItems = packs.map((pk) => ({
+    exact: pk.exact.map((q) => item(q, pk.plan.direct)),
+    span: pk.span ? item(pk.span.pic, pk.plan.direct) : null,
+    parts: pk.parts.map((q) => item(q.pic, false)),
+  }));
+  const shelve = (list: Item[]) => {
+    list.sort((a, b) => b.pic.h - a.pic.h);
+    let x = 0,
+      y = 0,
       rowH = 0;
+    for (const it of list) {
+      if (x + it.pic.w > 4096) {
+        x = 0;
+        y += rowH + 1;
+        rowH = 0;
+      }
+      it.x = x;
+      it.y = y;
+      x += it.pic.w + 1;
+      rowH = Math.max(rowH, it.pic.h);
     }
-    it.x = x;
-    it.y = y;
-    x += it.im.w + 1;
-    rowH = Math.max(rowH, it.im.h);
-  }
-  const H = y + rowH + 1,
-    data = new Uint8Array(W * H * 4),
-    rects = new Uint16Array(NC * nS * 4),
-    anchors = new Uint16Array(NC * nS * 4);
-  const byKey = new Map<number, (typeof items)[0]>();
-  for (const it of items) {
-    for (let r = 0; r < it.im.h; r++) data.set(it.im.data.subarray(r * it.im.w * 4, (r + 1) * it.im.w * 4), ((it.y + r) * W + it.x) * 4);
-    byKey.set(it.slot * 64 + it.k, it);
-  }
-  for (let sl = 0; sl < nS; sl++)
-    for (let k = 0; k < NC; k++) {
-      const it = byKey.get(sl * 64 + Math.min(k, DEFS[sl].maxClass));
-      if (!it) continue;
-      rects.set([it.x, it.y, it.im.w, it.im.h], (sl * NC + k) * 4);
-      anchors.set([it.im.ax, it.im.ay, 0, 0], (sl * NC + k) * 4);
+    return y + rowH + 1;
+  };
+  const idxItems = items.filter((i) => !i.rgb),
+    rgbItems = items.filter((i) => i.rgb),
+    idxH = shelve(idxItems),
+    rgbH = shelve(rgbItems),
+    idx = new Uint8Array(4096 * idxH * 2),
+    rgb = new Uint8Array(4096 * rgbH * 4);
+  for (const it of idxItems)
+    for (let y = 0; y < it.pic.h; y++)
+      for (let x = 0; x < it.pic.w; x++) {
+        const s4 = (y * it.pic.w + x) * 4,
+          d = ((it.y + y) * 4096 + it.x + x) * 2;
+        if (!it.pic.data[s4 + 3]) continue;
+        idx[d] = it.pic.data[s4];
+        idx[d + 1] = it.pic.data[s4 + 1];
+      }
+  for (const it of rgbItems)
+    for (let y = 0; y < it.pic.h; y++) rgb.set(it.pic.data.subarray(y * it.pic.w * 4, (y + 1) * it.pic.w * 4), ((it.y + y) * 4096 + it.x) * 4);
+  // What each slot shows at each height; the rows and columns tables; the parts.
+  const EW = (HMAX + 1) * 2,
+    entry = new Uint32Array(EW * nS * 4),
+    tab: number[] = [],
+    ptab: number[] = [],
+    meta: number[] = [],
+    per: number[] = [],
+    xy = (it: Item) => it.x | (it.y << 16),
+    wh = (w: number, h: number) => w | (h << 16),
+    anc = (ax: number, ay: number) => (ax + 32768) | ((ay + 32768) << 16);
+  PART_BASE = [];
+  PART_N = [];
+  let nParts = 0;
+  packs.forEach((pk, k) => {
+    const si = slotItems[k],
+      pl = pk.plan,
+      e = (H: number, t: number) => (pk.slot * EW + H * 2 + t) * 4;
+    entry[e(0, 0)] = pl.K;
+    for (let H = 1; H <= pl.E && H <= pl.K; H++) {
+      const q = pk.exact[H - 1],
+        it = si.exact[H - 1];
+      entry.set([xy(it), wh(q.w, q.h), wh(q.w, q.h), anc(q.ax, q.ay)], e(H, 0));
+      entry.set([1 | ((pl.direct ? 1 : 0) << 4), 0, 0, 0], e(H, 1));
     }
-  return { w: W, h: H, data, rects, anchors, slots: nS, classes: NC };
+    if (pk.span && si.span) {
+      const sp = pk.span,
+        rb = tab.length;
+      for (const v of sp.rows) tab.push(v);
+      const cb = tab.length;
+      for (const v of sp.cols) tab.push(v);
+      for (let H = sp.h0; H <= sp.h1; H++) {
+        const o = (H - sp.h0) * 6;
+        entry.set([xy(si.span), wh(sp.pic.w, sp.pic.h), wh(sp.per[o + 3], sp.per[o + 2]), anc(sp.per[o + 4], sp.per[o + 5])], e(H, 0));
+        entry.set([2 | ((pl.direct ? 1 : 0) << 4), rb + sp.per[o], cb + sp.per[o + 1], 0], e(H, 1));
+      }
+    }
+    PART_BASE[pk.slot] = nParts;
+    PART_N[pk.slot] = pk.parts.length;
+    if (pl.T > 0) for (let H = pl.T; H <= pl.K; H++) entry.set([3, 0, 0, 0], e(H, 1));
+    pk.parts.forEach((q, i) => {
+      const it = si.parts[i],
+        rb = ptab.length;
+      for (const v of q.rows) ptab.push(v);
+      const cb = ptab.length;
+      for (const v of q.cols) ptab.push(v);
+      meta.push(xy(it), wh(q.pic.w, q.pic.h), anc(q.cx, q.cy), q.hMin, per.length / 4, q.cell, 0, 0);
+      for (let h = q.hMin; h <= q.pic.h; h++) {
+        const o = (h - q.hMin) * 5;
+        per.push(rb + q.per[o], cb + q.per[o + 1], q.per[o + 2] | (q.per[o + 3] << 16), q.per[o + 4]);
+      }
+      nParts++;
+    });
+  });
+  const wrap4096 = <T extends Uint8Array | Uint16Array | Uint32Array>(src: number[], ctor: new (n: number) => T, comps: number) => {
+    const texels = src.length / comps,
+      h = Math.max(1, Math.ceil(texels / 4096)),
+      data = new ctor(4096 * h * comps);
+    data.set(src as unknown as ArrayLike<number>);
+    return { w: 4096, h, data };
+  };
+  return {
+    idx: { w: 4096, h: idxH, data: idx },
+    rgb: { w: 4096, h: rgbH, data: rgb },
+    entry: { w: EW, h: nS, data: entry },
+    tab: wrap4096(tab, Uint16Array, 1),
+    ptab: wrap4096(ptab, Uint8Array, 1),
+    mat: { w: 32, h: nS, data: mat },
+    pal: { h: rampRows.length, data: pal },
+    meta: wrap4096(meta, Uint32Array, 4),
+    per: wrap4096(per, Uint32Array, 4),
+    autumn0,
+  };
+}
+
+/** Trees and shrubs near enough this frame to be drawn in parts: grouped by slot, for one draw each. */
+let partTrees = new Float32Array(4096 * 8);
+function partsFrame(c: Camera, lists: { data: Float32Array; near: number; far: number }[]): PartsFrame {
+  const fx = Math.sin(c.yaw),
+    fz = Math.cos(c.yaw),
+    rx = Math.cos(c.yaw),
+    rz = -Math.sin(c.yaw),
+    tan = Math.tan(FOV / 2),
+    bySlot = new Map<number, { l: number; i: number }[]>();
+  lists.forEach((l, li) => {
+    const d = l.data;
+    for (let i = 0; i < d.length; i += 6) {
+      const slot = d[i + 4],
+        pl = PLANS[slot];
+      if (!pl || !pl.T) continue;
+      const ex = d[i] - c.x,
+        ez = d[i + 2] - c.z,
+        vz = ex * fx + ez * fz;
+      if (vz < 1.5 || vz < l.near * 0.9 || vz > l.far) continue;
+      const want = (d[i + 3] * F) / vz;
+      if (want < pl.T - 2 || Math.abs(ex * rx + ez * rz) > vz * tan + d[i + 3]) continue;
+      let b = bySlot.get(slot);
+      if (!b) bySlot.set(slot, (b = []));
+      b.push({ l: li, i });
+    }
+  });
+  let n = 0;
+  for (const b of bySlot.values()) n += b.length;
+  if (partTrees.length < n * 8) partTrees = new Float32Array(Math.ceil((n * 8) / 32768) * 32768);
+  const draws: PartsFrame["draws"] = [];
+  let k = 0;
+  for (const [slot, b] of bySlot) {
+    const pl = PLANS[slot],
+      l0 = lists[b[0].l];
+    draws.push({ slot, partBase: PART_BASE[slot], nc: PART_N[slot], treeBase: k, count: b.length, K: pl.K, T: pl.T, near: l0.near, far: l0.far });
+    for (const { l, i } of b) {
+      const d = lists[l].data;
+      partTrees.set([d[i], d[i + 1], d[i + 2], d[i + 3], slot, d[i + 5], 0, 0], k * 8);
+      k++;
+    }
+  }
+  return { trees: partTrees.subarray(0, n * 8), draws };
 }
 
 /** Ground cover for one 32 m tile: what grows depends on the ground. */
@@ -576,7 +761,7 @@ function hud(now: number, c2: Camera) {
   $("r-size").textContent = `${px.toFixed(1)} px tall, ${Math.round(px * (1084 / ART_W))} mm on the wall`;
   $("r-fps").textContent = `${fps.toFixed(0)} fps · ${cpuMs.toFixed(1)} ms on the CPU`;
   $("r-gpu").textContent = renderer.timer.ext ? `${renderer.timer.ms.toFixed(1)} ms` : "no timer here";
-  $("r-drawn").textContent = `${(st.tris / 1e6).toFixed(2)} M triangles · ${(st.sprites / 1000).toFixed(0)} k sprites`;
+  $("r-drawn").textContent = `${(st.tris / 1e6).toFixed(2)} M triangles · ${(st.sprites / 1000).toFixed(0)} k sprites · ${st.partTrees} trees in ${(st.parts / 1000).toFixed(1)} k parts`;
 }
 
 function setPressed(sel: string, el: Element) {
@@ -622,12 +807,41 @@ for (const ch of CHAPTERS) {
   };
   $("chapters").appendChild(b);
 }
+// Seeking: a slider along the whole route, steps of 10 and 100 m, a single frame on.
+const routeEl = $("route") as HTMLInputElement;
+let dragging = false;
+const seekTo = (v: number) => {
+  s = Math.min(TOTAL - 1, Math.max(0, v));
+  snap = true;
+  showRoute();
+};
+function showRoute() {
+  if (!dragging) routeEl.value = String(Math.round(s));
+  $("route-at").textContent = `${(s / 1000).toFixed(2)} of ${(TOTAL / 1000).toFixed(1)} km · ${CHAPTERS[chapterAt(s)].name}`;
+}
+routeEl.max = String(Math.floor(TOTAL - 1));
+routeEl.oninput = () => {
+  dragging = true;
+  seekTo(Number(routeEl.value));
+};
+routeEl.onchange = () => (dragging = false);
+document.querySelectorAll<HTMLButtonElement>("[data-seek]").forEach((b) => (b.onclick = () => seekTo(s + Number(b.dataset.seek))));
+$("frame-step").onclick = () => {
+  if (!paused) $("play").click();
+  stepOnce = true;
+};
 window.addEventListener("keydown", (e: KeyboardEvent) => {
+  if (e.target instanceof HTMLInputElement) return;
   if (e.target instanceof HTMLButtonElement && (e.key === " " || e.key === "Enter")) return;
   if (e.key === " ") {
     $("play").click();
     e.preventDefault();
   }
+  if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+    seekTo(s + (e.key === "ArrowRight" ? 1 : -1) * (e.shiftKey ? 100 : 10));
+    e.preventDefault();
+  }
+  if (e.key === ".") $("frame-step").click();
 });
 $("mode-note").textContent = NOTES[mode];
 if (paused) $("play").textContent = "Play";
@@ -636,14 +850,21 @@ if (paused) $("play").textContent = "Play";
 const nW = Math.max(2, Math.min(8, (navigator.hardwareConcurrency || 4) - 1)),
   workerUrl = URL.createObjectURL(new Blob([WORKER_SOURCE], { type: "text/javascript" })),
   jobs: any[] = [];
-const nSlots = DEFS.length,
-  SP = 6;
-for (let k = 0; k < SP; k++) jobs.push({ type: "sprites", from: Math.floor((k * nSlots) / SP), to: Math.floor(((k + 1) * nSlots) / SP) });
+// Sprites: trees and shrubs one slot a job (the heavy ones), the rest a dozen at a time.
+const nSlots = DEFS.length;
+for (let a = 0; a < nSlots; ) {
+  const heavy = DEFS[a].maxClass >= 25 || DEFS[a].name.startsWith("shrub"),
+    b = heavy ? a + 1 : Math.min(nSlots, a + 12);
+  let to = a + 1;
+  while (to < b && !(DEFS[to].maxClass >= 25 || DEFS[to].name.startsWith("shrub"))) to++;
+  jobs.push({ type: "sprites", from: a, to: heavy ? a + 1 : to });
+  a = heavy ? a + 1 : to;
+}
 for (const [gi, step] of [[2, 128], [1, 128], [0, 128]]) for (let r = 0; r < GRIDS[gi].n; r += step) jobs.push({ type: "band", gi, r0: r, r1: Math.min(GRIDS[gi].n, r + step) });
 jobs.forEach((j, i) => (j.id = i));
 let done = 0,
   next = 0;
-const spriteParts: { slot: number; imgs: Img[] }[] = [],
+const spritePacks: SlotPack[] = [],
   treeParts: Float32Array[] = [];
 let ready = false,
   treesList: Sprites | null = null,
@@ -659,7 +880,7 @@ function onDone() {
   };
   const buildings = layoutBuildings((x, z) => heightIn(0, x, z), isWater);
   renderer.setBuildings(buildings, { ...bridge, bed: (x, z) => heightIn(0, x, z) - (isWater(x, z) ? 3 : 0) });
-  renderer.setAtlas(packAtlas(spriteParts));
+  renderer.setSprites(buildSprites(spritePacks));
   const cl = buildClouds();
   renderer.setClouds(cl.W, cl.H, cl.data);
   // Trees: x, y, z, height, slot (kind * 3 + variant), flipped with the sun.
@@ -707,7 +928,7 @@ for (let k = 0; k < nW; k++) {
         FINE_R.set(b.road, b.r0 * g.n);
         treeParts.push(b.trees);
       }
-    } else spriteParts.push(...d.slots);
+    } else spritePacks.push(...d.slots);
     done++;
     $("loading").textContent = `Building the valley… ${Math.round((done / jobs.length) * 100)}%`;
     if (done === jobs.length) {
@@ -908,6 +1129,9 @@ async function runCheck(o: { quick?: boolean; timing?: boolean; settle?: number;
 $("check").onclick = () => void runCheck();
 
 // ---- The loop ---------------------------------------------------------------------------------------
+let routeAt0 = 0;
+let treeVis = new Float32Array(0),
+  coverVis = new Float32Array(0);
 let last = 0,
   hold = false,
   frameLog: number[][] | null = null;
@@ -916,7 +1140,8 @@ function frame(now: number, forced = -1) {
   const dtReal = forced >= 0 ? forced : Math.min(0.1, (now - last) / 1000 || 0);
   last = now;
   const t1 = performance.now(),
-    dt = paused ? 0 : dtReal * speed;
+    dt = paused ? (stepOnce ? speed / 60 : 0) : dtReal * speed;
+  stepOnce = false;
   simTime += dt;
   const grade = (partyY(s + 2) - partyY(s - 2)) / 4,
     step = (WALK / (1 + 5 * Math.max(0, grade) + 1.5 * Math.max(0, -grade))) * dt;
@@ -939,9 +1164,15 @@ function frame(now: number, forced = -1) {
   updateCamera(dt);
   const rc = renderCamera();
   const visTrees = cullTrees(rc);
-  if (visTrees && treesList) renderer.sprites(visTrees, treesList);
+  if (visTrees && treesList) {
+    renderer.sprites(visTrees, treesList);
+    treeVis = visTrees;
+  }
   const cover = coverAround(rc.x, rc.z, rc.yaw);
-  if (cover && coverList) renderer.sprites(cover, coverList);
+  if (cover && coverList) {
+    renderer.sprites(cover, coverList);
+    coverVis = cover;
+  }
   if (actorList && partyList) {
     const a = actors(rc);
     renderer.sprites(a.party, partyList);
@@ -956,6 +1187,10 @@ function frame(now: number, forced = -1) {
       { sprites: partyList!, near: 1.5, far: 20000, ghost: opt.ghost },
     ],
     { bands: opt.bands, wall: opt.wall, time: simTime },
+    partsFrame(rc, [
+      { data: treeVis, near: 10, far: 6000 },
+      { data: coverVis, near: 3, far: 260 },
+    ]),
   );
   drawMap(rc);
   const cpuNow = performance.now() - t1;
@@ -963,6 +1198,10 @@ function frame(now: number, forced = -1) {
   if (frameLog && forced < 0) frameLog.push([dtReal * 1000, cpuNow]);
   fps = fps * 0.93 + (dtReal > 0 ? 1 / dtReal : 60) * 0.07;
   hud(now, rc);
+  if (now - routeAt0 > 250 || paused) {
+    routeAt0 = now;
+    showRoute();
+  }
   if (forced < 0) requestAnimationFrame((t) => frame(t));
 }
 layout();
@@ -1012,5 +1251,32 @@ Object.assign(window, {
     },
     unexplained,
     check: (o = {}) => runCheck(o),
+    /** Trees in view this frame by size on screen (px): how many reach each size, by kind. */
+    treeSizes(limits = [24, 64, 96, 128, 192, 256]) {
+      const c = renderCamera(),
+        fx = Math.sin(c.yaw),
+        fz = Math.cos(c.yaw),
+        rx = Math.cos(c.yaw),
+        rz = -Math.sin(c.yaw),
+        n = treeAll.length / 6,
+        out = limits.map(() => 0),
+        byKind = limits.map(() => [0, 0, 0, 0, 0, 0, 0]);
+      for (let i = 0; i < n; i++) {
+        const ex = treeAll[i * 6] - c.x,
+          ez = treeAll[i * 6 + 2] - c.z,
+          vz = ex * fx + ez * fz;
+        if (vz < 1.5) continue;
+        const sx = ART_W / 2 + (F * (ex * rx + ez * rz)) / vz,
+          want = (treeAll[i * 6 + 3] * F) / vz;
+        if (sx < -want || sx > ART_W + want) continue;
+        limits.forEach((L, k) => {
+          if (want >= L) {
+            out[k]++;
+            byKind[k][Math.floor(treeAll[i * 6 + 4] / 3)]++;
+          }
+        });
+      }
+      return { limits, out, byKind };
+    },
   },
 });

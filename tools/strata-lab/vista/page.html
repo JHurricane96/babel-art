@@ -46,6 +46,8 @@ dd { margin: 0; font-variant-numeric: tabular-nums; min-width: 0; }
 .check-out { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--muted); border-top: 1px solid var(--line); padding-top: 8px; }
 .check-out b { color: var(--fg); font-weight: 500; }
 button:disabled { opacity: 0.5; cursor: default; }
+.seek input { width: min(300px, 48vw); accent-color: var(--accent); }
+.seek output { font-family: var(--mono); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 17ch; }
 .controls { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; }
 .group { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
 .group > span { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-right: 4px; }
@@ -71,7 +73,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 <div class="app">
   <header>
     <h1>Strata Vista</h1>
-    <p>The layered valley at the wall's resolution (980 × 637 art pixels, four screen pixels each), on the GPU. Every sprite is drawn at its own size; the ground is pixel art fixed to the land.</p>
+    <p>The layered valley at the wall's resolution (980 × 637 art pixels, four screen pixels each), on the GPU. Everything is drawn at its exact size in whole pixels: trees near the camera are put together from their clumps, each in its own place, and no two trees are coloured alike. The ground is pixel art fixed to the land.</p>
   </header>
   <div class="main">
     <div class="viewarea" id="viewarea">
@@ -110,6 +112,20 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
       <button id="s-3" data-speed="3" aria-pressed="false">3×</button>
       <button id="s-6" data-speed="6" aria-pressed="true">6×</button>
       <button id="s-15" data-speed="15" aria-pressed="false">15×</button>
+      <button id="s-30" data-speed="30" aria-pressed="false">30×</button>
+      <button id="s-60" data-speed="60" aria-pressed="false">60×</button>
+      <button id="s-120" data-speed="120" aria-pressed="false">120×</button>
+      <button id="s-250" data-speed="250" aria-pressed="false">250×</button>
+    </div>
+    <div class="group seek" role="group" aria-label="Along the route">
+      <span>Route</span>
+      <button id="seek-b100" data-seek="-100" aria-label="Back 100 metres">−100 m</button>
+      <button id="seek-b10" data-seek="-10" aria-label="Back 10 metres">−10</button>
+      <input id="route" type="range" min="0" max="1000" step="1" value="0" aria-label="Where the party is along the route">
+      <button id="seek-f10" data-seek="10" aria-label="On 10 metres">+10</button>
+      <button id="seek-f100" data-seek="100" aria-label="On 100 metres">+100 m</button>
+      <button id="frame-step" aria-label="One frame on">Frame ▶</button>
+      <output id="route-at" for="route">–</output>
     </div>
     <div class="group" role="group" aria-label="Jump to" id="chapters"><span>Jump to</span></div>
     <div class="group" role="group" aria-label="Show">
