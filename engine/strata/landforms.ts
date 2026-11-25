@@ -101,6 +101,21 @@ const CAPROCK = new Set<number>([
   ROCK.DUNE,
 ]);
 
+/** Landforms whose rivers cut gorges, and those whose rivers cut deep V valleys. */
+const CANYON = new Set<number>([
+  LANDFORM.MESAS,
+  LANDFORM.CUESTAS,
+  LANDFORM.SCARPS,
+  LANDFORM.BADLANDS,
+]);
+const STEEP = new Set<number>([
+  LANDFORM.MOUNTAINS,
+  LANDFORM.GLACIAL,
+  LANDFORM.VOLCANO,
+  LANDFORM.HILLS,
+  LANDFORM.KARST,
+]);
+
 const units = new WeakMap<World, Map<number, Unit>>();
 
 function unitOf(w: World, seed: number, k: number): Unit {
@@ -187,9 +202,9 @@ function unitOf(w: World, seed: number, k: number): Unit {
       [L.BADLANDS]: [35, 45],
       [L.DOMES]: [60, 110],
       [L.KARST]: [100, 150],
-      [L.MOUNTAINS]: [150, 210],
-      [L.GLACIAL]: [170, 210],
-      [L.VOLCANO]: [170, 230],
+      [L.MOUNTAINS]: [220, 300],
+      [L.GLACIAL]: [240, 300],
+      [L.VOLCANO]: [220, 320],
       [L.SCARPS]: [60, 110],
     },
     [a, b] = AMP[form];
@@ -197,7 +212,7 @@ function unitOf(w: World, seed: number, k: number): Unit {
   if (form === L.HILLS) amp *= 0.85 + Math.min(0.45, z / 400);
   // Keep inside the world's sky.
   // Keep inside the world's sky, with room above the peaks to frame them.
-  amp = Math.min(amp, Math.max(15, 500 - z));
+  amp = Math.min(amp, Math.max(15, 800 - z));
   u = {
     form,
     amp,
@@ -384,18 +399,45 @@ export function landformAt(w: World, seed: number, x: number) {
     dw = dist[c] + (dist[Math.min(w.n - 1, c + 1)] - dist[c]) * (t - c),
     cliffy = hash3(Math.floor(c / 40), 15, seed + 564) < 0.45,
     coast = smoothstep(110, cliffy ? 320 : 1200, dw);
-  // Rivers run in valleys as wide as the land is high.
-  let valley = 1;
+  // Rivers run in valleys as wide as the land is high; where the land is
+  // high and its rock flat-lying and hard (mesas, cuestas, scarps,
+  // badlands), they cut narrow gorges down through it, stepped where the
+  // beds alternate; in mountains and hills, deep V-shaped valleys.
+  let valley = 1,
+    cut = 0;
   for (const r of w.rivers) {
     if (w.wet[r.c]) continue;
     const xc = (r.c + 0.5) * CELL,
-      hw = 8 + 16 * Math.sqrt(r.q / 33000),
-      reach = 220 + 2.4 * U;
-    const d = Math.abs(x - xc);
+      d = Math.abs(x - xc);
+    if (d > 1400) continue;
+    const hw = 8 + 16 * Math.sqrt(r.q / 33000),
+      at = unitOf(w, seed, unitIndex(seed, xc)),
+      canyon = CANYON.has(at.form),
+      steep = STEEP.has(at.form),
+      reach = canyon ? 50 + 0.35 * U : 220 + 2.4 * U;
     if (d < hw + 12 + reach)
       valley = Math.min(valley, smoothstep(hw + 12, hw + 12 + reach, d));
+    // The gorge, below the valley floor: deepest where the land stands high.
+    const zc = Math.max(0, w.surface[r.c]),
+      D = canyon
+        ? Math.min(360, 0.55 * Math.max(0, zc - 30) + 0.5 * at.amp)
+        : steep
+          ? Math.min(240, 0.35 * Math.max(0, zc - 60))
+          : Math.min(50, 0.15 * Math.max(0, zc - 80)),
+      wall = canyon ? 25 + 0.25 * D : steep ? 60 + D : 80 + D;
+    if (D < 4 || d > hw + 6 + wall) continue;
+    const t = Math.max(0, d - hw - 6) / wall;
+    let g: number;
+    if (canyon) {
+      // Steps: a cliff, a ledge, a cliff, about every 45 rows of depth.
+      const n = Math.max(1, Math.round(D / 45)),
+        q = t * n,
+        k = Math.floor(q);
+      g = 1 - (k + smoothstep(0.7, 1, q - k)) / n;
+    } else g = Math.pow(1 - t, 1.3);
+    cut = Math.max(cut, D * g);
   }
-  return { L: L * coast * valley, U: U * coast, form: u.form };
+  return { L: L * coast * valley, U: U * coast, cut: cut * coast, form: u.form };
 }
 
 /** The landform name of the unit at x (for labels). */

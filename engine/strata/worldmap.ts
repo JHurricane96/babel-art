@@ -273,9 +273,11 @@ export function waterAt(
  */
 export function groundElevation(seed: number, x: number, channels = true) {
   const w = worldOf(seed),
-    lf = landformAt(w, seed, x).L,
-    lfSlope =
-      Math.abs(landformAt(w, seed, x + 8).L - landformAt(w, seed, x - 8).L) / 16,
+    form = landformAt(w, seed, x),
+    right = landformAt(w, seed, x + 8),
+    left = landformAt(w, seed, x - 8),
+    lf = form.L - form.cut,
+    lfSlope = Math.abs(right.L - right.cut - left.L + left.cut) / 16,
     slope = slopeAt(w, x) + lfSlope,
     amp = 2 + 26 * Math.min(0.5, slope);
   // The world's land, its landform (hills, mesas, peaks: landforms.ts), and
@@ -322,6 +324,13 @@ export function groundRow(seed: number, x: number) {
 
 // ---- Climate, habitat, soil and biome ----------------------------------------------
 
+/** Rain (mm a year) at x, from the world's climate. */
+export function rainAt(seed: number, x: number) {
+  const w = worldOf(seed),
+    { c, t } = pos(w, x);
+  return w.P[c] + (w.P[c + 1] - w.P[c]) * t;
+}
+
 /** Warmth (°C) at x on the ground at the given row, from the world's climate, colder with height. */
 export function warmthAt(seed: number, x: number, row: number) {
   const w = worldOf(seed),
@@ -333,7 +342,8 @@ export function warmthAt(seed: number, x: number, row: number) {
 
 /** The land's shape at the scale of habitats: the world's land and its landform, without the fine detail. */
 function relief(w: World, seed: number, x: number) {
-  return smoothElevation(w, x) + landformAt(w, seed, x).L;
+  const f = landformAt(w, seed, x);
+  return smoothElevation(w, x) + f.L - f.cut;
 }
 
 /** Is the place by the sea or a lake, or by a river? (Local: these keep their own edges.) */

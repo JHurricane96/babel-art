@@ -28,7 +28,7 @@ export const CELL = 64;
 export const ERAS = 48;
 const SUBSTEPS = 3;
 /** The screen row of sea level at the end of history. */
-export const SEA_ROW = 720;
+export const SEA_ROW = 1000;
 
 // ---- Rock ------------------------------------------------------------------
 
@@ -198,8 +198,10 @@ function planWorld(seed: number, regions: number) {
   const perRegion = REGION_W / CELL;
   const ranges = 2 + Math.floor(r(10) * 4);
   for (let i = 0; i < ranges; i++) {
+    // The first range is young, still rising late in history, so every
+    // world has high peaks; the others rise earlier and wear down.
     const w = perRegion * (2 + 6 * r(11 + i)),
-      e0 = Math.floor(6 + 26 * r(12 + i)),
+      e0 = i === 0 ? Math.floor(30 + 10 * r(12)) : Math.floor(6 + 26 * r(12 + i)),
       d = Math.floor(6 + 10 * r(13 + i));
     events.push({
       kind: "range",
@@ -207,7 +209,7 @@ function planWorld(seed: number, regions: number) {
       w,
       e0,
       e1: Math.min(ERAS, e0 + d),
-      amp: 350 + 400 * r(14 + i),
+      amp: 450 + 450 * r(14 + i),
       fold: perRegion * (0.8 + 1.5 * r(15 + i)),
       foldAmp: 0.15 + 0.25 * r(16 + i),
       phase: 6.283 * r(17 + i),

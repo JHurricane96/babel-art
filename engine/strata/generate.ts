@@ -54,6 +54,7 @@ import {
   hard,
   kindAt,
   looksAt,
+  rainAt,
   rockAt,
   warmthAt,
   waterAt,
@@ -937,6 +938,7 @@ export function generateWindow(seed: number, x0: number, width: number) {
   }
   sealWater(cells, WW, H);
   fillHollows(cells, WW, H, X0, seed, params, surface);
+  springs(cells, WW, H, X0, seed, surface);
   // Where it is cold, lakes and seas carry a thick sheet of ice under drifts
   // of snow, and cave pools freeze, until the rock grows warm with depth.
   for (let x = 0; x < WW; x++) {
@@ -1215,6 +1217,58 @@ export function generateWindow(seed: number, x0: number, width: number) {
  * same liquid. Pools start only in wet stretches of rock and stop at a depth
  * that varies along the land, so they never stand as walls of water.
  */
+/**
+ * Springs: in wet country, rain soaked into high ground comes out of a
+ * cliff face a little below its lip and cascades down the face into a
+ * small pool at its foot. At most one per stretch of 120 world columns,
+ * at the first tall enough drop in it.
+ */
+function springs(
+  cells: Uint8Array,
+  WW: number,
+  H: number,
+  X0: number,
+  seed: number,
+  surface: Int16Array,
+) {
+  let bucket = -1;
+  for (let x = 8; x < WW - 8; x++) {
+    const wx = X0 + x,
+      b = Math.floor(wx / 120);
+    if (b === bucket) continue;
+    for (const dir of [1, -1]) {
+      const s0 = surface[x],
+        far = surface[x + 4 * dir];
+      if (far - s0 < 36) continue;
+      const P = rainAt(seed, wx),
+        chance = Math.min(0.5, Math.max(0, (P - 700) / 900));
+      bucket = b;
+      if (hash3(b, 41, seed) >= chance || warmthAt(seed, wx, s0) < 1) break;
+      // Down the face, column by column, as long as it keeps dropping.
+      let c = x + dir,
+        y = s0 + 4;
+      for (let step = 0; step < 10 && c > 0 && c < WW - 1; step++) {
+        const foot = surface[c];
+        // Three cells wide, out from the face (only into open air).
+        for (; y < foot && y < H - 30; y++)
+          for (let k = 0; k < 3; k++) {
+            const i = y * WW + c + k * dir;
+            if (cells[i] === M.AIR && y < surface[c + k * dir]) cells[i] = M.FALLS;
+          }
+        if (surface[c + dir] - foot <= 2) break;
+        c += dir;
+      }
+      // Spray where it lands.
+      for (const k of [-1, 1, 2]) {
+        const pc = c + k * dir,
+          i = (surface[pc] - 1) * WW + pc;
+        if (pc > 0 && pc < WW - 1 && cells[i] === M.AIR) cells[i] = M.FALLS;
+      }
+      break;
+    }
+  }
+}
+
 function fillHollows(
   cells: Uint8Array,
   WW: number,
