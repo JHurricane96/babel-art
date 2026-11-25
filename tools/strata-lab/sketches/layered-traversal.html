@@ -1,0 +1,965 @@
+<title>Layered Traversal</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500&family=Space+Grotesk:wght@500;600&display=swap">
+<style>
+/* Layout: one screen. The wall-shaped view fills the stage, a side panel holds the map and readout, controls sit beneath. */
+:root {
+  --bg: #121419;
+  --panel: #1a1d24;
+  --raised: #232731;
+  --fg: #e8e4da;
+  --muted: #9a9ba3;
+  --accent: #e9a95a;
+  --line: #2f3440;
+  --display: "Space Grotesk", system-ui, sans-serif;
+  --body: "Inter", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 14px; overflow-x: hidden; }
+.app {
+  height: 100%; box-sizing: border-box; display: flex; flex-direction: column; gap: 10px;
+  padding-block: 12px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+header { display: flex; align-items: baseline; gap: 6px 14px; flex-wrap: wrap; }
+h1 { font-family: var(--display); font-weight: 600; font-size: 18px; margin: 0; letter-spacing: 0.01em; text-wrap: balance; }
+header p { margin: 0; color: var(--muted); font-size: 13px; max-width: 72ch; }
+.main { flex: 1; min-height: 0; display: flex; gap: 14px; }
+.viewarea { flex: 1; min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center; position: relative; }
+#view { display: block; image-rendering: pixelated; image-rendering: crisp-edges; background: var(--bg); }
+#loading[hidden] { display: none; }
+#loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 13px; color: var(--muted); }
+.side { width: 236px; flex: none; display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow-y: auto; }
+#map { width: 236px; height: 236px; display: block; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); }
+.key { font-size: 12px; color: var(--muted); display: flex; gap: 10px; flex-wrap: wrap; }
+.key i { font-style: normal; display: inline-flex; align-items: center; gap: 5px; }
+.key b { display: inline-block; width: 10px; height: 3px; border-radius: 2px; }
+dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-family: var(--mono); font-size: 12px; }
+dt { color: var(--muted); }
+dd { margin: 0; font-variant-numeric: tabular-nums; min-width: 0; }
+#mode-note { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; }
+.group { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.group > span { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-right: 4px; }
+button {
+  font: 500 13px var(--body); color: var(--fg); background: var(--raised);
+  border: 1px solid var(--line); border-radius: 4px; padding: 5px 9px; cursor: pointer;
+}
+button:hover { border-color: var(--muted); }
+button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@media (max-width: 860px) {
+  .app { height: auto; min-height: 100%; }
+  .main { flex-direction: column; flex: none; }
+  .viewarea { flex: none; height: calc((100vw - 32px) / 1.5376); }
+  .side { width: auto; flex-direction: row; flex-wrap: wrap; overflow: visible; }
+  #map { width: 132px; height: 132px; }
+  .readout { flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 8px; }
+  header p { font-size: 12px; }
+}
+@media (max-width: 480px) { button { padding: 4px 7px; font-size: 12px; } .controls { gap: 6px 12px; } }
+</style>
+
+<div class="app">
+  <header>
+    <h1>Layered traversal</h1>
+    <p>A rough 3D valley drawn as receding layers, to judge how a party moves through them. Shapes and colours are placeholders, not the art.</p>
+  </header>
+  <div class="main">
+    <div class="viewarea" id="viewarea">
+      <canvas id="view" aria-label="The valley, drawn as receding layers, with the party walking through it"></canvas>
+      <div id="loading">Building the valley…</div>
+    </div>
+    <aside class="side">
+      <canvas id="map" aria-label="Map of the valley from above: the route, the party and what the camera sees"></canvas>
+      <div class="readout">
+        <div class="key"><i><b style="background:#f4efe2"></b>route</i><i><b style="background:var(--accent)"></b>party</i><i><b style="background:#7fc4ff"></b>camera view</i></div>
+        <dl>
+          <dt>Stretch</dt><dd id="r-stretch">–</dd>
+          <dt>Doing</dt><dd id="r-doing">–</dd>
+          <dt>Distance</dt><dd id="r-dist">–</dd>
+          <dt>Figure</dt><dd id="r-size">–</dd>
+          <dt>Layer</dt><dd id="r-layer">–</dd>
+          <dt>Elevation</dt><dd id="r-elev">–</dd>
+          <dt>Clock</dt><dd id="r-clock">–</dd>
+        </dl>
+        <p id="mode-note"></p>
+      </div>
+    </aside>
+  </div>
+  <div class="controls">
+    <div class="group" role="group" aria-label="Camera">
+      <span>Camera</span>
+      <button id="m-follow" data-mode="follow" aria-pressed="true">Follow</button>
+      <button id="m-turn" data-mode="turn" aria-pressed="false">Turn</button>
+      <button id="m-shots" data-mode="shots" aria-pressed="false">Shots</button>
+    </div>
+    <div class="group" role="group" aria-label="Speed">
+      <span>Speed</span>
+      <button id="play" aria-pressed="false">Pause</button>
+      <button id="s-1" data-speed="1" aria-pressed="false">1×</button>
+      <button id="s-8" data-speed="8" aria-pressed="true">8×</button>
+      <button id="s-32" data-speed="32" aria-pressed="false">32×</button>
+    </div>
+    <div class="group" role="group" aria-label="Jump to" id="chapters"><span>Jump to</span></div>
+    <div class="group" role="group" aria-label="Show">
+      <span>Show</span>
+      <button id="t-bands" data-toggle="bands" aria-pressed="true">Layer bands</button>
+      <button id="t-flats" data-toggle="flats" aria-pressed="false">8 flat layers</button>
+      <button id="t-ghost" data-toggle="ghost" aria-pressed="true">Party through hills</button>
+      <button id="t-marker" data-toggle="marker" aria-pressed="true">Party marker</button>
+      <button id="t-wall" data-toggle="wall" aria-pressed="true">Wall frame</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+"use strict";
+// ---- The view ----------------------------------------------------------------------
+// The picture is drawn at 480 x 312 (the wall's shape) and scaled up without smoothing.
+// The camera stays level, so verticals stay vertical: the land is a heightmap drawn
+// front to back, column by column, each column a ray into the valley.
+const W = 480, H = 312, HORIZON = Math.round(H * 0.4);
+const FOV = Math.PI / 3, F = W / 2 / Math.tan(FOV / 2);
+const DMAX = 22000, HMAX = 2800;
+const WALL = { w: 1084, h: 705, pw: 531, ph: 299, panels: [[0, 85], [553, 0], [0, 406], [553, 321]] };
+const MM_PER_PX = WALL.w / W;
+const WALK = 1.35; // metres a second, on the level
+// Layers: eight bands of distance, each about 2.4 times as deep as the last.
+const NB = 8, BAND0 = 15, BANDR = Math.pow(20000 / BAND0, 1 / NB), LOGR = Math.log(BANDR);
+const BANDREP = [], HAZE_B = [];
+for (let b = 0; b < NB; b++) BANDREP.push(BAND0 * Math.pow(BANDR, b + 0.5));
+const bandOf = (d) => { const b = Math.floor(Math.log(d / BAND0) / LOGR); return b < 0 ? 0 : b >= NB ? NB - 1 : b; };
+const hazeOf = (d, layer) => Math.min(0.9, 0.042 * layer + 0.85 * (1 - Math.exp(-d / 9000)));
+for (let b = 0; b < NB; b++) HAZE_B.push(hazeOf(BANDREP[b], b + 0.5));
+const hazeC = (d) => hazeOf(d, Math.max(0, Math.log(d / BAND0) / LOGR));
+const HZ = [196, 214, 230];
+
+// ---- Noise -------------------------------------------------------------------------
+function hash2(ix, iz, s) {
+  let h = (Math.imul(ix, 374761393) + Math.imul(iz, 668265263) + Math.imul(s, 1442695041)) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+function vnoise(x, z, s) {
+  const ix = Math.floor(x), iz = Math.floor(z), fx = x - ix, fz = z - iz;
+  const u = fx * fx * (3 - 2 * fx), v = fz * fz * (3 - 2 * fz);
+  const a = hash2(ix, iz, s), b = hash2(ix + 1, iz, s), c = hash2(ix, iz + 1, s), d = hash2(ix + 1, iz + 1, s);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+function fbm(x, z, s, oct) {
+  let t = 0, a = 0.5, f = 1, n = 0;
+  for (let i = 0; i < oct; i++) { t += a * vnoise(x * f, z * f, s + i * 17); n += a; a *= 0.5; f *= 2.03; }
+  return t / n;
+}
+function ridged(x, z, s, oct) {
+  let t = 0, a = 0.5, f = 1, n = 0;
+  for (let i = 0; i < oct; i++) { let v = 1 - Math.abs(2 * vnoise(x * f, z * f, s + i * 31) - 1); v *= v; t += a * v; n += a; a *= 0.5; f *= 2.1; }
+  return t / n;
+}
+const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+const gauss2 = (dx, dz, rx, rz) => Math.exp(-(dx * dx) / (2 * rx * rx) - (dz * dz) / (2 * rz * rz));
+function mulberry(a) { return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+
+// ---- The valley (metres; x east, z north, y up) ---------------------------------------
+// A river runs south out of the mountains; a hill town stands on its east bank; a road
+// climbs from the town by switchbacks to a pass, and beyond the pass is a lake basin and,
+// far off, a high range.
+const RIVER = [[1500, -6000, 40], [1500, -200, 95], [1450, 300, 100], [1500, 700, 108], [1420, 1100, 118], [1460, 1500, 128],
+  [1380, 1900, 146], [1300, 2400, 182], [1200, 2900, 262], [1080, 3400, 420], [950, 3900, 610], [780, 4700, 820], [600, 6000, 1100]];
+const LAKE = { x: 2450, z: 4420, level: 380 };
+const ROUTE = [
+  [430, 330], [700, 310], [1000, 300], [1300, 300], // riverside meadows, walking east
+  [1330, 700], [1280, 1100], [1360, 1480], // up the valley, north
+  [1405, 1488], [1515, 1495], // the bridge
+  [1600, 1520], [1720, 1560], [1660, 1630], [1800, 1680], [1740, 1750], [1900, 1790], // the town's streets
+  [2050, 1850], [2250, 2150], [2380, 2550], // the ridge road
+  [2700, 2720], [2420, 2880], [2760, 3030], [2480, 3160], [2650, 3300], // switchbacks to the pass
+  [2700, 3500], [2620, 3800], [2520, 4000], // down to the lake
+];
+const BRIDGE = 7; // the route's segment from ROUTE[7] to ROUTE[8]
+const ROAD2 = [[1600, -250], [1640, 300], [1600, 800], [1620, 1200], [1560, 1460]];
+const TOWN = ROUTE.slice(9, 16);
+
+let NP_D = 0, NP_I = 0, NP_T = 0;
+function nearest(pts, x, z) {
+  let best = 1e18;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const ax = pts[i][0], az = pts[i][1], vx = pts[i + 1][0] - ax, vz = pts[i + 1][1] - az, L2 = vx * vx + vz * vz;
+    let t = ((x - ax) * vx + (z - az) * vz) / L2;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const px = ax + vx * t - x, pz = az + vz * t - z, d2 = px * px + pz * pz;
+    if (d2 < best) { best = d2; NP_I = i; NP_T = t; }
+  }
+  NP_D = Math.sqrt(best);
+  return NP_D;
+}
+let T_DR = 0, T_LV = 0, T_DL = 0;
+function terrain(x, z) {
+  let h = 118 + 80 * (fbm(x / 650, z / 650, 1, 5) - 0.5);
+  h += 60 * gauss2(x - 420, z - 360, 260, 200); // the low hill where the day starts
+  h += 95 * gauss2(x - 1930, z - 1790, 250, 210); // the town's knoll
+  const mz = smooth(2000, 3300, z);
+  if (mz > 0) {
+    let mt = mz * (380 + 720 * ridged(x / 900, z / 900, 7, 5));
+    mt *= 1 - 0.5 * gauss2(x - 2650, z - 3300, 340, 260); // the pass
+    mt *= 1 - 0.82 * gauss2(x - LAKE.x, z - LAKE.z, 850, 650); // the lake's basin
+    h += mt;
+  }
+  const fz = smooth(5200, 9500, z);
+  if (fz > 0) h += fz * (900 + 1600 * ridged(x / 2300, z / 2300, 9, 5));
+  // The river's valley: a channel, a flat floodplain, then the valley sides.
+  nearest(RIVER, x, z);
+  const lv = RIVER[NP_I][2] + (RIVER[NP_I + 1][2] - RIVER[NP_I][2]) * NP_T, dr = NP_D;
+  const hv = dr < 18 ? lv - 4 : dr < 165 ? lv + 2 + (dr - 18) * 0.028 : lv + 6.1 + (dr - 165) * 0.42;
+  if (hv < h) h = hv;
+  const dl = Math.hypot(x - LAKE.x, (z - LAKE.z) * 1.25);
+  const hl = LAKE.level - 14 + Math.max(0, dl - 420) * 0.55;
+  if (hl < h) h = hl;
+  T_DR = dr; T_LV = lv; T_DL = dl;
+  return h;
+}
+
+// ---- Grids: a fine one over the valley, a coarse one out to the far ranges ---------------
+function Grid(x0, z0, cell, n) {
+  this.x0 = x0; this.z0 = z0; this.cell = cell; this.n = n;
+  this.h = new Float32Array(n * n); // ground
+  this.rh = new Float32Array(n * n); // what is drawn: ground or water surface
+  this.r = new Uint8Array(n * n); this.g = new Uint8Array(n * n); this.b = new Uint8Array(n * n);
+  this.kind = new Uint8Array(n * n);
+}
+const K = { GRASS: 0, FOREST: 1, ROCK: 2, SNOW: 3, WATER: 4, PATH: 5, TOWN: 6, FIELD: 7, HEDGE: 8 };
+const DG = new Grid(0, 0, 4, 1024), FG = new Grid(-16000, -14000, 40, 1024);
+const DX1 = DG.x0 + (DG.n - 2) * DG.cell, DZ1 = DG.z0 + (DG.n - 2) * DG.cell;
+const DR = new Float32Array(DG.n * DG.n); // distance to the river, fine grid only
+const MASK = new Uint8Array(DG.n * DG.n); // 1 path, 2 clear of trees, 4 town
+
+let S_H = 0, S_I = 0, S_G = DG, S_B = 0, S_TX = 0, S_TZ = 0;
+function sample(x, z) {
+  const g = x >= DG.x0 && z >= DG.z0 && x < DX1 && z < DZ1 ? DG : FG, n = g.n;
+  let fx = (x - g.x0) / g.cell, fz = (z - g.z0) / g.cell;
+  if (fx < 0) fx = 0; else if (fx > n - 1.001) fx = n - 1.001;
+  if (fz < 0) fz = 0; else if (fz > n - 1.001) fz = n - 1.001;
+  const ix = fx | 0, iz = fz | 0, tx = fx - ix, tz = fz - iz, i = iz * n + ix, a = g.rh;
+  const p = a[i], q = a[i + 1], r = a[i + n], s = a[i + n + 1];
+  S_H = p + (q - p) * tx + (r - p) * tz + (p - q - r + s) * tx * tz;
+  S_I = (tx < 0.5 ? i : i + 1) + (tz < 0.5 ? 0 : n);
+  S_B = i; S_TX = tx; S_TZ = tz;
+  S_G = g;
+}
+// The ground's colour where the last sample fell, blended between the four cells.
+let C_R = 0, C_G = 0, C_B = 0;
+function sampleColor() {
+  const g = S_G, n = g.n, i = S_B, tx = S_TX, tz = S_TZ;
+  const w0 = (1 - tx) * (1 - tz), w1 = tx * (1 - tz), w2 = (1 - tx) * tz, w3 = tx * tz;
+  C_R = g.r[i] * w0 + g.r[i + 1] * w1 + g.r[i + n] * w2 + g.r[i + n + 1] * w3;
+  C_G = g.g[i] * w0 + g.g[i + 1] * w1 + g.g[i + n] * w2 + g.g[i + n + 1] * w3;
+  C_B = g.b[i] * w0 + g.b[i + 1] * w1 + g.b[i + n] * w2 + g.b[i + n + 1] * w3;
+}
+function groundAt(x, z) {
+  const g = x >= DG.x0 && z >= DG.z0 && x < DX1 && z < DZ1 ? DG : FG, n = g.n;
+  const fx = Math.min(n - 1.001, Math.max(0, (x - g.x0) / g.cell)), fz = Math.min(n - 1.001, Math.max(0, (z - g.z0) / g.cell));
+  const ix = fx | 0, iz = fz | 0, tx = fx - ix, tz = fz - iz, i = iz * n + ix, a = g.h;
+  const p = a[i], q = a[i + 1], r = a[i + n], s = a[i + n + 1];
+  return p + (q - p) * tx + (r - p) * tz + (p - q - r + s) * tx * tz;
+}
+function surfaceMax(x, z, r) {
+  let m = -1e9;
+  for (const [dx, dz] of [[0, 0], [r, 0], [-r, 0], [0, r], [0, -r], [r * 0.7, r * 0.7], [-r * 0.7, r * 0.7], [r * 0.7, -r * 0.7], [-r * 0.7, -r * 0.7]]) {
+    sample(x + dx, z + dz);
+    if (S_H > m) m = S_H;
+  }
+  return m;
+}
+const tick = () => new Promise((r) => setTimeout(r, 0));
+
+async function buildHeights(g, fine, from, to) {
+  const n = g.n;
+  for (let iz = 0; iz < n; iz++) {
+    const z = g.z0 + iz * g.cell;
+    for (let ix = 0; ix < n; ix++) {
+      const x = g.x0 + ix * g.cell, i = iz * n + ix, h = terrain(x, z);
+      const wl = Math.max(T_DR < 26 ? T_LV : -1e9, T_DL < 900 ? LAKE.level : -1e9);
+      g.h[i] = h;
+      g.rh[i] = Math.max(h, wl);
+      if (fine) DR[i] = T_DR;
+    }
+    if ((iz & 63) === 63) { progress(from + ((to - from) * iz) / n); await tick(); }
+  }
+}
+
+function markPaths() {
+  const n = DG.n, cell = DG.cell;
+  const mark = (pts, clearR) => {
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [ax, az] = pts[i], [bx, bz] = pts[i + 1], L = Math.hypot(bx - ax, bz - az);
+      for (let s = 0; s <= L; s += 1.5) {
+        const x = ax + ((bx - ax) * s) / L, z = az + ((bz - az) * s) / L;
+        const cx = Math.floor((x - DG.x0) / cell), cz = Math.floor((z - DG.z0) / cell);
+        for (let dz = -clearR; dz <= clearR; dz++)
+          for (let dx = -clearR; dx <= clearR; dx++) {
+            const j = (cz + dz) * n + cx + dx;
+            if (j >= 0 && j < n * n) MASK[j] |= dx === 0 && dz === 0 ? 3 : 2;
+          }
+      }
+    }
+  };
+  mark(ROUTE, 2);
+  mark(ROAD2, 2);
+  // The town: within 75 m of its streets.
+  for (let cz = Math.floor(1350 / cell); cz < Math.floor(2000 / cell); cz++)
+    for (let cx = Math.floor(1450 / cell); cx < Math.floor(2200 / cell); cx++) {
+      const x = DG.x0 + cx * cell, z = DG.z0 + cz * cell;
+      if (nearest(TOWN, x, z) < 48 || Math.hypot(x - 1340, z - 1460) < 45) MASK[cz * n + cx] |= 4;
+    }
+}
+
+const SUN = (() => { const v = [-0.45, 0.72, -0.53], l = Math.hypot(...v); return v.map((c) => c / l); })();
+function classify(g, fine) {
+  const n = g.n, cell = g.cell;
+  for (let iz = 0; iz < n; iz++)
+    for (let ix = 0; ix < n; ix++) {
+      const i = iz * n + ix, x = g.x0 + ix * cell, z = g.z0 + iz * cell, h = g.h[i];
+      const xl = ix > 0 ? i - 1 : i, xr = ix < n - 1 ? i + 1 : i, zd = iz > 0 ? i - n : i, zu = iz < n - 1 ? i + n : i;
+      const hx = (g.h[xr] - g.h[xl]) / ((xr - xl) * cell || 1), hz = (g.h[zu] - g.h[zd]) / (((zu - zd) / n) * cell || 1);
+      const slope = Math.hypot(hx, hz), nl = Math.hypot(hx, 1, hz);
+      const lit = Math.max(0, (-hx * SUN[0] + SUN[1] - hz * SUN[2]) / nl);
+      const water = g.rh[i] > h + 0.01, m = fine ? MASK[i] : 0, dr = fine ? DR[i] : 1e9;
+      const nz = vnoise(x / 180, z / 180, 5);
+      let kind, r, gg, b, shade = 0.55 + 0.62 * lit;
+      if (water) { kind = K.WATER; r = 70; gg = 116; b = 142; shade = 1; }
+      else if (m & 1) { kind = K.PATH; r = 178; gg = 152; b = 110; }
+      else if (m & 4) { kind = K.TOWN; r = 140; gg = 144; b = 100; }
+      else if (h > 1350 + 160 * (nz - 0.5) && slope < 1.0) { kind = K.SNOW; r = 232; gg = 238; b = 246; shade = 0.62 + 0.45 * lit; }
+      else if (slope > 0.85 || h > 1180 + 140 * (nz - 0.5)) { kind = K.ROCK; const v = 0.9 + 0.2 * nz; r = 126 * v; gg = 120 * v; b = 112 * v; shade = 0.5 + 0.66 * lit; }
+      else if (fine && dr > 28 && dr < 170 && z > -150 && z < 1440 && slope < 0.15) {
+        const u = x * 0.83 + z * 0.56, v = -x * 0.56 + z * 0.83, um = ((u % 46) + 46) % 46;
+        if (um < 4) { kind = K.HEDGE; r = 62; gg = 92; b = 50; }
+        else {
+          kind = K.FIELD;
+          const f = hash2(Math.floor(u / 46), Math.floor(v / 120), 9), furrow = Math.floor(u / 4) % 2 ? 0.95 : 1;
+          [r, gg, b] = f < 0.4 ? [196, 176, 96] : f < 0.75 ? [118, 156, 72] : [146, 118, 84];
+          r *= furrow; gg *= furrow; b *= furrow;
+        }
+      } else {
+        const fm = fbm(x / 380, z / 380, 21, 4);
+        if (fm > 0.555 - 0.05 * smooth(300, 700, h) && h < 1050 && slope < 0.8 && dr > 60) {
+          kind = K.FOREST;
+          [r, gg, b] = h > 480 ? [40, 70, 50] : [54, 92, 46];
+        } else {
+          kind = K.GRASS;
+          const al = smooth(600, 1000, h);
+          r = 104 + 46 * al + 14 * (nz - 0.5); gg = 146 + 4 * al + 14 * (nz - 0.5); b = 66 + 26 * al;
+        }
+      }
+      if (water) { r = r * 0.7 + HZ[0] * 0.3; gg = gg * 0.7 + HZ[1] * 0.3; b = b * 0.7 + HZ[2] * 0.3; }
+      g.kind[i] = kind;
+      g.r[i] = Math.min(255, r * shade); g.g[i] = Math.min(255, gg * shade); g.b[i] = Math.min(255, b * shade);
+    }
+}
+
+// ---- Things: trees, houses, the tower, the bridge ------------------------------------
+let NT = 0;
+const TX = new Float32Array(200000), TZ = new Float32Array(200000), TY = new Float32Array(200000), TH = new Float32Array(200000), TT = new Uint8Array(200000), TV = new Float32Array(200000);
+const BUCKET = 128, NBK = Math.ceil(4096 / BUCKET);
+let BSTART = null, BORDER = null;
+const houses = [], bridge = [];
+let DECK = 0;
+function placeThings() {
+  const n = DG.n, rnd = mulberry(7);
+  for (let i = 0; i < n * n && NT < TX.length; i++) {
+    const k = DG.kind[i];
+    if (MASK[i] & 6) continue;
+    const ix = i % n, iz = (i / n) | 0, x = DG.x0 + ix * 4, z = DG.z0 + iz * 4, h = DG.h[i], dr = DR[i];
+    const p = hash2(ix, iz, 11);
+    const want = k === K.FOREST ? p < 0.42 : k === K.GRASS ? p < 0.012 || (dr > 20 && dr < 46 && p < 0.22) : k === K.HEDGE ? p < 0.1 : false;
+    if (!want) continue;
+    const jx = x + (hash2(ix, iz, 12) - 0.5) * 3.4, jz = z + (hash2(ix, iz, 13) - 0.5) * 3.4;
+    const conifer = h > 480 || (h > 250 && hash2(ix, iz, 14) < 0.3);
+    TX[NT] = jx; TZ[NT] = jz; TY[NT] = groundAt(jx, jz); TT[NT] = conifer ? 0 : 1;
+    TH[NT] = conifer ? 14 + 10 * hash2(ix, iz, 15) : 9 + 8 * hash2(ix, iz, 15);
+    TV[NT] = hash2(ix, iz, 16);
+    NT++;
+  }
+  // Bucket the trees so a frame only looks at those near the camera.
+  const count = new Int32Array(NBK * NBK + 1);
+  const bk = (k) => Math.min(NBK - 1, Math.max(0, Math.floor(TZ[k] / BUCKET))) * NBK + Math.min(NBK - 1, Math.max(0, Math.floor(TX[k] / BUCKET)));
+  for (let k = 0; k < NT; k++) count[bk(k) + 1]++;
+  for (let b = 0; b < NBK * NBK; b++) count[b + 1] += count[b];
+  BSTART = count.slice();
+  BORDER = new Int32Array(NT);
+  const fill = count.slice();
+  for (let k = 0; k < NT; k++) BORDER[fill[bk(k)]++] = k;
+
+  // Houses along the town's streets, a hamlet at the west end of the bridge, a few farms.
+  const WALLS = [[214, 204, 184], [198, 186, 164], [166, 158, 146], [184, 156, 120]];
+  const ROOFS = [[162, 76, 52], [140, 64, 46], [88, 90, 104], [150, 128, 78]];
+  const ok = (x, z, gap) => {
+    if (nearest(ROUTE, x, z) < 8 || nearest(ROAD2, x, z) < 7) return false;
+    const i = Math.floor((z - DG.z0) / 4) * n + Math.floor((x - DG.x0) / 4);
+    if (DG.kind[i] === K.WATER) return false;
+    for (const o of houses) if (Math.hypot(o.x - x, o.z - z) < gap) return false;
+    return true;
+  };
+  const house = (x, z, big) => {
+    houses.push({
+      x, z, y: groundAt(x, z), w: (7 + rnd() * 4) * (big || 1), wh: 4 + rnd() * 2.5, rh: 3 + rnd() * 2,
+      wall: WALLS[(rnd() * WALLS.length) | 0], roof: ROOFS[(rnd() * ROOFS.length) | 0], tower: false,
+    });
+  };
+  houses.push({ x: 1885, z: 1832, y: groundAt(1885, 1832), w: 6.5, wh: 22, rh: 8, wall: [176, 166, 150], roof: [88, 90, 104], tower: true });
+  for (let i = 0; i < TOWN.length - 1; i++) {
+    const [ax, az] = TOWN[i], [bx, bz] = TOWN[i + 1], L = Math.hypot(bx - ax, bz - az), ux = (bx - ax) / L, uz = (bz - az) / L;
+    for (let s = 6; s < L; s += 15 + rnd() * 6)
+      for (const side of [-1, 1])
+        for (const row of [12, 25]) {
+          if (row > 12 && rnd() < 0.6) continue;
+          const off = row + rnd() * 4, x = ax + ux * s - uz * off * side, z = az + uz * s + ux * off * side;
+          if (ok(x, z, 9)) house(x, z);
+        }
+  }
+  for (let k = 0; k < 22; k++) { const a = rnd() * 6.283, r = 20 + rnd() * 60, x = 1885 + Math.cos(a) * r, z = 1832 + Math.sin(a) * r; if (ok(x, z, 10)) house(x, z); }
+  for (let k = 0; k < 14; k++) { const x = 1300 + rnd() * 80, z = 1420 + rnd() * 90; if (ok(x, z, 11)) house(x, z); }
+  for (const [x, z] of [[1150, 600], [1680, 900], [1690, 360], [1190, 1290], [900, 420]]) if (ok(x, z, 10)) house(x, z, 1.3);
+
+  // The bridge: a deck a little above the banks, with piers.
+  const [ax, az] = ROUTE[BRIDGE], [bx, bz] = ROUTE[BRIDGE + 1], L = Math.hypot(bx - ax, bz - az);
+  DECK = Math.max(groundAt(ax, az), groundAt(bx, bz)) + 2.5;
+  for (let s = 0; s <= L; s += 1.1) {
+    const x = ax + ((bx - ax) * s) / L, z = az + ((bz - az) * s) / L;
+    bridge.push({ x, z, pier: Math.abs((s % 16) - 8) < 1.3, bed: groundAt(x, z) - 1 });
+  }
+}
+
+// ---- The route ------------------------------------------------------------------------
+const RC = [0];
+for (let i = 1; i < ROUTE.length; i++) RC.push(RC[i - 1] + Math.hypot(ROUTE[i][0] - ROUTE[i - 1][0], ROUTE[i][1] - ROUTE[i - 1][1]));
+const TOTAL = RC[RC.length - 1];
+function along(pts, cum, s) {
+  const total = cum[cum.length - 1];
+  if (s < 0) s = 0;
+  if (s > total) s = total;
+  let i = 0;
+  while (i < cum.length - 2 && cum[i + 1] < s) i++;
+  const L = cum[i + 1] - cum[i], t = L > 0 ? (s - cum[i]) / L : 0, a = pts[i], b = pts[i + 1];
+  return { x: a[0] + (b[0] - a[0]) * t, z: a[1] + (b[1] - a[1]) * t, i, hx: (b[0] - a[0]) / L, hz: (b[1] - a[1]) / L };
+}
+const routeAt = (s) => along(ROUTE, RC, s);
+const R2C = [0];
+for (let i = 1; i < ROAD2.length; i++) R2C.push(R2C[i - 1] + Math.hypot(ROAD2[i][0] - ROAD2[i - 1][0], ROAD2[i][1] - ROAD2[i - 1][1]));
+function partyY(s) {
+  const p = routeAt(s), g = groundAt(p.x, p.z), s0 = RC[BRIDGE], s1 = RC[BRIDGE + 1];
+  if (s >= s0 && s <= s1) return DECK;
+  const dd = s < s0 ? s0 - s : s - s1;
+  return Math.max(g, DECK - dd * 0.35);
+}
+const CHAPTERS = [
+  { name: "Riverside", long: "Riverside meadows", s: 0, span: 420 },
+  { name: "Up the valley", long: "Up the valley", s: RC[3], span: 420 },
+  { name: "Bridge", long: "The bridge", s: RC[BRIDGE] - 60, span: 220 },
+  { name: "Town", long: "The hill town", s: RC[9], span: 170 },
+  { name: "Ridge road", long: "The ridge road", s: RC[15], span: 450 },
+  { name: "Switchbacks", long: "Switchbacks", s: RC[17], span: 600 },
+  { name: "Pass", long: "The pass", s: RC[22] - 160, span: 700 },
+  { name: "Lake", long: "Down to the lake", s: RC[22] + 40, span: 700 },
+];
+const chapterAt = (s) => { let c = 0; for (let k = 0; k < CHAPTERS.length; k++) if (s >= CHAPTERS[k].s) c = k; return c; };
+
+// ---- State ------------------------------------------------------------------------------
+const opt = { bands: true, flats: false, ghost: true, marker: true, wall: true };
+let mode = "follow", speed = 8, paused = false, simTime = 0;
+let s = 0, caravan = 300, caravanDir = 1;
+const cam = { x: 0, y: 0, z: 0, yaw: 0 };
+let snap = true, shot = null, lastPlan = -1e9, followFx = 0.27, shotCount = 0;
+// Where on screen the party walks: the middle of a column (the wall's centre is a bezel),
+// on the side they come from, so there is room ahead of them.
+const LEAD_FX = 0.27;
+const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+if (reduce) { paused = true; }
+
+function angleTo(a, b, k) { let d = b - a; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; return a + d * k; }
+function clearLine(ax, ay, az, bx, by, bz) {
+  for (let k = 1; k < 24; k++) {
+    const t = k / 24;
+    sample(ax + (bx - ax) * t, az + (bz - az) * t);
+    if (S_H > ay + (by - ay) * t + 0.5) return false;
+  }
+  return true;
+}
+function planShot() {
+  // Every third shot is wide (the stretch ahead, the party small in it); the others are closer.
+  const wide = shotCount++ % 3 === 0, span = wide ? CHAPTERS[chapterAt(s)].span : Math.min(140, CHAPTERS[chapterAt(s)].span), pts = [];
+  for (let k = 0; k <= 8; k++) { const ss = Math.min(TOTAL, s + (span * k) / 8), p = routeAt(ss); pts.push([p.x, partyY(ss), p.z]); }
+  let cx = pts[8][0] - pts[0][0], cz = pts[8][2] - pts[0][2], cl = Math.hypot(cx, cz);
+  if (cl < 30) { const p = routeAt(s); cx = p.hx; cz = p.hz; cl = 1; }
+  cx /= cl; cz /= cl;
+  let a0 = 1e9, a1 = -1e9, b0 = 1e9, b1 = -1e9, mx = 0, my = 0, mz = 0;
+  for (const p of pts) {
+    const dx = p[0] - pts[0][0], dz = p[2] - pts[0][2], u = dx * cx + dz * cz, v = -dx * cz + dz * cx;
+    a0 = Math.min(a0, u); a1 = Math.max(a1, u); b0 = Math.min(b0, v); b1 = Math.max(b1, v);
+    mx += p[0] / 9; my += p[1] / 9; mz += p[2] / 9;
+  }
+  const width = Math.max(40, a1 - a0), dist0 = Math.max(70, width / 0.78 / (2 * Math.tan(FOV / 2)) + (b1 - b0) * 0.5);
+  let best = null, bestScore = -1e9;
+  for (const side of [1, -1])
+    for (const dm of [1, 0.75, 1.35])
+      for (const hOff of wide ? [30, 80, 160, 260] : [8, 18, 40, 80]) {
+        const yaw = Math.atan2(-cz, cx) + (side < 0 ? Math.PI : 0), fx = Math.sin(yaw), fz = Math.cos(yaw), rx = Math.cos(yaw), rz = -Math.sin(yaw);
+        const dist = dist0 * dm, px = mx - fx * dist, pz = mz - fz * dist, py = Math.max(surfaceMax(px, pz, 20) + 6, my + hOff);
+        let score = 0;
+        for (const p of pts) {
+          const ex = p[0] - px, ez = p[2] - pz, d = ex * fx + ez * fz;
+          if (d < 10) continue;
+          const sx = W / 2 + (F * (ex * rx + ez * rz)) / d, sy = HORIZON - (F * (p[1] - py)) / d;
+          if (sx < 8 || sx > W - 8 || sy < 12 || sy > H - 6) continue;
+          if (clearLine(px, py, pz, p[0], p[1] + 1.2, p[2])) score++;
+        }
+        score -= hOff / 600 + (side < 0 ? 0.01 : 0);
+        if (score > bestScore) { bestScore = score; best = { x: px, y: py, z: pz, yaw, sEnd: s + span, born: simTime, wide }; }
+      }
+  shot = best;
+  lastPlan = simTime;
+}
+
+function updateCamera(dt) {
+  const L = routeAt(s), Ly = partyY(s);
+  if (mode === "follow") {
+    const ahead = routeAt(s + 120), across = ahead.x - L.x;
+    if (Math.abs(across) > 25) followFx += ((across > 0 ? LEAD_FX : 1 - LEAD_FX) - followFx) * (snap ? 1 : 1 - Math.exp(-dt / 10));
+    if (snap) { cam.x = L.x; cam.z = L.z - 120; cam.y = Ly + 30; }
+    cam.yaw = 0;
+    const tx = L.x - ((followFx - 0.5) * W * (L.z - cam.z)) / F;
+    cam.x += (tx - cam.x) * (snap ? 1 : 1 - Math.exp(-dt / 6));
+    // Depth: let the party walk away into the scene (or come towards the camera)
+    // before following; drift slowly back to the usual distance meanwhile.
+    const depth = L.z - cam.z;
+    if (depth > 260) cam.z = L.z - 260;
+    else if (depth < 55) cam.z = L.z - 55;
+    else cam.z += (L.z - 120 - cam.z) * (1 - Math.exp(-dt / 90));
+    const half = (L.z - cam.z) * Math.tan(FOV / 2) * 0.85;
+    cam.x = Math.min(L.x + half, Math.max(L.x - half, cam.x));
+  } else if (mode === "turn") {
+    const back = routeAt(s - 60), fwd = routeAt(s + 260);
+    let hx = fwd.x - back.x, hz = fwd.z - back.z;
+    const hl = Math.hypot(hx, hz) || 1;
+    hx /= hl; hz /= hl;
+    const yawT = Math.atan2(-hz, hx);
+    cam.yaw = snap ? yawT : angleTo(cam.yaw, yawT, 1 - Math.exp(-dt / 20));
+    const fx = Math.sin(cam.yaw), fz = Math.cos(cam.yaw);
+    const rx = Math.cos(cam.yaw), rz = -Math.sin(cam.yaw), side = ((0.5 - LEAD_FX) * W * 120) / F;
+    const tx = L.x - fx * 120 + rx * side, tz = L.z - fz * 120 + rz * side;
+    if (snap) { cam.x = tx; cam.z = tz; cam.y = Ly + 30; }
+    const k = 1 - Math.exp(-dt / 4);
+    cam.x += (tx - cam.x) * k;
+    cam.z += (tz - cam.z) * k;
+  } else {
+    let cut = !shot || snap || s > shot.sEnd + 5;
+    if (!cut) {
+      const fx = Math.sin(shot.yaw), fz = Math.cos(shot.yaw), rx = Math.cos(shot.yaw), rz = -Math.sin(shot.yaw);
+      const ex = L.x - shot.x, ez = L.z - shot.z, d = ex * fx + ez * fz, sx = W / 2 + (F * (ex * rx + ez * rz)) / Math.max(1, d);
+      if (d < 12 || sx < W * 0.02 || sx > W * 0.98) cut = simTime - lastPlan > 1.5;
+    }
+    if (cut) planShot();
+    cam.x = shot.x; cam.y = shot.y; cam.z = shot.z; cam.yaw = shot.yaw;
+    snap = false;
+    return;
+  }
+  // Height: a little above the party (more when they are far), never in the ground.
+  const depth = Math.hypot(L.x - cam.x, L.z - cam.z);
+  const floor = surfaceMax(cam.x, cam.z, 22) + 6, ty = Math.max(floor, Ly + 14 + depth * 0.13);
+  cam.y = snap ? ty : cam.y + (ty - cam.y) * (1 - Math.exp(-dt / 3));
+  if (cam.y < floor) cam.y = floor;
+  snap = false;
+}
+
+function update(dtReal) {
+  const dt = paused ? 0 : dtReal * speed;
+  simTime += dt;
+  // The party: slower uphill, a little slower steeply down.
+  const grade = (partyY(s + 2) - partyY(s - 2)) / 4;
+  s += (WALK / (1 + 5 * Math.max(0, grade) + 1.5 * Math.max(0, -grade))) * dt;
+  if (s >= TOTAL) { s = 0; snap = true; shot = null; }
+  // A cart on the valley road, back and forth.
+  caravan += 1.1 * dt * caravanDir;
+  const c2 = R2C[R2C.length - 1];
+  if (caravan > c2 - 5) { caravan = c2 - 5; caravanDir = -1; }
+  if (caravan < 10) { caravan = 10; caravanDir = 1; }
+  updateCamera(dt);
+}
+
+// ---- Drawing --------------------------------------------------------------------------
+const off = document.createElement("canvas");
+off.width = W; off.height = H;
+const octx = off.getContext("2d");
+const image = octx.createImageData(W, H), pix = new Uint32Array(image.data.buffer), zb = new Float32Array(W * H);
+const pack = (r, g, b) => 0xff000000 | (Math.max(0, Math.min(255, b | 0)) << 16) | (Math.max(0, Math.min(255, g | 0)) << 8) | Math.max(0, Math.min(255, r | 0));
+const hazeFor = (d) => (opt.bands ? HAZE_B[bandOf(d)] : hazeC(d));
+const packH = (r, g, b, t) => pack(r + (HZ[0] - r) * t, g + (HZ[1] - g) * t, b + (HZ[2] - b) * t);
+
+// The sky: a gradient and a band of clouds, wrapped all the way round.
+const CW = 1440, SKY = new Uint32Array(CW * HORIZON);
+function buildSky() {
+  for (let c = 0; c < CW; c++) {
+    const a = (c / CW) * 2 * Math.PI;
+    for (let y = 0; y < HORIZON; y++) {
+      const t = y / HORIZON, r = 92 + (200 - 92) * t, g = 142 + (218 - 142) * t, b = 204 + (234 - 204) * t;
+      const dens = fbm(a * 7, y * 0.11, 77, 4);
+      const al = smooth(0.56, 0.74, dens) * (0.25 + 0.75 * smooth(0.95, 0.35, t)) * 0.85;
+      SKY[c * HORIZON + y] = pack(r + (247 - r) * al, g + (246 - g) * al, b + (243 - b) * al);
+    }
+  }
+}
+const BELOW = pack(200, 218, 234);
+
+let FWX = 0, FWZ = 1, RGX = 1, RGZ = 0;
+function renderLand() {
+  FWX = Math.sin(cam.yaw); FWZ = Math.cos(cam.yaw); RGX = Math.cos(cam.yaw); RGZ = -Math.sin(cam.yaw);
+  const cx = cam.x, cz = cam.z, cy = cam.y, flats = opt.flats, bands = opt.bands;
+  for (let sx = 0; sx < W; sx++) {
+    const lat = (sx - W / 2 + 0.5) / F;
+    let ytop = H, d = 1;
+    while (d < DMAX) {
+      const b = bandOf(d), dp = flats ? BANDREP[b] : d;
+      const wx = cx + FWX * d + RGX * lat * dp, wz = cz + FWZ * d + RGZ * lat * dp;
+      sample(wx, wz);
+      const syf = HORIZON - ((S_H - cy) * F) / dp, sy = syf <= 0 ? 0 : Math.ceil(syf);
+      if (sy < ytop) {
+        const t = bands ? HAZE_B[b] : hazeC(d);
+        sampleColor();
+        let r = C_R, g = C_G, bl = C_B;
+        if (d < 160) { const j = 0.93 + 0.14 * hash2(Math.floor(wx * 0.8), Math.floor(wz * 0.8), 3); r *= j; g *= j; bl *= j; }
+        const c = pack(r + (HZ[0] - r) * t, g + (HZ[1] - g) * t, bl + (HZ[2] - bl) * t);
+        for (let y = sy; y < ytop; y++) { const i = y * W + sx; pix[i] = c; zb[i] = d; }
+        ytop = sy;
+        if (ytop <= 0) break;
+      }
+      if (HORIZON - ((HMAX - cy) * F) / dp >= ytop) break; // nothing further can show above what's drawn
+      d += 0.5 + d * 0.01;
+    }
+    let col = Math.floor(((cam.yaw + Math.atan(lat)) / (2 * Math.PI)) * CW) % CW;
+    if (col < 0) col += CW;
+    for (let y = 0; y < ytop; y++) { const i = y * W + sx; pix[i] = y < HORIZON ? SKY[col * HORIZON + y] : BELOW; zb[i] = 1e9; }
+  }
+}
+
+let P_SX = 0, P_SY = 0, P_SC = 0, P_D = 0;
+function project(x, y, z) {
+  const rx = x - cam.x, rz = z - cam.z, d = rx * FWX + rz * FWZ;
+  if (d < 1.5) return false;
+  const dp = opt.flats ? BANDREP[bandOf(d)] : d;
+  P_D = d; P_SC = F / dp; P_SX = W / 2 + (rx * RGX + rz * RGZ) * P_SC; P_SY = HORIZON - (y - cam.y) * P_SC;
+  return P_SX > -60 && P_SX < W + 60;
+}
+function putZ(x, y, c, d) {
+  if (x < 0 || y < 0 || x >= W || y >= H) return;
+  const i = y * W + x;
+  if (d < zb[i]) { pix[i] = c; zb[i] = d; }
+}
+function rectZ(x0, y0, x1, y1, c, d) {
+  x0 = Math.max(0, Math.round(x0)); x1 = Math.min(W, Math.round(x1)); y0 = Math.max(0, Math.round(y0)); y1 = Math.min(H, Math.round(y1));
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { const i = y * W + x; if (d < zb[i]) { pix[i] = c; zb[i] = d; } }
+}
+
+function drawTree(k) {
+  if (!project(TX[k], TY[k], TZ[k]) || P_D > 1500 || P_D < 14) return;
+  const d = P_D, ph = TH[k] * P_SC, t = hazeFor(d), v = TV[k], conifer = TT[k] === 0;
+  const dark = conifer ? packH(34 + v * 10, 62 + v * 14, 44 + v * 8, t) : packH(50 + v * 14, 88 + v * 20, 40 + v * 10, t);
+  const lite = conifer ? packH(60 + v * 12, 94 + v * 16, 58 + v * 8, t) : packH(94 + v * 20, 134 + v * 24, 58 + v * 10, t);
+  const bx = Math.round(P_SX), by = Math.round(P_SY);
+  if (ph < 2.2) { putZ(bx, by - 1, dark, d); if (ph > 1.4) putZ(bx, by - 2, dark, d); return; }
+  const trunk = packH(76, 58, 42, t);
+  if (conifer) {
+    const pw = ph * 0.4, top = P_SY - ph, y0 = Math.round(top), y1 = Math.round(P_SY - ph * 0.1);
+    for (let y = y0; y < y1; y++) {
+      const f = (y - top) / (ph * 0.9), tier = (f * 4) % 1, half = (0.12 + 0.88 * f) * (0.72 + 0.28 * tier) * pw * 0.5;
+      const xa = Math.round(P_SX - half), xb = Math.round(P_SX + half);
+      for (let x = xa; x <= xb; x++) putZ(x, y, x < P_SX - half * 0.15 ? lite : dark, d);
+    }
+    for (let y = y1; y < by; y++) putZ(bx, y, trunk, d);
+  } else {
+    const rx = ph * 0.36, ry = ph * 0.4, ccy = P_SY - ph * 0.6, y0 = Math.round(ccy - ry), y1 = Math.round(ccy + ry);
+    for (let y = y0; y <= y1; y++) {
+      const q = (y - ccy) / ry, half = rx * Math.sqrt(Math.max(0, 1 - q * q)) * (0.9 + 0.1 * Math.sin(y * 1.7 + v * 9));
+      const xa = Math.round(P_SX - half), xb = Math.round(P_SX + half);
+      for (let x = xa; x <= xb; x++) putZ(x, y, x - P_SX < -half * 0.1 - q * half * 0.3 ? lite : dark, d);
+    }
+    for (let y = Math.round(ccy + ry * 0.7); y < by; y++) putZ(bx, y, trunk, d);
+  }
+}
+function drawHouse(o) {
+  if (!project(o.x, o.y, o.z) || P_D > 5000 || P_D < 10) return;
+  const d = P_D, sc = P_SC, t = hazeFor(d), w = o.w * sc, wh = o.wh * sc, rh = o.rh * sc;
+  const [wr, wg, wb] = o.wall, [rr, rg, rb] = o.roof;
+  const wallL = packH(wr, wg, wb, t), wallD = packH(wr * 0.72, wg * 0.72, wb * 0.75, t);
+  const roofL = packH(rr * 1.12, rg * 1.12, rb * 1.12, t), roofD = packH(rr * 0.74, rg * 0.74, rb * 0.78, t);
+  const x0 = P_SX - w / 2, x1 = P_SX + w / 2, yb = P_SY + 1, yw = P_SY - wh;
+  if (w < 1.5) { putZ(Math.round(P_SX), Math.round(P_SY - 1), wallL, d); putZ(Math.round(P_SX), Math.round(P_SY - 2), roofD, d); return; }
+  rectZ(x0, yw, P_SX + w * 0.15, yb, wallL, d);
+  rectZ(P_SX + w * 0.15, yw, x1, yb, wallD, d);
+  const over = Math.max(1, w * 0.08), ytop = yw - rh, ya = Math.round(ytop), yz = Math.round(yw);
+  for (let y = ya; y < yz; y++) {
+    const f = (y - ytop) / rh, half = (w / 2 + over) * (o.tower ? Math.min(1, f * 1.1) : f);
+    const xa = Math.round(P_SX - half), xb = Math.round(P_SX + half);
+    for (let x = xa; x <= xb; x++) putZ(x, y, x < P_SX ? roofL : roofD, d);
+  }
+  if (w >= 6) {
+    const win = packH(46, 40, 38, t), wy = Math.round(yw + wh * 0.3);
+    for (const fx of o.tower ? [0] : [-0.25, 0.22]) { putZ(Math.round(P_SX + w * fx), wy, win, d); if (wh > 9) putZ(Math.round(P_SX + w * fx), wy + 1, win, d); }
+    if (o.tower) for (const fy of [0.55, 0.8]) putZ(Math.round(P_SX), Math.round(yw + wh * fy), win, d);
+  }
+}
+function drawBridge() {
+  for (const p of bridge) {
+    if (!project(p.x, DECK, p.z)) continue;
+    const d = P_D, sc = P_SC, t = hazeFor(d), hw = Math.max(0.6, 0.8 * sc);
+    rectZ(P_SX - hw, P_SY - 0.9 * sc, P_SX + hw, P_SY - 0.4 * sc, packH(196, 186, 168, t), d);
+    rectZ(P_SX - hw, P_SY - 0.4 * sc, P_SX + hw, P_SY + 1.3 * sc, packH(150, 140, 126, t), d);
+    if (p.pier) rectZ(P_SX - hw * 1.6, P_SY + 1.3 * sc, P_SX + hw * 1.6, P_SY + (DECK - p.bed) * sc, packH(124, 116, 106, t), d);
+  }
+}
+const GHOST = [250, 236, 204];
+function figPix(x, y, c, d, ghost) {
+  if (x < 0 || y < 0 || x >= W || y >= H) return;
+  const i = y * W + x;
+  if (d <= zb[i] + 0.05) { pix[i] = c; zb[i] = d; }
+  else if (ghost) {
+    const p = pix[i], r = p & 255, g = (p >> 8) & 255, b = (p >> 16) & 255;
+    pix[i] = pack(r + (GHOST[0] - r) * 0.55, g + (GHOST[1] - g) * 0.55, b + (GHOST[2] - b) * 0.55);
+  }
+}
+const TUNICS = [[181, 69, 46], [61, 111, 160], [200, 160, 64], [90, 122, 58]];
+function drawFigure(x, y, z, tunic, phase, dir, ghost, tall) {
+  if (!project(x, y, z)) return null;
+  const d = P_D, ph = (tall || 1.75) * P_SC, t = hazeFor(d), bx = Math.round(P_SX), by = Math.round(P_SY);
+  const tc = packH(tunic[0], tunic[1], tunic[2], t);
+  if (ph < 3) { const n = Math.max(1, Math.round(ph)); for (let k = 0; k < n; k++) figPix(bx, by - 1 - k, tc, d, ghost); return { x: bx, top: by - n }; }
+  const skin = packH(224, 180, 138, t), hair = packH(58, 42, 30, t), legs = packH(58, 48, 40, t), packC = packH(138, 106, 68, t);
+  const top = by - Math.round(ph), hw = Math.max(0, Math.round(ph * 0.14));
+  for (let y2 = top; y2 < by; y2++) {
+    const f = (y2 - top) / ph;
+    if (f < 0.2) { const c = f < 0.07 ? hair : skin; for (let x2 = bx - Math.max(0, hw - 1); x2 <= bx + Math.max(0, hw - 1); x2++) figPix(x2, y2, c, d, ghost); }
+    else if (f < 0.6) { for (let x2 = bx - hw; x2 <= bx + hw; x2++) figPix(x2, y2, tc, d, ghost); if (f > 0.24 && f < 0.52) figPix(bx - dir * (hw + 1), y2, packC, d, ghost); }
+    else if (phase && hw > 0) { figPix(bx - hw, y2, legs, d, ghost); figPix(bx + hw, y2, legs, d, ghost); }
+    else figPix(bx, y2, legs, d, ghost);
+  }
+  return { x: bx, top };
+}
+function drawCart(x, y, z, d0, ghost) {
+  if (!project(x, y, z)) return;
+  const d = P_D, sc = P_SC, t = hazeFor(d);
+  if (sc * 2.8 < 1.5) { putZ(Math.round(P_SX), Math.round(P_SY - 1), packH(200, 186, 150, t), d); return; }
+  rectZ(P_SX - 1.4 * sc, P_SY - 2.6 * sc, P_SX + 1.4 * sc, P_SY - 1.6 * sc, packH(222, 212, 186, t), d);
+  rectZ(P_SX - 1.4 * sc, P_SY - 1.6 * sc, P_SX + 1.4 * sc, P_SY - 0.7 * sc, packH(132, 98, 62, t), d);
+  rectZ(P_SX - 1.0 * sc, P_SY - 0.8 * sc, P_SX - 0.2 * sc, P_SY + 0.5, packH(52, 40, 32, t), d);
+  rectZ(P_SX + 0.2 * sc, P_SY - 0.8 * sc, P_SX + 1.0 * sc, P_SY + 0.5, packH(52, 40, 32, t), d);
+}
+function drawOx(x, y, z) {
+  if (!project(x, y, z)) return;
+  const d = P_D, sc = P_SC, t = hazeFor(d), c = packH(110, 78, 52, t);
+  if (sc * 2.2 < 1.5) { putZ(Math.round(P_SX), Math.round(P_SY - 1), c, d); return; }
+  rectZ(P_SX - 1.1 * sc, P_SY - 1.6 * sc, P_SX + 1.1 * sc, P_SY - 0.7 * sc, c, d);
+  rectZ(P_SX - 1.0 * sc, P_SY - 0.7 * sc, P_SX - 0.7 * sc, P_SY + 0.5, c, d);
+  rectZ(P_SX + 0.7 * sc, P_SY - 0.7 * sc, P_SX + 1.0 * sc, P_SY + 0.5, c, d);
+}
+
+function renderThings() {
+  // Trees near the camera (further off, the forest is in the ground's colour).
+  const R = 1500, b0x = Math.max(0, Math.floor((cam.x - R) / BUCKET)), b1x = Math.min(NBK - 1, Math.floor((cam.x + R) / BUCKET));
+  const b0z = Math.max(0, Math.floor((cam.z - R) / BUCKET)), b1z = Math.min(NBK - 1, Math.floor((cam.z + R) / BUCKET));
+  for (let bz = b0z; bz <= b1z; bz++)
+    for (let bx = b0x; bx <= b1x; bx++) {
+      const ex = bx * BUCKET + BUCKET / 2 - cam.x, ez = bz * BUCKET + BUCKET / 2 - cam.z, d = ex * FWX + ez * FWZ, l = ex * RGX + ez * RGZ;
+      if (d < -100 || d > R + 100 || Math.abs(l) > d * 0.62 + 100) continue;
+      const b = bz * NBK + bx;
+      for (let j = BSTART[b]; j < BSTART[b + 1]; j++) drawTree(BORDER[j]);
+    }
+  for (const o of houses) drawHouse(o);
+  drawBridge();
+  // The cart on the valley road.
+  const c = along(ROAD2, R2C, caravan), back = along(ROAD2, R2C, caravan - 3.6 * caravanDir);
+  drawOx(c.x, groundAt(c.x, c.z), c.z);
+  drawCart(back.x, groundAt(back.x, back.z), back.z);
+  const w = along(ROAD2, R2C, caravan + 2.4 * caravanDir);
+  drawFigure(w.x, groundAt(w.x, w.z), w.z, [120, 112, 96], (Math.floor(caravan / 0.7) & 1) === 1, caravanDir, false);
+  // The party: four people, about three metres apart, the last first.
+  let lead = null;
+  for (let m = 3; m >= 0; m--) {
+    const sm = Math.max(0, s - m * 2.8), p = routeAt(sm), dir = Math.sign(p.hx * RGX + p.hz * RGZ) || 1;
+    const r = drawFigure(p.x, partyY(sm), p.z, TUNICS[m], (Math.floor(sm / 0.7) & 1) === 1, dir, opt.ghost);
+    if (m === 0) lead = r;
+  }
+  if (opt.marker && lead) {
+    const c2 = pack(233, 169, 90), y = lead.top - 3;
+    for (let k = 0; k < 3; k++) for (let x = lead.x - (2 - k); x <= lead.x + (2 - k); x++) if (x >= 0 && x < W && y - 2 + k >= 0 && y - 2 + k < H) pix[(y - 2 + k) * W + x] = c2;
+  }
+}
+
+// ---- The page -----------------------------------------------------------------------------
+const $ = (id) => document.getElementById(id);
+const view = $("view"), vctx = view.getContext("2d"), area = $("viewarea");
+function layout() {
+  const r = area.getBoundingClientRect(), aspect = WALL.w / WALL.h;
+  let w = r.width, h = w / aspect;
+  if (h > r.height) { h = r.height; w = h * aspect; }
+  w = Math.max(100, Math.floor(w)); h = Math.max(65, Math.floor(h));
+  view.style.width = w + "px"; view.style.height = h + "px";
+  const dpr = window.devicePixelRatio || 1;
+  view.width = Math.round(w * dpr); view.height = Math.round(h * dpr);
+  const m = $("map"), mr = m.getBoundingClientRect();
+  m.width = Math.round(mr.width * dpr); m.height = Math.round(mr.height * dpr);
+}
+function present() {
+  octx.putImageData(image, 0, 0);
+  vctx.imageSmoothingEnabled = false;
+  vctx.drawImage(off, 0, 0, view.width, view.height);
+  if (opt.wall) {
+    const k = view.width / WALL.w;
+    vctx.save();
+    vctx.beginPath();
+    vctx.rect(0, 0, view.width, view.height);
+    for (const [px, py] of WALL.panels) vctx.rect(px * k, py * k, WALL.pw * k, WALL.ph * k);
+    vctx.fillStyle = "#121419";
+    vctx.fill("evenodd");
+    vctx.strokeStyle = "#2f3440";
+    vctx.lineWidth = Math.max(1, k * 1.5);
+    for (const [px, py] of WALL.panels) vctx.strokeRect(px * k, py * k, WALL.pw * k, WALL.ph * k);
+    vctx.restore();
+  }
+}
+
+// The map: the valley from above, north up.
+const MX0 = -300, MZ0 = -400, MSPAN = 4900, MAPN = 256;
+const mapBase = document.createElement("canvas");
+mapBase.width = MAPN; mapBase.height = MAPN;
+function buildMap() {
+  const c = mapBase.getContext("2d"), im = c.createImageData(MAPN, MAPN), p = new Uint32Array(im.data.buffer);
+  for (let py = 0; py < MAPN; py++)
+    for (let px = 0; px < MAPN; px++) {
+      sample(MX0 + ((px + 0.5) / MAPN) * MSPAN, MZ0 + MSPAN - ((py + 0.5) / MAPN) * MSPAN);
+      p[py * MAPN + px] = pack(S_G.r[S_I] * 0.9, S_G.g[S_I] * 0.9, S_G.b[S_I] * 0.9);
+    }
+  c.putImageData(im, 0, 0);
+}
+function drawMap() {
+  const m = $("map"), c = m.getContext("2d"), n = m.width, k = n / MSPAN;
+  const mx = (x) => (x - MX0) * k, my = (z) => (MZ0 + MSPAN - z) * k, u = n / 236;
+  c.imageSmoothingEnabled = true;
+  c.drawImage(mapBase, 0, 0, n, n);
+  c.lineCap = "round"; c.lineJoin = "round";
+  c.strokeStyle = "rgba(244,239,226,0.5)"; c.lineWidth = 1 * u;
+  c.beginPath(); ROAD2.forEach(([x, z], i) => (i ? c.lineTo(mx(x), my(z)) : c.moveTo(mx(x), my(z)))); c.stroke();
+  c.strokeStyle = "rgba(244,239,226,0.95)"; c.lineWidth = 1.6 * u;
+  c.beginPath(); ROUTE.forEach(([x, z], i) => (i ? c.lineTo(mx(x), my(z)) : c.moveTo(mx(x), my(z)))); c.stroke();
+  // What the camera sees: a wedge out to 1.5 km.
+  const L = 1500, a0 = cam.yaw - FOV / 2, a1 = cam.yaw + FOV / 2;
+  c.fillStyle = "rgba(127,196,255,0.22)"; c.strokeStyle = "rgba(127,196,255,0.9)"; c.lineWidth = 1 * u;
+  c.beginPath(); c.moveTo(mx(cam.x), my(cam.z));
+  c.lineTo(mx(cam.x + Math.sin(a0) * L), my(cam.z + Math.cos(a0) * L));
+  c.lineTo(mx(cam.x + Math.sin(a1) * L), my(cam.z + Math.cos(a1) * L));
+  c.closePath(); c.fill(); c.stroke();
+  c.fillStyle = "#7fc4ff"; c.beginPath(); c.arc(mx(cam.x), my(cam.z), 3 * u, 0, 7); c.fill();
+  const p = routeAt(s);
+  c.fillStyle = "#e9a95a"; c.strokeStyle = "#121419"; c.lineWidth = 1.5 * u;
+  c.beginPath(); c.arc(mx(p.x), my(p.z), 4 * u, 0, 7); c.fill(); c.stroke();
+  c.fillStyle = "rgba(232,228,218,0.85)"; c.font = `${11 * u}px "IBM Plex Mono", monospace`; c.fillText("N ↑", 8 * u, 16 * u);
+}
+
+const NOTES = {
+  follow: "The camera keeps facing north, up the valley. It trails the party sideways, and lets them walk away into the scene (or towards you) before it moves after them.",
+  turn: "The camera swings round as the route turns, so the party always walks left to right while the land turns behind them.",
+  shots: "Fixed, framed views. The party walks through each one, then the view cuts to the next stretch of the route, sometimes from the other side.",
+};
+let hudAt = 0;
+function hud(now) {
+  if (now - hudAt < 250) return;
+  hudAt = now;
+  const p = routeAt(s), y = partyY(s), ex = p.x - cam.x, ez = p.z - cam.z, d = ex * FWX + ez * FWZ;
+  const grade = (partyY(s + 3) - partyY(s - 3)) / 6, ch = CHAPTERS[chapterAt(s)];
+  const onBridge = s >= RC[BRIDGE] && s <= RC[BRIDGE + 1];
+  const doing = onBridge ? "crossing the bridge" : p.i >= 9 && p.i < 15 ? "in the town's streets" : grade > 0.07 ? "climbing" : grade < -0.07 ? "descending" : "walking";
+  const dp = opt.flats ? BANDREP[bandOf(Math.max(1, d))] : Math.max(1, d), px = (1.75 * F) / dp;
+  $("r-stretch").textContent = ch.long;
+  $("r-doing").textContent = doing;
+  $("r-dist").textContent = `${Math.round(Math.hypot(ex, ez))} m from the camera`;
+  $("r-size").textContent = `${px.toFixed(1)} px tall, ${Math.round(px * MM_PER_PX)} mm on the wall`;
+  $("r-layer").textContent = `${bandOf(Math.max(1, d)) + 1} of ${NB}`;
+  $("r-elev").textContent = `${Math.round(y)} m`;
+  const mins = Math.floor(simTime / 60), hh = 7 + Math.floor(mins / 60), mm = mins % 60;
+  $("r-clock").textContent = `${String(hh % 24).padStart(2, "0")}:${String(mm).padStart(2, "0")} · ${(s / 1000).toFixed(2)} of ${(TOTAL / 1000).toFixed(1)} km`;
+}
+
+function setPressed(sel, el) { document.querySelectorAll(sel).forEach((b) => b.setAttribute("aria-pressed", String(b === el))); }
+document.querySelectorAll("[data-mode]").forEach((b) => (b.onclick = () => { mode = b.dataset.mode; snap = true; shot = null; setPressed("[data-mode]", b); $("mode-note").textContent = NOTES[mode]; }));
+document.querySelectorAll("[data-speed]").forEach((b) => (b.onclick = () => { speed = Number(b.dataset.speed); paused = false; $("play").textContent = "Pause"; setPressed("[data-speed]", b); }));
+document.querySelectorAll("[data-toggle]").forEach((b) => (b.onclick = () => { const k = b.dataset.toggle; opt[k] = !opt[k]; b.setAttribute("aria-pressed", String(opt[k])); }));
+$("play").onclick = () => { paused = !paused; $("play").textContent = paused ? "Play" : "Pause"; };
+for (const ch of CHAPTERS) {
+  const b = document.createElement("button");
+  b.textContent = ch.name;
+  b.id = "c-" + ch.name.toLowerCase().replace(/\s+/g, "-");
+  b.onclick = () => { s = ch.s; snap = true; shot = null; };
+  $("chapters").appendChild(b);
+}
+addEventListener("keydown", (e) => {
+  if (e.target instanceof HTMLButtonElement && (e.key === " " || e.key === "Enter")) return;
+  if (e.key === " ") { $("play").click(); e.preventDefault(); }
+  if (e.key === "1") $("m-follow").click();
+  if (e.key === "2") $("m-turn").click();
+  if (e.key === "3") $("m-shots").click();
+});
+$("mode-note").textContent = NOTES[mode];
+if (paused) $("play").textContent = "Play";
+addEventListener("resize", layout);
+
+function progress(f) { $("loading").textContent = `Building the valley… ${Math.round(f * 100)}%`; }
+let last = 0, ready = false, frameMs = 0;
+function frame(now) {
+  const dt = Math.min(0.1, (now - last) / 1000 || 0);
+  last = now;
+  const t0 = performance.now();
+  update(dt);
+  renderLand();
+  renderThings();
+  present();
+  drawMap();
+  hud(now);
+  frameMs = frameMs * 0.9 + (performance.now() - t0) * 0.1;
+  requestAnimationFrame(frame);
+}
+async function start() {
+  layout();
+  progress(0);
+  await tick();
+  await buildHeights(DG, true, 0, 0.42);
+  await buildHeights(FG, false, 0.42, 0.84);
+  markPaths();
+  progress(0.88); await tick();
+  classify(DG, true);
+  classify(FG, false);
+  progress(0.94); await tick();
+  placeThings();
+  buildSky();
+  buildMap();
+  $("loading").hidden = true;
+  layout();
+  ready = true;
+  requestAnimationFrame((t) => { last = t; frame(t); });
+}
+// For scripted checks.
+window.traversal = {
+  get ready() { return ready; },
+  get frameMs() { return frameMs; },
+  jump(name) { const ch = CHAPTERS.find((c) => c.name === name); s = ch.s; snap = true; shot = null; },
+  setS(v) { s = v; snap = true; shot = null; },
+  state() { const p = routeAt(s); return { s, mode, x: p.x, z: p.z, y: partyY(s), cam: { ...cam }, trees: NT, houses: houses.length, total: TOTAL }; },
+};
+start();
+})();
+</script>
