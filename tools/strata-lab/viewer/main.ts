@@ -7,6 +7,7 @@
 // renderer draws them with the sky, water, lava and plants moving; particles
 // and creatures go on top; a 2D overlay carries the wall mask and markers.
 import { groundAt } from "../../../engine/strata/generate.ts";
+import { setupReview } from "./review.ts";
 import { biomeNameAt } from "../../../engine/strata/worldmap.ts";
 import { REGION_W, WORLD_H } from "../../../engine/strata/world.ts";
 import { Renderer, type GpuTile } from "./gl.ts";
@@ -445,7 +446,8 @@ overlay.addEventListener("dblclick", (e) => {
 
 const held = new Set<string>();
 addEventListener("keydown", (e) => {
-  if ((e.target as HTMLElement).tagName === "INPUT") return;
+  const tag = (e.target as HTMLElement).tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA") return;
   const k = e.key;
   if (k.startsWith("Arrow")) {
     held.add(k);
@@ -511,6 +513,26 @@ Object.assign(window, {
   },
 });
 $<HTMLInputElement>("seed").value = String(view.seed);
+
+// Review tools: Go to (places and your notes) and Note here.
+setupReview({
+  here: () => ({
+    seed: view.seed,
+    x: view.x,
+    y: view.y,
+    scale: view.scale,
+    place: biomeNameAt(view.seed, view.x),
+  }),
+  go(seed, x, y, scale) {
+    if (scale !== undefined && scale !== view.scale) setScale(scale);
+    view.x = x;
+    if (seed !== view.seed) setSeed(seed);
+    if (y !== undefined) view.y = y;
+    else toSurface();
+    life.reset();
+  },
+  build: $("hud").querySelector(".tag")?.textContent ?? "",
+});
 $("workers").textContent = mainThread
   ? "on the page"
   : `${workers} worker${workers === 1 ? "" : "s"}`;
