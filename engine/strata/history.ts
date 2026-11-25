@@ -564,7 +564,7 @@ export function simulateWorld(seed: number, opts: WorldOptions = {}): World {
           let u = 0;
           // Land near the world's top stops rising.
           const room = clamp(
-            (SEA_ROW - 40 - s - surfaceOf(cols[i])) / 220,
+            (SEA_ROW - 220 - s - surfaceOf(cols[i])) / 220,
             0,
             1,
           );

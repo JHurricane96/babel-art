@@ -198,8 +198,33 @@ const BASE: Look = {
   cactusKinds: "saguaro 1",
 };
 
+/**
+ * What the ground is like in each climate zone, where a biome doesn't say:
+ * the colour of its earth, how deep its soil lies (cells), and how deep the
+ * rock under it is weathered (cells: deepest in the wet tropics, little in
+ * deserts, the cold and high up), with the tint that weathering gives rock
+ * near the surface and how strongly.
+ */
+export const GROUND: Record<number, { earth: string; soil: number; weather: number; tint: string; tintK: number }> = {
+  [ZONE.ICE]: { earth: "#6a6460", soil: 6, weather: 2, tint: "#c8d4e0", tintK: 0.15 },
+  [ZONE.TUNDRA]: { earth: "#665c50", soil: 5, weather: 6, tint: "#8c8c92", tintK: 0.15 },
+  [ZONE.BOREAL]: { earth: "#3e3228", soil: 8, weather: 14, tint: "#7c7c7a", tintK: 0.1 },
+  [ZONE.ALPINE]: { earth: "#5a5046", soil: 3, weather: 4, tint: "#9aa2ae", tintK: 0.22 },
+  [ZONE.OCEANIC]: { earth: "#4a3828", soil: 10, weather: 22, tint: "#6c5c4a", tintK: 0.1 },
+  [ZONE.CONTINENTAL]: { earth: "#4e3a28", soil: 12, weather: 20, tint: "#705a44", tintK: 0.1 },
+  [ZONE.MEDITERRANEAN]: { earth: "#8a4a2e", soil: 7, weather: 16, tint: "#a8643c", tintK: 0.28 },
+  [ZONE.STEPPE]: { earth: "#6e5234", soil: 12, weather: 14, tint: "#8c6c4a", tintK: 0.16 },
+  [ZONE.DESERT]: { earth: "#b07a4c", soil: 10, weather: 8, tint: "#c47c48", tintK: 0.38 },
+  [ZONE.SAVANNA]: { earth: "#8a5030", soil: 12, weather: 26, tint: "#a85c34", tintK: 0.3 },
+  [ZONE.MONSOON]: { earth: "#8e4426", soil: 14, weather: 34, tint: "#a04c2c", tintK: 0.32 },
+  [ZONE.RAINFOREST]: { earth: "#8a3a20", soil: 16, weather: 46, tint: "#923c22", tintK: 0.38 },
+  [ZONE.SALT_FLAT]: { earth: "#d8d0c4", soil: 4, weather: 4, tint: "#d8d0c4", tintK: 0.2 },
+};
+
 const b = (zone: number, name: string, look: Partial<Look>): BiomeDef => ({
   ...BASE,
+  earth: GROUND[zone]?.earth ?? BASE.earth,
+  soil: GROUND[zone]?.soil ?? BASE.soil,
   ...look,
   name,
   zone,

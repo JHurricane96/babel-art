@@ -771,8 +771,12 @@ export function generateWindow(seed: number, x0: number, width: number) {
       // Under water the bed is gravel and sand, not grass.
       bed = water !== null && Math.round(SEA_ROW - water.level) < s,
       // Dunes are heaps of sand on the ground, so they are sand all through.
+      // Soil thins on steep ground and high up, where peaks stand bare.
       soil = Math.round(
-        p.soil * Math.max(0, 1 - slope / 10) + duneAt(seed, wx, p.dunes),
+        p.soil *
+          Math.max(0, 1 - slope / 10) *
+          (1 - 0.85 * smoothstep(420, 720, SEA_ROW - s)) +
+          duneAt(seed, wx, p.dunes),
       ),
       // Snow lies all over in the hard cold and in drifts and patches where
       // it is only just freezing.

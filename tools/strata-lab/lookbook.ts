@@ -34,14 +34,16 @@ const SPOTS: [number, number, string][] = [
   [7, 16384, "Rainforest"],
   [7, 5300, "A coast"],
   [7, 82330, "Birch, aspen and maple"],
-  [7, 147865, "River meadow under a ridge"],
+  [11, 46080, "River meadow"],
   [7, 321740, "Sagebrush tablelands"],
   [2, 154829, "Spruce forest hills"],
   [2, 165472, "Burnt forest"],
   [2, 199968, "Tundra"],
   [2, 98088, "Fault scarps, oak and beech"],
-  [5, 23757, "Tree savanna"],
+  [5, 25600, "Tree savanna"],
   [3, 373146, "Karst towers, bamboo"],
+  [11, 108544, "A snowy peak"],
+  [2, 306432, "A deep mountain valley"],
 ];
 
 const SW = 640,

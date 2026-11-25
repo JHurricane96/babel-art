@@ -310,6 +310,8 @@ export function groundElevation(seed: number, x: number, channels = true) {
       break;
     }
   }
+  // Peaks bend under a soft ceiling, so there is sky above even the highest.
+  if (z > 800) z = 800 + 60 * Math.tanh((z - 800) / 60);
   if (channels && rv && Math.abs(x - rv.xc) < rv.hw) {
     const d = (x - rv.xc) / rv.hw;
     z -= rv.depth * (1 - d * d);

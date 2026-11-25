@@ -17,7 +17,7 @@ import {
   hash3,
 } from "../../engine/strata/world.ts";
 import { groundAt } from "../../engine/strata/generate.ts";
-import { BIOMES as LAND } from "../../engine/strata/biomes.ts";
+import { BIOMES as LAND, GROUND } from "../../engine/strata/biomes.ts";
 import { SPECIES } from "../../engine/strata/plants.ts";
 
 const hex = (h: string) =>
@@ -47,8 +47,8 @@ const KIND = [
   // without striping the screen.
   .map((c) => {
     const g = 0.3 * c[0] + 0.55 * c[1] + 0.15 * c[2],
-      v = 0.3 + 0.45 * g;
-    return c.map((ch) => (v + 0.3 * (ch - g)) * 0.78);
+      v = 0.42 + 0.38 * g;
+    return c.map((ch) => (v + 0.32 * (ch - g)) * 0.86);
   });
 const rockOf = (st: number) => KIND[bandOf(st) % KIND.length];
 /** All rock averaged: a cave's back wall leans to it. */
@@ -79,6 +79,20 @@ for (const sp of SPECIES) {
     bloom: sp.bloom ? hex(sp.bloom) : base.bloom,
   });
 }
+/** How each biome's ground weathers its rock (biomes.ts GROUND, by zone). */
+const GB = LAND.map((b) => {
+  const g = GROUND[b.zone];
+  return {
+    earth: hex(b.earth),
+    weather: g ? g.weather : 12,
+    tint: hex(g ? g.tint : "#808080"),
+    tintK: g ? g.tintK : 0,
+  };
+});
+/** Scratch colours (no allocation per pixel). */
+const WR = [0, 0, 0],
+  LOOSE = [0, 0, 0];
+
 /** Looks (generate.ts BIOMES) that leaves and caps take their colours from. */
 const LOOKS = 6;
 const SOLID: number[][] = [];
@@ -133,9 +147,9 @@ const CYAN = hex("#5ff0e0"),
   WARM = hex("#ffae5a"),
   EMBER = hex("#ff9a6a"),
   SKYL = hex("#fff4e4"),
-  AMB = hex("#c2c6d4"),
+  AMB = hex("#d0d3dc"),
   WATER = hex("#3f86a8"),
-  DEEP = hex("#123049"),
+  DEEP = hex("#1d4a6e"),
   BACK_TINT = [0.11, 0.1, 0.18];
 
 const isOpen = (m: number) =>
@@ -344,6 +358,35 @@ export function horizonRow(seed: number, x0: number, W: number) {
       f = (wx - k * STEP) / STEP,
       u = f * f * (3 - 2 * f);
     out[x] = pts[k - k0] + (pts[k - k0 + 1] - pts[k - k0]) * u;
+  }
+  return out;
+}
+
+/**
+ * The valley floors around each column: the lowest ground within about 2000
+ * columns, smoothed, on the same world grid as the horizon (so it is
+ * seamless). Land standing above it (hills, mesas, mountains) is lit like
+ * the surface; only below it does the underground darken quickly.
+ */
+export function floorRow(seed: number, x0: number, W: number) {
+  const STEP = 128,
+    k0 = Math.floor(x0 / STEP) - 1,
+    k1 = Math.floor((x0 + W - 1) / STEP) + 2,
+    pts = new Float32Array(k1 - k0 + 1),
+    out = new Float32Array(W);
+  for (let k = k0; k <= k1; k++) {
+    let low = 0;
+    for (let j = -16; j <= 16; j++) low = Math.max(low, groundAt(seed, k * STEP + j * 128));
+    pts[k - k0] = low;
+  }
+  for (let x = 0; x < W; x++) {
+    const wx = x0 + x,
+      k = Math.floor(wx / STEP),
+      f = (wx - k * STEP) / STEP,
+      u = f * f * (3 - 2 * f),
+      a = pts[k - k0],
+      b = pts[k - k0 + 1];
+    out[x] = a + (b - a) * u;
   }
   return out;
 }
@@ -576,7 +619,8 @@ export function renderLand(
     upB = new RowNoise(x0, W, 42, 18, seed + 712),
     far = new Float32Array(W),
     near = new Float32Array(W),
-    hz = horizonRow(seed, x0, W);
+    hz = horizonRow(seed, x0, W),
+    floor = floorRow(seed, x0, W);
   for (let x = 0; x < W; x++) {
     const wx = x0 + x,
       // Ridged noise at two scales: ranges of sharp peaks, not domes.
@@ -589,6 +633,58 @@ export function renderLand(
       22 +
       28 * fbm1(wx / 520, seed + 703, 3) +
       12 * fbm1(wx / 90, seed + 704, 2);
+  }
+  // Each column's ground: its biome, from the cover and plants the generator
+  // stamped there (gaps such as water or bare rock take their neighbours').
+  const colB = new Int16Array(W).fill(-1);
+  if (flora) {
+    for (let x = 0; x < W; x++)
+      for (let y = Math.max(0, surface[x] - 2); y < Math.min(H, surface[x] + 16); y++) {
+        const f = flora[y * W + x];
+        if (f > 0 && f <= LAND.length) {
+          colB[x] = f - 1;
+          break;
+        }
+      }
+    let last = -1;
+    for (let x = 0; x < W; x++) if (colB[x] >= 0) last = colB[x];
+      else colB[x] = last;
+    last = -1;
+    for (let x = W - 1; x >= 0; x--) if (colB[x] >= 0 && colB[x] !== -1) last = colB[x];
+      else if (colB[x] < 0) colB[x] = last;
+  }
+  // The ground's colours, smoothed over about 50 columns, so biome edges
+  // (which dither column by column) blend instead of striping the rock.
+  const G = Array.from({ length: W }, () => ({
+    earth: [0, 0, 0],
+    tint: [0, 0, 0],
+    tintK: 0,
+    weather: 0,
+  }));
+  {
+    const R = 24;
+    for (let x = 0; x < W; x++) {
+      const g = G[x];
+      let n = 0;
+      for (let k = Math.max(0, x - R); k <= Math.min(W - 1, x + R); k++) {
+        if (colB[k] < 0) continue;
+        const b = GB[colB[k]];
+        for (let c = 0; c < 3; c++) {
+          g.earth[c] += b.earth[c];
+          g.tint[c] += b.tint[c];
+        }
+        g.tintK += b.tintK;
+        g.weather += b.weather;
+        n++;
+      }
+      if (!n) continue;
+      for (let c = 0; c < 3; c++) {
+        g.earth[c] /= n;
+        g.tint[c] /= n;
+      }
+      g.tintK /= n;
+      g.weather /= n;
+    }
   }
   for (let y = 0; y < H; y++) {
     // Cut-away light: full at the ground, fading with depth below it (set per column below).
@@ -612,7 +708,12 @@ export function renderLand(
         below = y - reach[x];
       // In daylight the cut face is lit near the ground, dimming with depth
       // to a low glow, never quite black.
-      cut = below <= 4 ? 0.95 : 0.95 * (0.3 + 0.7 * Math.exp(-(below - 4) / 85));
+      // Above the valley floors the land dims only slowly with depth.
+      // (Continuous: 0.3 per row down to the floor, 1 per row below it.)
+      const top = reach[x],
+        fl = Math.max(floor[x], top),
+        dim = 0.3 * Math.max(0, Math.min(y, fl) - top) + Math.max(0, y - fl);
+      cut = dim <= 4 ? 0.95 : 0.95 * (0.3 + 0.7 * Math.exp(-(dim - 4) / 85));
       let cr: number, cg: number, cb: number;
       const wd = m === M.WATER ? waterAbove[x] : 0;
       waterAbove[x] = m === M.WATER ? wd + 1 : 0;
@@ -666,7 +767,7 @@ export function renderLand(
       } else if (m === M.WATER) {
         // Water: tinted, darker with depth, a bright line where it meets the air.
         const top = wd === 0 && y > 0 && cells[i - W] === M.AIR,
-          f = Math.min(1, wd / 36),
+          f = Math.min(1, wd / 160),
           rock = rockOf(st);
         if (top) {
           cr = 0.75 * WATER[0] + 0.35;
@@ -742,8 +843,30 @@ export function renderLand(
       } else {
         // Rock and everything solid, or the back wall of a cave behind open space.
         const mottle = 0.6 * fine.at(wx) + 0.4 * coarse.at(wx),
-          rock = rockOf(st),
-          h = grain(wx, y),
+          h = grain(wx, y);
+        let rock = rockOf(st);
+        // Near the surface, rock takes its climate's tint, and just under the
+        // soil it is weathered: grading, in dithered steps, into the earth.
+        const gb = colB[x] >= 0 ? G[x] : null;
+        if (gb && below < 170 && (m === M.ROCK || m === M.AIR || m === M.BACKWALL || m === M.GRAVEL || m === M.SAND)) {
+          const kT = gb.tintK * (1 - Math.min(1, Math.max(0, below) / 170));
+          let r0 = rock[0] + (gb.tint[0] - rock[0]) * kT,
+            g0 = rock[1] + (gb.tint[1] - rock[1]) * kT,
+            b0 = rock[2] + (gb.tint[2] - rock[2]) * kT;
+          const depth = gb.weather * 1.8;
+          if (m === M.ROCK && y >= surface[x] && below < depth) {
+            const f = Math.pow(1 - Math.max(0, below) / depth, 1.3) * 0.85,
+              k = Math.floor(f * 4 + bay) / 4;
+            r0 += (gb.earth[0] - r0) * k;
+            g0 += (gb.earth[1] - g0) * k;
+            b0 += (gb.earth[2] - b0) * k;
+          }
+          WR[0] = r0;
+          WR[1] = g0;
+          WR[2] = b0;
+          rock = WR;
+        }
+        const
           seam =
             y > 0 &&
             cells[i - W] === M.ROCK &&
@@ -803,8 +926,20 @@ export function renderLand(
                         : m === M.SOIL || (m === M.SAND && pal.salt)
                           ? pal.earth
                           : null;
+          // Scree and sand are broken rock: they take the rock's colour.
+          let loose: number[] | null = null;
+          if (m === M.GRAVEL || (m === M.SAND && !(pal && pal.salt))) {
+            const base = SOLID[m],
+              k = m === M.GRAVEL ? 0.8 : 0.3,
+              lift = m === M.GRAVEL ? 1.05 : 1.15;
+            LOOSE[0] = base[0] + (rock[0] * lift - base[0]) * k;
+            LOOSE[1] = base[1] + (rock[1] * lift - base[1]) * k;
+            LOOSE[2] = base[2] + (rock[2] * lift - base[2]) * k;
+            loose = LOOSE;
+          }
           const c =
             tinted ??
+            loose ??
             (m === M.ROCK
               ? null
               : m === M.LEAF
