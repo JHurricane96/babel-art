@@ -8,7 +8,7 @@
     "start": "vite --host 127.0.0.1 --port 4173",
     "test": "node --import tsx --test tests/*.test.js",
     "test:strata": "node --import tsx --test tests/strata-*.test.js",
-    "test:strata:quick": "node --import tsx --test --test-name-pattern=\"identically|seamless|wall|budget|same world\" tests/strata-*.test.js",
+    "test:strata:quick": "node --import tsx --test --test-name-pattern=\"identically|seamless|wall|budget|same world|join seamlessly\" tests/strata-*.test.js",
     "test:browser": "node scripts/browser-check.mjs",
     "build:pages": "vite build --base=/babel-art/",
     "typecheck": "tsc --noEmit",

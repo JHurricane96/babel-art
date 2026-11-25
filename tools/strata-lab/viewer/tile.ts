@@ -3,6 +3,7 @@
 import { generateWindow, regionFeatures } from "../../../engine/strata/generate.ts";
 import { GLOW, M, REGION_W, WORLD_H } from "../../../engine/strata/world.ts";
 import { MOTION, horizonRow, renderLand } from "../land-render.ts";
+import { planRoute } from "../../../engine/strata/route.ts";
 
 /** Extra columns lit either side, so light crosses region edges seamlessly. */
 const PAD = 128;
@@ -47,6 +48,8 @@ export interface Tile {
   /** The row the sky's horizon sits on, per column. */
   horizon: Float32Array;
   emit: Emitters;
+  /** The journey's route through this region (engine/strata/route.ts). */
+  route: { xs: Int32Array; ys: Int16Array; verbs: Uint8Array; plan: string; why: string };
   genMs: number;
   lightMs: number;
 }
@@ -88,6 +91,7 @@ export function buildTile(seed: number, r: number): Tile {
     surface: g.surface.slice(from, from + TW),
     horizon: horizonRow(seed, r * REGION_W - APRON, TW),
     emit: emitters(g.cells, g.state, g.surface, W, H, x0, seed, r),
+    route: planRoute({ cells: g.cells, W, H, x0, seed, r, left: PAD, right: PAD + REGION_W }),
     genMs: t1 - t0,
     lightMs: t2 - t1,
   };

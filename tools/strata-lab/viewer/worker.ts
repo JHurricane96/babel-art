@@ -11,5 +11,8 @@ self.onmessage = (e: MessageEvent<{ id: number; seed: number; r: number }>) => {
     t.surface.buffer,
     t.horizon.buffer,
     ...Object.values(t.emit).map((a) => a.buffer),
+    t.route.xs.buffer,
+    t.route.ys.buffer,
+    t.route.verbs.buffer,
   ]);
 };

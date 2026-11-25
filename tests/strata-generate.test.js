@@ -246,3 +246,30 @@ test("the surface carries rock shapes, greenery and built things", () => {
   for (const [k, n] of Object.entries(seen))
     assert.ok(n > 0, `${k}: ${n} in ${JSON.stringify(regions)}`);
 });
+
+test("journey routes join seamlessly: each region's route ends where the next one's starts", async () => {
+  const { planRoute, VERB } = await import("../engine/strata/route.ts");
+  const PAD = 128,
+    W = REGION_W + 2 * PAD,
+    route = (seed, r) => {
+      const x0 = r * REGION_W - PAD,
+        g = generateWindow(seed, x0, W);
+      return planRoute({ cells: g.cells, W, H: WORLD_H, x0, seed, r, left: PAD, right: PAD + REGION_W });
+    };
+  for (const [seed, r] of [
+    [7, 44],
+    [11, 52],
+  ]) {
+    const a = route(seed, r),
+      b = route(seed, r + 1),
+      n = a.xs.length;
+    assert.equal(a.xs[0], r * REGION_W, "starts on the region's left edge");
+    assert.equal(a.xs[n - 1], b.xs[0], `seed ${seed}: region ${r} ends where ${r + 1} starts (x)`);
+    assert.equal(a.ys[n - 1], b.ys[0], `seed ${seed}: region ${r} ends where ${r + 1} starts (row)`);
+    // Every step moves to a neighbouring cell (rests stay put).
+    for (let i = 1; i < n; i++) {
+      if (a.verbs[i] === VERB.REST || a.verbs[i - 1] === VERB.REST) continue;
+      assert.ok(Math.abs(a.xs[i] - a.xs[i - 1]) <= 1, `step ${i} jumps ${a.xs[i] - a.xs[i - 1]} columns`);
+    }
+  }
+});

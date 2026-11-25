@@ -8,6 +8,7 @@
 // and creatures go on top; a 2D overlay carries the wall mask and markers.
 import { groundAt } from "../../../engine/strata/generate.ts";
 import { setupReview } from "./review.ts";
+import { DOING, Journey } from "./journey.ts";
 import { biomeNameAt } from "../../../engine/strata/worldmap.ts";
 import { REGION_W, WORLD_H } from "../../../engine/strata/world.ts";
 import { Renderer, type GpuTile } from "./gl.ts";
@@ -67,8 +68,11 @@ const cache = new Map<string, Entry>(),
   pending = new Set<string>();
 let last = "";
 
+const journey = new Journey();
+
 function accept(t: Tile) {
   pending.delete(key(t.seed, t.r));
+  journey.add(t.seed, t.r, t.route);
   if (!renderer) return;
   last = `region ${t.r}: land ${(t.genMs / 1000).toFixed(1)} s, light ${(t.lightMs / 1000).toFixed(1)} s`;
   cache.set(key(t.seed, t.r), {
@@ -125,6 +129,8 @@ function wanted() {
     rc = view.x / REGION_W - 0.5,
     out: number[] = [];
   for (let r = r0; r <= r1; r++) out.push(r);
+  // On a journey, the regions ahead of the party too (their routes).
+  if (journey.active) for (let k = 1; k <= 2; k++) if (!out.includes(r1 + k)) out.push(r1 + k);
   return out.sort((a, b) => Math.abs(a - rc) - Math.abs(b - rc));
 }
 
@@ -239,6 +245,7 @@ function frame_(t: number, dt: number) {
         );
     }
   }
+  journey.draw(octx, s, ox, oy, W, H);
   if (view.wall) {
     // Everything outside the four screens goes dark, as on the wall.
     const ax = Math.round(view.x - (WALL_W * MM) / 2),
@@ -514,7 +521,22 @@ function frame(now: number) {
     if (held.has("ArrowUp")) view.y -= v;
     if (held.has("ArrowDown")) view.y += v;
   }
-  if (view.drift) {
+  if (journey.active) {
+    journey.update(dt);
+    // The camera follows the party: room ahead of them, the ground a little
+    // below the middle. It eases (faster when time runs faster), keeps the
+    // party well inside the frame, and holds while they rest.
+    const halfW = canvas.width / view.scale / 2,
+      halfH = canvas.height / view.scale / 2,
+      tx = journey.x + journey.dir * halfW * 0.3,
+      ty = journey.y - halfH * 0.2,
+      k = Math.min(1, dt * 1.2 * Math.sqrt(journey.speed));
+    view.x += (tx - view.x) * k;
+    view.y += (ty - view.y) * k;
+    view.x = Math.max(journey.x - halfW * 0.6, Math.min(journey.x + halfW * 0.6, view.x));
+    view.y = Math.max(journey.y - halfH * 0.5, Math.min(journey.y + halfH * 0.5, view.y));
+    $("journey-state").textContent = `${journey.plan} route · ${DOING[journey.verb] ?? ""} · ${journey.speed}×`;
+  } else if (view.drift) {
     // Drifting, the camera rises and falls with the land, gently.
     view.x += DRIFT * dt;
     view.y += (surfaceY(view.x) - view.y) * Math.min(1, 0.6 * dt);
@@ -561,6 +583,23 @@ setupReview({
 $("workers").textContent = mainThread
   ? "on the page"
   : `${workers} worker${workers === 1 ? "" : "s"}`;
+// The journey: a party walks the regions' routes; the camera follows.
+$("journey").onclick = () => {
+  if (journey.active) journey.active = false;
+  else journey.start(view.seed, Math.floor(view.x / REGION_W));
+  $("journey").setAttribute("aria-pressed", String(journey.active));
+  $("journey-speed").hidden = !journey.active;
+  $("journey-state").hidden = !journey.active;
+};
+$("journey-speed").onclick = () => {
+  journey.speed = journey.speed === 1 ? 10 : journey.speed === 10 ? 50 : 1;
+  $("journey-speed").textContent = `${journey.speed}×`;
+};
+$("route").onclick = () => {
+  journey.showRoute = !journey.showRoute;
+  $("route").setAttribute("aria-pressed", String(journey.showRoute));
+};
+Object.assign(window, { strataJourney: journey });
 // Hide or show the panels (for screens without a keyboard).
 $("hud-toggle").onclick = () => {
   toggle("hud");
