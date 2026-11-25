@@ -201,7 +201,7 @@ const BARK: Record<string, string> = {
   oak: "#5a4636", beech: "#8a8478", maple: "#5e4c3e", birch: "#e4e0d4",
   spruce: "#4a3a2e", fir: "#4a3a30", pine: "#9a6040",
 };
-const rampsFor = (name: string) => ({
+export const rampsFor = (name: string) => ({
   [M.LEAF]: rampOf(hex(LEAF[name])),
   [M.WOOD]: rampOf(hex(BARK[name])),
   [M.ROCK]: rampOf(hex("#8a8478")),
@@ -212,13 +212,13 @@ const rampsFor = (name: string) => ({
 // that same layout. Big sizes heap shaded leaf clumps into each mass (the forest slice's crowns);
 // small sizes shade each mass as a whole. So a tree changing size class grows a little: it never
 // turns into another tree.
-interface Mass {
+export interface Mass {
   x: number;
   y: number;
   rx: number;
   ry: number;
 }
-interface Limb {
+export interface Limb {
   x0: number;
   y0: number;
   x1: number;
@@ -227,7 +227,7 @@ interface Limb {
   y2: number;
   w: number;
 }
-interface Plan {
+export interface Plan {
   /** Stems: foot x, height, lean (all fractions of H), widths at foot and top (fractions of H). */
   stems: { x: number; h: number; lean: number; w0: number; w1: number }[];
   limbs: Limb[];
@@ -236,7 +236,7 @@ interface Plan {
 }
 
 /** A broadleaf tree's layout, in fractions of its height (y up is negative). */
-function broadleafPlan(name: string, seed: number): Plan {
+export function broadleafPlan(name: string, seed: number): Plan {
   const S = mulberry(seed),
     k = TREES[name],
     base = (k.h0 + k.h1) / 2,
@@ -380,7 +380,7 @@ function broadleaf(name: string, H: number, seed: number): Img {
 }
 
 /** A conifer's tiers (fractions of H): the same for every size. */
-function coniferPlan(name: string, seed: number) {
+export function coniferPlan(name: string, seed: number) {
   const S = mulberry(seed),
     n = 7 + Math.floor(S() * 3),
     W = name === "fir" ? 0.5 : 0.42,
@@ -437,7 +437,7 @@ function conifer(name: string, H: number, seed: number): Img {
 }
 
 /** A pine's layout: a leaning trunk, limbs out to flat pads (fractions of H). */
-function pinePlan(seed: number) {
+export function pinePlan(seed: number) {
   const S = mulberry(seed),
     lean = (S() - 0.5) * 0.12,
     top = { x: lean, y: -0.7 },
@@ -857,7 +857,7 @@ function cart(H: number): Img {
 // ---- The slots ----------------------------------------------------------------------------
 export const TREE_SLOT0 = 0;
 export const TREE_VARIANTS = 3;
-const TREE_NAMES = ["oak", "beech", "maple", "birch", "spruce", "fir", "pine"];
+export const TREE_NAMES = ["oak", "beech", "maple", "birch", "spruce", "fir", "pine"];
 export const COVER = ["grass", "grass2", "dry grass", "flowers white", "flowers yellow", "flowers purple", "flowers red", "fern", "fern2", "shrub", "shrub2", "boulder", "boulder2", "stone", "stone2"];
 const COVER_H = [0.35, 0.3, 0.4, 0.45, 0.45, 0.45, 0.45, 0.8, 0.7, 1.5, 1.2, 1.4, 1.0, 0.35, 0.3];
 
