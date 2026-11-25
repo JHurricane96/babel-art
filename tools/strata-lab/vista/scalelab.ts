@@ -6,7 +6,7 @@
 // video here and runs as an interactive page anywhere.
 import { CLASS_H, NC, type Img, slotDefs, slotIndex } from "./sprites";
 import { TREE_KINDS, mulberry } from "./valley";
-import { drawVoxelTree, setView, voxelTree } from "./voxels";
+import { drawVoxel, setView, voxelModel } from "./voxels";
 
 export const PW = 320,
   PH = 180,
@@ -21,7 +21,7 @@ export const METHODS = [
   { id: "pixel", name: "Redrawn at every pixel size", note: "Drawn at its exact height in whole pixels; one layout, so it grows a pixel at a time." },
   { id: "nearest", name: "Scaled, nearest neighbour", note: "The next bigger size shrunk to fit by dropping rows and columns." },
   { id: "seams", name: "Grown by rows and columns", note: "Drawn afresh every octave (6, 12, 24 … 384 px); between, it grows or shrinks one row and column at a time, spread evenly, the least visible first. Nothing is redrawn." },
-  { id: "voxel", name: "Voxel trees", note: "Trees as voxel models in 3D, built from the same layouts, lit by the sun, four coarser levels; each voxel covers the pixels its square covers. Everything else grown by rows and columns." },
+  { id: "voxel", name: "All voxels", note: "Everything as voxel models in 3D: trees from the same layouts as the sprites, bushes, ferns, grass, flowers, rocks and the walkers; lit by the sun, shaded in crevices and under their own crowns, outlined where they turn away, each level half the last." },
   { id: "seams1", name: "Rows and columns, one drawing", note: "One big drawing; every smaller size takes out rows and columns one at a time, the least visible first." },
 ] as const;
 export type Method = (typeof METHODS)[number]["id"];
@@ -240,10 +240,8 @@ export function frame(objs: Obj[], t: number, method: Method, rgba: Uint8Clamped
       o = it.o;
     let slot = o.slot;
     if (o.walker >= 0) slot = SLOT.get(`person ${o.walker} 0 ${Math.floor((it.x + 100) / 0.6) & 3}`)!;
-    const local =
-      method === "voxel" && o.walker < 0 && slot < 21
-        ? drawVoxelTree(voxelTree(slot), o.h, 0, { x: it.x, z: o.z }, cam, F)
-        : spriteImg(method === "voxel" ? "seams" : method, slot, it.want, o.maxClass);
+    const vm = method === "voxel" ? voxelModel(DEFS[slot].name, slot) : null,
+      local = vm ? drawVoxel(vm, o.h, { x: it.x, z: o.z }, cam, F) : spriteImg(method === "voxel" ? "seams" : method, slot, it.want, o.maxClass);
     blit(rgba, local, ax, ay);
     log?.set(o.id, local);
   }

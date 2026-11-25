@@ -482,7 +482,7 @@ function treeDraw(name: string) {
 }
 
 // ---- Ground cover --------------------------------------------------------------------------
-const GRASS_R = rampOf(hex("#6f9a3c")),
+export const GRASS_R = rampOf(hex("#6f9a3c")),
   DRY_R = rampOf(hex("#a6a05a")),
   ROCK_R = rampOf(hex("#8c867c")),
   MOSS_R = rampOf(hex("#5a7a34")),
