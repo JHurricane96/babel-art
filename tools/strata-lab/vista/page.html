@@ -1,0 +1,120 @@
+<title>Strata Vista</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500&family=Space+Grotesk:wght@500;600&display=swap">
+<style>
+/* Layout: one screen. The wall-shaped view fills the stage; a side panel holds the map and readout; controls sit beneath. */
+:root {
+  --bg: #121419;
+  --panel: #1a1d24;
+  --raised: #232731;
+  --fg: #e8e4da;
+  --muted: #9a9ba3;
+  --accent: #e9a95a;
+  --line: #2f3440;
+  --display: "Space Grotesk", system-ui, sans-serif;
+  --body: "Inter", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 14px; overflow-x: hidden; }
+.app {
+  height: 100%; box-sizing: border-box; display: flex; flex-direction: column; gap: 10px;
+  padding-block: 12px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+header { display: flex; align-items: baseline; gap: 6px 14px; flex-wrap: wrap; }
+h1 { font-family: var(--display); font-weight: 600; font-size: 18px; margin: 0; letter-spacing: 0.01em; }
+header p { margin: 0; color: var(--muted); font-size: 13px; max-width: 80ch; }
+.main { flex: 1; min-height: 0; display: flex; gap: 14px; }
+.viewarea { flex: 1; min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center; position: relative; }
+#view { display: block; background: var(--bg); }
+#loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 13px; color: var(--muted); text-align: center; padding: 16px; }
+#loading[hidden] { display: none; }
+.side { width: 236px; flex: none; display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow-y: auto; }
+#map { width: 236px; height: 236px; display: block; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); }
+.key { font-size: 12px; color: var(--muted); display: flex; gap: 10px; flex-wrap: wrap; }
+.key i { font-style: normal; display: inline-flex; align-items: center; gap: 5px; }
+.key b { display: inline-block; width: 10px; height: 3px; border-radius: 2px; }
+dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-family: var(--mono); font-size: 12px; }
+dt { color: var(--muted); }
+dd { margin: 0; font-variant-numeric: tabular-nums; min-width: 0; }
+#mode-note { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; }
+.group { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.group > span { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-right: 4px; }
+button {
+  font: 500 13px var(--body); color: var(--fg); background: var(--raised);
+  border: 1px solid var(--line); border-radius: 4px; padding: 5px 9px; cursor: pointer;
+}
+button:hover { border-color: var(--muted); }
+button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@media (max-width: 860px) {
+  .app { height: auto; min-height: 100%; }
+  .main { flex-direction: column; flex: none; }
+  .viewarea { flex: none; height: calc((100vw - 32px) / 1.5376); }
+  .side { width: auto; flex-direction: row; flex-wrap: wrap; overflow: visible; }
+  #map { width: 132px; height: 132px; }
+  .readout { flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 8px; }
+  header p { font-size: 12px; }
+}
+@media (max-width: 480px) { button { padding: 4px 7px; font-size: 12px; } .controls { gap: 6px 12px; } }
+</style>
+
+<div class="app">
+  <header>
+    <h1>Strata Vista</h1>
+    <p>The layered valley at the wall's resolution (980 × 637 art pixels, four screen pixels each), on the GPU. Every sprite is drawn at its own size; the ground is pixel art fixed to the land.</p>
+  </header>
+  <div class="main">
+    <div class="viewarea" id="viewarea">
+      <canvas id="view" aria-label="The valley, drawn as receding layers, with the party walking through it"></canvas>
+      <div id="loading">Building the valley…</div>
+    </div>
+    <aside class="side">
+      <canvas id="map" aria-label="Map of the valley from above: the route, the party and what the camera sees"></canvas>
+      <div class="readout">
+        <div class="key"><i><b style="background:#f4efe2"></b>route</i><i><b style="background:var(--accent)"></b>party</i><i><b style="background:#7fc4ff"></b>camera view</i></div>
+        <dl>
+          <dt>Stretch</dt><dd id="r-stretch">–</dd>
+          <dt>Camera</dt><dd id="r-camera">–</dd>
+          <dt>Distance</dt><dd id="r-dist">–</dd>
+          <dt>Figure</dt><dd id="r-size">–</dd>
+          <dt>Frame</dt><dd id="r-fps">–</dd>
+          <dt>GPU</dt><dd id="r-gpu">–</dd>
+          <dt>Drawn</dt><dd id="r-drawn">–</dd>
+        </dl>
+        <p id="mode-note"></p>
+      </div>
+    </aside>
+  </div>
+  <div class="controls">
+    <div class="group" role="group" aria-label="Camera">
+      <span>Camera</span>
+      <button id="m-auto" data-mode="auto" aria-pressed="true">Auto</button>
+      <button id="m-follow" data-mode="follow" aria-pressed="false">Follow</button>
+      <button id="m-turn" data-mode="turn" aria-pressed="false">Turn</button>
+    </div>
+    <div class="group" role="group" aria-label="Speed">
+      <span>Speed</span>
+      <button id="play" aria-pressed="false">Pause</button>
+      <button id="s-1" data-speed="1" aria-pressed="false">1×</button>
+      <button id="s-3" data-speed="3" aria-pressed="false">3×</button>
+      <button id="s-6" data-speed="6" aria-pressed="true">6×</button>
+      <button id="s-15" data-speed="15" aria-pressed="false">15×</button>
+    </div>
+    <div class="group" role="group" aria-label="Jump to" id="chapters"><span>Jump to</span></div>
+    <div class="group" role="group" aria-label="Show">
+      <span>Show</span>
+      <button id="t-snap" data-toggle="snap" aria-pressed="true">Snap to pixels</button>
+      <button id="t-bands" data-toggle="bands" aria-pressed="true">Layer bands</button>
+      <button id="t-marker" data-toggle="marker" aria-pressed="true">Party marker</button>
+      <button id="t-wall" data-toggle="wall" aria-pressed="true">Wall frame</button>
+    </div>
+  </div>
+</div>
+<!-- SCRIPT -->
