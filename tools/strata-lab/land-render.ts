@@ -1057,6 +1057,12 @@ export function renderLand(
             lr += amb * AMB[0];
             lg += amb * AMB[1];
             lb += amb * AMB[2];
+            // Turf in the sun reads as a band of green, not a glowing line.
+            if ((m === M.GRASS || m === M.MOSS) && y <= surface[x] + 3) {
+              lr *= 0.8;
+              lg *= 0.8;
+              lb *= 0.8;
+            }
             }
           }
         }

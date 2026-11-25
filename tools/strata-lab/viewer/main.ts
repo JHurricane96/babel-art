@@ -408,21 +408,46 @@ $<HTMLFormElement>("seed-form").onsubmit = (e) => {
   setSeed(Number($<HTMLInputElement>("seed").value));
 };
 
-// Drag to move, wheel to zoom around the pointer, double-click to centre.
-let drag: { x: number; y: number } | null = null;
+// Drag (one finger) to move, pinch (two) or wheel to zoom around the
+// fingers or pointer, double-click to centre.
+const pointers = new Map<number, { x: number; y: number }>();
+let pinch: { d: number; scale: number } | null = null;
+const spread = () => {
+  const [a, b] = [...pointers.values()];
+  return {
+    d: Math.hypot(a.x - b.x, a.y - b.y),
+    mx: (a.x + b.x) / 2,
+    my: (a.y + b.y) / 2,
+  };
+};
 overlay.addEventListener("pointerdown", (e) => {
   overlay.setPointerCapture(e.pointerId);
-  drag = { x: e.clientX, y: e.clientY };
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pointers.size === 2) pinch = { d: Math.max(1, spread().d), scale: view.scale };
 });
 overlay.addEventListener("pointermove", (e) => {
-  if (!drag) return;
+  const last = pointers.get(e.pointerId);
+  if (!last) return;
+  const before = pointers.size === 2 ? spread() : null;
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   const d = devicePixelRatio / view.scale;
-  view.x -= (e.clientX - drag.x) * d;
-  view.y -= (e.clientY - drag.y) * d;
-  drag = { x: e.clientX, y: e.clientY };
+  if (pointers.size === 1) {
+    view.x -= (e.clientX - last.x) * d;
+    view.y -= (e.clientY - last.y) * d;
+  } else if (pointers.size === 2 && pinch && before) {
+    const now = spread();
+    // Pan with the fingers' midpoint, zoom by how far apart they are.
+    view.x -= (now.mx - before.mx) * d;
+    view.y -= (now.my - before.my) * d;
+    setScale(pinch.scale * (now.d / pinch.d), now.mx * devicePixelRatio, now.my * devicePixelRatio);
+  }
 });
-overlay.addEventListener("pointerup", () => (drag = null));
-overlay.addEventListener("pointercancel", () => (drag = null));
+const lift = (e: PointerEvent) => {
+  pointers.delete(e.pointerId);
+  if (pointers.size < 2) pinch = null;
+};
+overlay.addEventListener("pointerup", lift);
+overlay.addEventListener("pointercancel", lift);
 let wheel = 0;
 overlay.addEventListener(
   "wheel",
@@ -536,8 +561,22 @@ setupReview({
 $("workers").textContent = mainThread
   ? "on the page"
   : `${workers} worker${workers === 1 ? "" : "s"}`;
+// Hide or show the panels (for screens without a keyboard).
+$("hud-toggle").onclick = () => {
+  toggle("hud");
+  $("hud-toggle").setAttribute("aria-pressed", String(!view.hud));
+};
+// On a narrow screen, the rest of the controls fold behind More.
+$("more").onclick = () => {
+  const bar = $("bar"),
+    open = bar.classList.toggle("open");
+  $("more").setAttribute("aria-expanded", String(open));
+};
 requestAnimationFrame((t) => {
   prev = t;
+  // A phone or small tablet starts zoomed to show about 360 art px across.
+  if (innerWidth < 700)
+    view.scale = Math.max(1, Math.min(6, Math.round((innerWidth * devicePixelRatio) / 360)));
   toSurface();
   frame(t);
 });

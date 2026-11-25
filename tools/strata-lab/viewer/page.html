@@ -89,9 +89,30 @@
   .err { margin: 0; color: #f0907a; font-size: 12px; }
   .err:empty { display: none; }
   [hidden] { display: none !important; }
-  @media (max-width: 640px) {
+  #hud-toggle {
+    position: fixed; z-index: 5; right: calc(12px + env(safe-area-inset-right, 0px));
+    bottom: calc(12px + env(safe-area-inset-bottom, 0px)); display: none;
+    background: var(--glass); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  }
+  #more { display: none; }
+  @media (max-width: 640px), (pointer: coarse) {
     .keys, .note { display: none; }
-    .bar { gap: 6px 10px; }
+    #hud-toggle { display: inline-block; min-height: 40px; min-width: 40px; }
+    #hud[hidden] ~ #hud-toggle, #hud-toggle { display: inline-block; }
+    .top { padding: 8px 10px; gap: 4px; max-width: calc(100vw - 24px); }
+    .name { font-size: 16px; }
+    .tag { display: none; }
+    .biome { font-size: 14px; }
+    .seed input, .jump input, #note-text { font-size: 16px; }
+    button { min-height: 40px; min-width: 40px; padding: 8px 12px; }
+    .bar { gap: 6px 8px; padding: 8px; right: calc(64px + env(safe-area-inset-right, 0px)); }
+    #more { display: inline-block; }
+    .bar:not(.open) .more { display: none; }
+    .scale { font-size: 12px; }
+    .side {
+      top: auto; left: calc(8px + env(safe-area-inset-left, 0px)); right: calc(8px + env(safe-area-inset-right, 0px));
+      bottom: calc(8px + env(safe-area-inset-bottom, 0px)); width: auto; max-height: 62vh; z-index: 6;
+    }
   }
 </style>
 
@@ -99,7 +120,7 @@
 <canvas id="overlay" aria-hidden="true"></canvas>
 <div id="hud">
   <header class="card top">
-    <div class="brand"><span class="name">Strata</span><span class="tag">world · loop 8</span></div>
+    <div class="brand"><span class="name">Strata</span><span class="tag">world · loop 9</span></div>
     <form id="seed-form" class="seed">
       <label for="seed">Seed</label>
       <input id="seed" type="number" min="0" step="1" inputmode="numeric">
@@ -108,32 +129,33 @@
     <p id="biome" class="biome">…</p>
     <p id="where" class="where">region 1</p>
   </header>
-  <nav class="card bar" aria-label="View controls">
+  <nav class="card bar" id="bar" aria-label="View controls">
     <div class="group" role="group" aria-label="Zoom">
       <button id="zoom-out" type="button" aria-label="Fewer screen pixels per art pixel">−</button>
       <span class="scale"><b id="scale">4</b> screen px per art px</span>
       <button id="zoom-in" type="button" aria-label="More screen pixels per art pixel">+</button>
     </div>
     <span id="scale-note" class="note">480 art px across a 1920 px screen</span>
-    <div class="group" role="group" aria-label="Go to">
-      <button id="prev-edge" type="button">◀ Edge</button>
-      <button id="next-edge" type="button">Edge ▶</button>
-      <button id="surface" type="button">Surface</button>
-      <button id="deeper" type="button">Deeper</button>
-    </div>
     <div class="group" role="group" aria-label="Review">
       <button id="goto" type="button" aria-pressed="false">Go to</button>
       <button id="note-here" type="button">Note here</button>
+      <button id="surface" type="button">Surface</button>
+      <button id="more" type="button" aria-expanded="false" aria-controls="bar">More</button>
+    </div>
+    <div class="group more" role="group" aria-label="Go to">
+      <button id="prev-edge" type="button">◀ Edge</button>
+      <button id="next-edge" type="button">Edge ▶</button>
+      <button id="deeper" type="button">Deeper</button>
     </div>
     <div class="group" role="group" aria-label="Show">
-      <button id="motion" type="button" aria-pressed="true">Motion</button>
       <button id="drift" type="button" aria-pressed="false">Drift</button>
-      <button id="edges" type="button" aria-pressed="false">Region edges</button>
-      <button id="wall" type="button" aria-pressed="false">Wall frame</button>
-      <button id="full" type="button">Fullscreen</button>
+      <button id="motion" type="button" aria-pressed="true" class="more">Motion</button>
+      <button id="edges" type="button" aria-pressed="false" class="more">Region edges</button>
+      <button id="wall" type="button" aria-pressed="false" class="more">Wall frame</button>
+      <button id="full" type="button" class="more">Fullscreen</button>
     </div>
-    <p class="status"><span id="status">Starting…</span> · <span id="workers"></span></p>
-    <p class="status" title="Frame is the page's own work per frame (CPU); the mini PC runs about 1.3× slower. The GPU figure is measured where the browser allows it."><span id="perf">…</span></p>
+    <p class="status more"><span id="status">Starting…</span> · <span id="workers"></span></p>
+    <p class="status more" title="Frame is the page's own work per frame (CPU); the mini PC runs about 1.3× slower. The GPU figure is measured where the browser allows it."><span id="perf">…</span></p>
     <p class="keys">Drag to move · scroll to zoom · arrows pan · [ and ] jump between region edges · space drifts · J go to · C note here · M motion · W wall frame · H hides this panel</p>
   </nav>
   <aside id="review" class="card side" aria-label="Go to" hidden>
@@ -161,4 +183,5 @@
     </form>
   </aside>
 </div>
+<button id="hud-toggle" type="button" aria-pressed="false" aria-label="Hide or show the panels">☰</button>
 <!-- SCRIPT -->
