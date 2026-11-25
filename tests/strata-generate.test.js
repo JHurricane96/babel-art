@@ -8,7 +8,14 @@ import {
 } from "../engine/strata/generate.ts";
 import { ROCK } from "../engine/strata/history.ts";
 import { BIOMES } from "../engine/strata/biomes.ts";
-import { placeAt, worldOf } from "../engine/strata/worldmap.ts";
+import * as history from "../engine/strata/history.ts";
+import * as worldmap from "../engine/strata/worldmap.ts";
+import { installWorldCache } from "../tools/strata-lab/world-cache.ts";
+
+const { placeAt, worldOf } = worldmap;
+// Worlds come from a disk cache keyed to the engine's code (history tests
+// build theirs directly, so the simulation itself stays tested).
+installWorldCache(new URL("..", import.meta.url).pathname, history, worldmap);
 import { M, REGION_W, WORLD_H, bandOf } from "../engine/strata/world.ts";
 
 const digest = (a) => createHash("sha256").update(a).digest("hex");

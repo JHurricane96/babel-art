@@ -7,6 +7,9 @@ session). Write outputs to a scratch folder, not into the repository.
 | --- | --- |
 | `viewer/` | A self-contained HTML viewer for the land: regions generated and lit in web workers, drawn at a whole number of screen pixels per art pixel (4 by default, as on the TVs) so it looks crisp on any monitor. Pan, zoom, change seeds, jump between biome edges, drift, and mask to the four-screen wall. Build with `node tools/strata-lab/viewer/build.mjs OUT.html --standalone`. |
 | `world/` | The world overview: builds one world's history (`engine/strata/history.ts`: a finite world stepped through 48 eras of uplift, folding, rifting, volcanoes, climate, rivers, erosion and deposition) and draws it: climate along the world, the whole world in cross-section with a draggable close-up, crossing rivers and faults, and an era slider that replays history. Build with `node tools/strata-lab/world/build.mjs OUT.html --standalone`. |
+| `lookbook.ts` | Renders a fixed set of places (one per landform and the key biomes) as viewer-like stills in Node, several processes at a time, into contact sheets; `--before DIR` renders another checkout too and pairs each place. Each still is checked automatically (streaks in the rock, very dark masses, ground pressed flat at the sky's ceiling, framing) and flagged stills get a red frame. 20 places take about 7 s. `node --import tsx tools/strata-lab/lookbook.ts OUT_DIR [--before DIR] [--only 1,5] [--spots FILE]`. |
+| `probe.ts` | Everything that made one place, layer by layer: the world's column, landform, climate, habitat, soil and biome, ground and water, rock beds, the generated column as runs of material, and the renderer's depth and light; `--png` writes a zoomed crop. `node --import tsx tools/strata-lab/probe.ts SEED X [Y] [--png OUT.png]`. |
+| `world-cache.ts` | A disk cache of world histories (under `node_modules/.cache/strata-worlds`, keyed to the engine's code) for the lookbook, the probe and the generation tests. |
 | `land-render.ts` | The lab's land renderer (sky, strata, cave light), shared by the viewer and `regions.ts`. |
 | `regions.ts` | Renders land from the region generator (`engine/strata/generate.ts`): a four-region panorama, wall-sized close-ups of each region edge, and a 12-seed contact sheet (skip it with `--quick`). Prints generation time, scaled to the mini PC. |
 | `pi-budget/` | Estimates frame cost on the target machine from this one (`--target 780m` for the Ryzen 7 / Radeon 780M mini PC, `pi5` for a Raspberry Pi 5): CPU time scaled by a calibration factor from published benchmarks, GPU time from a cost model. Spikes for the material simulation and the light flood. See its README. |
@@ -26,3 +29,5 @@ a warm sandstone day, and a cold granite night.
 Each size is the pixel-art width of one 531 mm panel (480 = 4×4 screen pixels
 per art pixel on a 1080p panel). It writes the full wall at screen resolution,
 a 1600-pixel preview, and a 1:1 crop around the camp.
+
+Tests: `npm run test:strata` (about 12 s with the world cache warm) or `npm run test:strata:quick` (determinism, seams, water, budget: about 6 s).

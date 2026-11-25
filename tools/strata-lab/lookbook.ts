@@ -11,13 +11,17 @@
 // Each still is a 640 x 360 art-pixel screen (zoom 3 on a 1920-wide screen),
 // framed the way the viewer frames the land. Sheets hold four places each:
 // one still per place, or before | after. A tiny digit stamped in each
-// still's corner gives its place number; the list prints at the end.
+// still's corner gives its place number; the list prints at the end, with
+// what the automatic checks found (streaks in the rock, very dark masses,
+// ground pressed flat at the sky's ceiling, framing), and flagged stills get
+// a red frame.
 import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { cpus } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { crc32, deflateSync } from "node:zlib";
+import { cachedWorld } from "./world-cache.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url)),
   ROOT = resolve(HERE, "../..");
@@ -114,7 +118,11 @@ async function still(root: string, seed: number, x: number) {
     H: number = world.WORLD_H,
     W = SW + 2 * PAD,
     x0 = Math.round(x - SW / 2 - PAD),
-    g = gen.generateWindow(seed, x0, W),
+    g = gen.generateWindow(seed, x0, W);
+  // Frame like the viewer: the ground (smoothed over the screen) a little below the middle.
+  let sum = 0;
+  for (let k = -4; k <= 4; k++) sum += map.groundRow(seed, x + (k * SW) / 8);
+  const top = Math.max(0, Math.min(H - SH, Math.round(sum / 9 - 0.64 * SH))),
     rgba: Uint8ClampedArray = lr.renderLand({
       W,
       H,
@@ -124,26 +132,108 @@ async function still(root: string, seed: number, x: number) {
       surface: g.surface,
       x0,
       seed,
-    });
-  // Frame like the viewer: the ground (smoothed over the screen) a little below the middle.
-  let sum = 0;
-  for (let k = -4; k <= 4; k++) sum += map.groundRow(seed, x + (k * SW) / 8);
-  const top = Math.max(0, Math.min(H - SH, Math.round(sum / 9 - 0.64 * SH))),
+      // Only the rows on screen are shaded.
+      rows: [top, top + SH],
+    }),
     out = new Uint8Array(SW * SH * 4);
   for (let y = 0; y < SH; y++)
     out.set(rgba.subarray(((top + y) * W + PAD) * 4, ((top + y) * W + PAD + SW) * 4), y * SW * 4);
   for (let i = 3; i < out.length; i += 4) out[i] = 255;
-  return out;
+  const ground = new Float32Array(SW),
+    elev = new Float32Array(SW);
+  for (let k = 0; k < SW; k++) {
+    ground[k] = g.surface[PAD + k] - top;
+    elev[k] = map.groundElevation(seed, x0 + PAD + k);
+  }
+  return { img: out, flags: checks(out, ground, elev) };
+}
+
+// ---- Automatic checks ----------------------------------------------------------
+
+const lum = (img: Uint8Array, i: number) =>
+  (0.3 * img[i * 4] + 0.55 * img[i * 4 + 1] + 0.15 * img[i * 4 + 2]) / 255;
+
+/**
+ * What a still looks wrong in, without a person looking: vertical streaks in
+ * the rock, near-black masses, peaks pressed flat against the sky's ceiling,
+ * and framing that shows almost only sky or only ground.
+ */
+function checks(img: Uint8Array, ground: Float32Array, elev: Float32Array) {
+  const flags: string[] = [];
+  // Streaks: columns whose rock just under the ground differs from both
+  // neighbours, clustered (they come in patches where something changes
+  // column by column). Calibrated: streaky stills scored 32-36, clean ones
+  // at most 11, in the 48 columns that hold the most.
+  const colMean = new Float32Array(SW).fill(NaN);
+  for (let x = 0; x < SW; x++) {
+    const y0 = Math.max(0, Math.round(ground[x]) + 4),
+      y1 = Math.min(SH, y0 + 56);
+    if (y1 - y0 < 30) continue;
+    let s = 0;
+    for (let y = y0; y < y1; y++) s += lum(img, y * SW + x);
+    colMean[x] = s / (y1 - y0);
+  }
+  const odd = new Uint8Array(SW);
+  for (let x = 1; x < SW - 1; x++) {
+    const d = Math.abs(2 * colMean[x] - colMean[x - 1] - colMean[x + 1]);
+    odd[x] = d > 0.04 ? 1 : 0;
+  }
+  let most = 0;
+  for (let x = 0, n = 0; x < SW; x++) {
+    n += odd[x] - (x >= 48 ? odd[x - 48] : 0);
+    most = Math.max(most, n);
+  }
+  if (most >= 20) flags.push(`streaks in the rock (${most} of 48 columns)`);
+  // Near-black: deep shadow over a big share of the screen.
+  let dark = 0;
+  // (Calibrated: loop 7's black underground was 28-34% under 0.13, loop 8's 0-2%.)
+  for (let i = 0; i < SW * SH; i++) if (lum(img, i) < 0.13) dark++;
+  if (dark / (SW * SH) > 0.2) flags.push(`very dark over ${((100 * dark) / (SW * SH)).toFixed(0)}% of the screen`);
+  // Flat against the ceiling: a long run of ground at the soft cap.
+  let run = 0,
+    longest = 0;
+  for (let x = 0; x < SW; x++) {
+    run = elev[x] > 840 ? run + 1 : 0;
+    longest = Math.max(longest, run);
+  }
+  if (longest > 120) flags.push(`ground pressed flat at the ceiling for ${longest} columns`);
+  // Framing: the ground's mean row on screen.
+  let gm = 0;
+  for (let x = 0; x < SW; x++) gm += ground[x];
+  gm /= SW;
+  if (gm < 0.15 * SH) flags.push("framing: almost no sky");
+  else if (gm > 0.92 * SH) flags.push("framing: almost no ground");
+  return flags;
+}
+
+/** A red frame around a flagged still. */
+function frame(img: Uint8Array) {
+  for (let y = 0; y < SH; y++)
+    for (let x = 0; x < SW; x++) {
+      if (x > 3 && x < SW - 4 && y > 3 && y < SH - 4) continue;
+      const o = (y * SW + x) * 4;
+      img[o] = 230;
+      img[o + 1] = 40;
+      img[o + 2] = 40;
+    }
 }
 
 // ---- Worker: render some places from one tree, write raw stills ---------------
 
 async function worker(root: string, list: number[], spots: typeof SPOTS, dir: string, tag: string) {
+  const ready = new Set<number>();
   for (const i of list) {
-    const [seed, x] = spots[i],
-      img = await still(root, seed, x);
+    const [seed, x] = spots[i];
+    // Worlds come from the disk cache when this code has built them before.
+    if (!ready.has(seed)) {
+      await cachedWorld(root, seed);
+      ready.add(seed);
+    }
+    const { img, flags } = await still(root, seed, x);
+    if (flags.length) frame(img);
     stamp(img, SW, i + 1);
     writeFileSync(resolve(dir, `${tag}-${i}.raw`), img);
+    writeFileSync(resolve(dir, `${tag}-${i}.json`), JSON.stringify(flags));
   }
 }
 
@@ -219,7 +309,15 @@ async function main() {
     sheets.push(name);
   }
   console.log(`${picks.length} places${before ? " (before | after)" : ""} in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
-  for (const i of picks) console.log(`  ${i + 1}. seed ${spots[i][0]} · region ${(spots[i][1] / 2048).toFixed(1)} · ${spots[i][2]}`);
+  for (const i of picks) {
+    const notes = trees
+      .map(([, tag]) => {
+        const f: string[] = JSON.parse(readFileSync(resolve(out, `${tag}-${i}.json`), "utf8"));
+        return f.length ? `${tag === "now" ? "" : tag + ": "}${f.join("; ")}` : "";
+      })
+      .filter(Boolean);
+    console.log(`  ${i + 1}. seed ${spots[i][0]} · region ${(spots[i][1] / 2048).toFixed(1)} · ${spots[i][2]}${notes.length ? `  ⚠ ${notes.join(" | ")}` : ""}`);
+  }
   for (const s of sheets) console.log(s);
 }
 

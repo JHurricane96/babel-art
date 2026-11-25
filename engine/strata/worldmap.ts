@@ -24,6 +24,16 @@ import { landformAt } from "./landforms";
 
 const worlds = new Map<number, World>();
 
+let source: ((seed: number) => World | undefined) | null = null;
+
+/**
+ * Lab tools and tests can hand worlds in (from a disk cache) instead of
+ * having each process build them; a world is a pure function of its seed.
+ */
+export function setWorldSource(fn: ((seed: number) => World | undefined) | null) {
+  source = fn;
+}
+
 /** Use a world already built for this seed (e.g. one with its history recorded). */
 export function adoptWorld(seed: number, w: World) {
   worlds.delete(seed);
@@ -35,7 +45,7 @@ export function adoptWorld(seed: number, w: World) {
 export function worldOf(seed: number): World {
   let w = worlds.get(seed);
   if (!w) {
-    w = simulateWorld(seed);
+    w = source?.(seed) ?? simulateWorld(seed);
     worlds.set(seed, w);
     if (worlds.size > 3) worlds.delete(worlds.keys().next().value!);
   }

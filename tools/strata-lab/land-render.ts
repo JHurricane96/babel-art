@@ -333,6 +333,8 @@ export interface Land {
   seed?: number;
   /** Per cell: 1 + the biome (biomes.ts) of the plant or ground cover there, or 0: sets its colours. */
   flora?: Uint8Array;
+  /** Only shade rows [from, to) (the rest stay black): for stills that show part of the window. */
+  rows?: [number, number];
 }
 
 /**
@@ -514,7 +516,7 @@ function swayField(
 /** Render land to RGBA, one pixel per cell. */
 export const renderTimes: Record<string, number> = {};
 export function renderLand(
-  { W, H, cells, state, surface, x0, seed = 0, flora }: Land,
+  { W, H, cells, state, surface, x0, seed = 0, flora, rows }: Land,
   layers?: MotionLayers,
 ) {
   let tt = performance.now();
@@ -686,7 +688,17 @@ export function renderLand(
       g.weather /= n;
     }
   }
-  for (let y = 0; y < H; y++) {
+  const yFrom = rows ? Math.max(0, rows[0]) : 0,
+    yTo = rows ? Math.min(H, rows[1]) : H;
+  // Rows skipped above still count toward water and ice depth.
+  for (let y = 0; y < yFrom; y++)
+    for (let x = 0; x < W; x++) {
+      const m = cells[y * W + x];
+      waterAbove[x] = m === M.WATER ? waterAbove[x] + 1 : 0;
+      iceAbove[x] = m === M.ICE ? iceAbove[x] + 1 : 0;
+      frozen[x] = m === M.ICE ? 1 : m === M.WATER ? frozen[x] : 0;
+    }
+  for (let y = yFrom; y < yTo; y++) {
     // Cut-away light: full at the ground, fading with depth below it (set per column below).
     let cut = 0.6;
     fine.row(y);
