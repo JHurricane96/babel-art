@@ -51,6 +51,7 @@ const hashCell = (x: number, y: number, s: number) => {
 // another size, each part at its own place.
 let REC: number[] | null = null,
   REC_CANVAS: MatCanvas | null = null,
+  REC_RAMPS: Record<number, number[][]> | null = null,
   PART = 0,
   /** "clump": every leaf clump its own part; "mass": the clumps heaped into one leaf mass together. */
   PART_LEVEL: "clump" | "mass" = "clump";
@@ -77,6 +78,7 @@ class MatCanvas implements Canvas {
   }
   /** Crop to what was drawn and colour it, each material by its ramp. The foot at (fx, fy) in drawing coordinates. */
   toImg(ramps: Record<number, number[][]>, fx: number, fy: number): Img {
+    if (REC && REC_CANVAS === this) REC_RAMPS = ramps;
     let x0 = this.w,
       y0 = this.h,
       x1 = -1,
@@ -515,13 +517,15 @@ export function drawParts(def: SlotDef, H: number, seed: number, level: "clump" 
   REC = [];
   PART = 0;
   REC_CANVAS = null;
+  REC_RAMPS = null;
   def.draw(H, seed);
   const rec = REC,
     cv = REC_CANVAS as MatCanvas | null,
-    ramps = rampsFor(def.name.split(" ")[0]) as Record<number, number[][]>;
+    ramps = REC_RAMPS as Record<number, number[][]> | null;
   REC = null;
   REC_CANVAS = null;
-  if (!cv) return [];
+  REC_RAMPS = null;
+  if (!cv || !ramps) return [];
   // Each part is drawn whole before the next begins, so its pixels are one run of the record;
   // a pixel set twice within a part keeps the later value, as on the canvas.
   const parts: Img[] = [];
@@ -633,35 +637,58 @@ function rockDraw(H: number, seed: number, wide: number, moss: number): Img {
     if (H >= 3) c.set(0, -2, M.ROCK, 4);
   } else {
     c.R = mulberry(seed);
-    boulder(c, 0, 0, H * wide, H, moss);
+    boulder(c, 0, 0, H * wide, H, 0);
+    // Detail that stays on the stone as it grows: grain and moss keyed to pixels counted from the
+    // stone's peak (so they neither shuffle nor stretch: the facets' edges move over them), and
+    // cracks through fixed fractions of its size. Its own random sequence, the same at every size.
+    const D = mulberry(seed + 77),
+      salt = Math.floor(D() * 1e6),
+      px0 = Math.round(-H * wide * 0.1),
+      py0 = Math.round(-H * 0.55),
+      at = (x: number, y: number) => {
+        const px = x + c.ox,
+          py = y + c.oy;
+        return px < 0 || py < 0 || px >= c.w || py >= c.h ? -1 : py * c.w + px;
+      };
+    if (moss > 0)
+      for (let x = Math.floor((-H * wide) / 2); x <= Math.ceil((H * wide) / 2); x++) {
+        if (hashCell(x - px0, 0, salt + 3) >= moss) continue;
+        for (let y = -H - 2; y < 0; y++) {
+          const i = at(x, y);
+          if (i >= 0 && c.m[i] === M.ROCK) {
+            c.set(x, y, M.LEAF, hashCell(x - px0, 1, salt + 3) < 0.5 ? 4 : 3);
+            break;
+          }
+        }
+      }
+    const cracks = [0, 1].map(() => {
+      const L = 0.3 + 0.3 * D(),
+        dx = (D() - 0.5) * 1.2,
+        pts: [number, number][] = [[(D() - 0.5) * wide * 0.6, -(0.3 + 0.5 * D())]];
+      for (let k = 0; k < 6; k++) {
+        const [x, y] = pts[k];
+        pts.push([x + (L / 6) * (dx + (D() - 0.5) * 0.8), y + (L / 6) * (0.7 + 0.4 * D())]);
+      }
+      return pts;
+    });
     if (H >= 7) {
-      // Grain in the facets, a crack or two, lichen where it is lit.
-      const R = c.R,
-        salt = Math.floor(R() * 1e6);
       for (let i = 0; i < c.m.length; i++) {
         if (c.m[i] !== M.ROCK) continue;
-        const x = i % c.w,
-          y = (i / c.w) | 0,
-          hsh = hashCell(x, y, salt);
+        const hsh = hashCell((i % c.w) - c.ox - px0, ((i / c.w) | 0) - c.oy - py0, salt);
         if (hsh < 0.14) c.t[i] = Math.max(1, c.t[i] - 1);
         else if (hsh > 0.9 && c.t[i] >= 3) c.t[i] = Math.min(6, c.t[i] + 1);
         else if (hsh > 0.985 && c.t[i] >= 4) c.m[i] = M.MOSS;
       }
-      const cracks = H >= 24 ? 2 : 1;
-      for (let k = 0; k < cracks; k++) {
-        let x = (R() - 0.5) * H * wide * 0.6,
-          y = -H * (0.3 + 0.5 * R());
-        const dx = (R() - 0.5) * 1.2,
-          n = Math.round(H * (0.3 + 0.3 * R()));
-        for (let s = 0; s < n; s++) {
-          const px = Math.round(x) + c.ox,
-            py = Math.round(y) + c.oy,
-            j = py * c.w + px;
-          if (px > 0 && py > 0 && px < c.w && py < c.h && c.m[j] === M.ROCK) c.t[j] = 1;
-          x += dx + (R() - 0.5) * 0.8;
-          y += 0.7 + R() * 0.4;
+      for (const pts of cracks.slice(0, H >= 24 ? 2 : 1))
+        for (let k = 0; k < pts.length - 1; k++) {
+          const [ax, ay] = pts[k],
+            [bx, by] = pts[k + 1],
+            n = Math.max(1, Math.ceil(Math.max(Math.abs(bx - ax), Math.abs(by - ay)) * H));
+          for (let q = 0; q <= n; q++) {
+            const i = at(Math.round((ax + ((bx - ax) * q) / n) * H), Math.round((ay + ((by - ay) * q) / n) * H));
+            if (i >= 0 && c.m[i] === M.ROCK) c.t[i] = 1;
+          }
         }
-      }
     }
   }
   return c.toImg({ [M.ROCK]: ROCK_R, [M.LEAF]: MOSS_R, [M.MOSS]: rampOf(hex("#b8b070")) }, 0, 0);

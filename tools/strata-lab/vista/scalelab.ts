@@ -27,6 +27,7 @@ export const METHODS = [
   { id: "seamsB", name: "Rows and columns, big ones from one drawing", note: "Everything 48 px and over grows from one big drawing, so big things never switch drawings; small ones switch at 48, 24 and 12 px." },
   { id: "seamsB24", name: "Rows and columns, one drawing from 24 px", note: "One big drawing (384 px) for every size from 24 px up, so trees in view never switch drawings; under 24 px, drawings made for 12 and 24 px. The only switches are at 12 and 24 px, and each changes about as much as a one-row step. Smooth, and right at every size." },
   { id: "parts", name: "Trees in clumps, placed exactly", note: "Trees 24 px and over are taken apart into the leaf clumps, trunk and branches their big drawing was made from. At every size each part goes back at its own place, scaled and rounded to the pixel, and shrinks by its own rows and columns, so each glides at a steady pace as it would in 3D, and the tree never tears along a row. Under 24 px, and for everything that is not a tree: rows and columns, one drawing from 24 px." },
+  { id: "all", name: "Everything, each in its own way", note: "Trees and shrubs as clumps placed exactly (trees under 24 px: rows and columns). Grass, flowers and ferns are strokes, and rocks flat facets: redrawn at their exact size, since lines and flat shapes have nothing to shimmer; a rock's grain, moss and cracks stay fixed to the stone. People and the ox redrawn at their exact size: their walk changes them every few frames anyway." },
   { id: "masses", name: "Trees in leaf masses, placed exactly", note: "As trees in parts, but the parts are the leaf masses each crown is heaped from (and the trunk and branches), not every clump: fewer parts sliding against each other, each mass growing by its own rows and columns. Shrunk a long way, a mass keeps only one line in several and goes lacy, so clumps are better." },
   { id: "seams1", name: "Rows and columns, one drawing at every size", note: "One big drawing (384 px) for every size from 6 px up: it never switches drawings, so it is the smoothest, but under about 20 px it keeps only one row in 20 and trees come out wrong (thick trunks, lopsided crowns)." },
 ] as const;
@@ -307,6 +308,13 @@ export function spriteImg(method: Method, slot: number, want: number, maxClass: 
   const maxH = CLASS_H[maxClass];
   if (method === "jumps") return imgAt(slot, CLASS_H[Math.min(maxClass, Math.max(0, Math.round(classFor(want))))]);
   if (method === "pixel") return imgAt(slot, Math.min(Math.max(maxH, 400), Math.max(1, Math.round(want))));
+  if (method === "all") {
+    const cap = maxClass >= 25 ? 384 : maxH * 2,
+      H = Math.min(Math.max(1, Math.round(want)), cap);
+    if (IS_TREE[slot]) return H >= PARTS_MIN ? partsImg(slot, H, cap) : seamImg(slot, H, false, cap, "big24");
+    if (IS_SHRUB[slot] && H >= PARTS_MIN) return partsImg(slot, H, cap);
+    return imgAt(slot, Math.min(Math.max(maxH, 400), H));
+  }
   if (method === "parts" || method === "masses") {
     const cap = maxClass >= 25 ? 384 : maxH * 2,
       H = Math.min(Math.max(1, Math.round(want)), cap);
@@ -346,6 +354,7 @@ export function spriteImg(method: Method, slot: number, want: number, maxClass: 
 // moves all at once, and growing, each part moves at its own steady rate.
 export const PARTS_MIN = 24;
 const IS_TREE = DEFS.map((d) => TREE_NAMES.includes(d.name.split(" ")[0])),
+  IS_SHRUB = DEFS.map((d) => d.name.startsWith("shrub")),
   partsOf = new Map<string, Img[]>();
 export type PartLevel = "clump" | "mass";
 export function treeParts(slot: number, K: number, level: PartLevel = "clump") {
