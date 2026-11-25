@@ -48,6 +48,7 @@ import { ROCK as KIND, SEA_ROW } from "./history";
 import { BIOMES as LAND, ZONE, coverOf } from "./biomes";
 import { type Grow, SPECIES, mixOf, pick } from "./plants";
 import { LANDFORM, landformAt, volcanoAt } from "./landforms";
+import { isForest, plantForests } from "./forest";
 import {
   type RockColumn,
   placeAt,
@@ -745,7 +746,12 @@ export function generateWindow(seed: number, x0: number, width: number) {
     rock: RockColumn[] = [],
     bio = new Int16Array(WW),
     cone = new Int16Array(WW),
-    flora = new Uint8Array(WW * H);
+    flora = new Uint8Array(WW * H),
+    // Crafted sprites' shades (art.ts), and the forest standing behind the
+    // land (forest.ts): (layer << 3) | tone, and its palette.
+    tone = new Uint8Array(WW * H),
+    back = new Uint8Array(WW * H),
+    backPal = new Uint8Array(WW * H);
   for (let i = 0; i < WW + 4; i++) ground[i] = groundAt(seed, X0 + i - 2);
   for (let x = 0; x < WW; x++) {
     const p = paramsAt(seed, X0 + x).p,
@@ -1050,6 +1056,26 @@ export function generateWindow(seed: number, x0: number, width: number) {
 
   // 5. Life on the surface: decided per world column, mixed by the blended
   // densities. Plants carry their column's biome, which sets their colours.
+  // The crafted forests first (they stand in front of anything planted
+  // after), then everything else, column by column.
+  plantForests({
+    seed,
+    X0,
+    WW,
+    H,
+    cells,
+    state,
+    flora,
+    tone,
+    back,
+    backPal,
+    surface,
+    bio,
+    colBiome,
+    mark: (i, cb) => {
+      state[i] = stateOf(0, cb);
+    },
+  });
   stamp = state;
   floraStamp = flora;
   for (let x = 0; x < WW; x++) {
@@ -1058,6 +1084,7 @@ export function generateWindow(seed: number, x0: number, width: number) {
       s = surface[x],
       si = s * WW + x,
       top = cells[si];
+    if (bio[x] >= 0 && isForest(bio[x])) continue;
     if (top === M.AIR || top === M.WATER || top === M.LAVA || top === M.ICE)
       continue;
     if (cells[si - WW] !== M.AIR) continue;
@@ -1272,8 +1299,16 @@ export function generateWindow(seed: number, x0: number, width: number) {
   // Cut the region out of the window.
   const outCells = new Uint8Array(width * H),
     outState = new Uint8Array(width * H),
-    outFlora = new Uint8Array(width * H);
+    outFlora = new Uint8Array(width * H),
+    outTone = new Uint8Array(width * H),
+    outBack = new Uint8Array(width * H),
+    outBackPal = new Uint8Array(width * H);
   for (let y = 0; y < H; y++) {
+    const a = y * WW + MARGIN,
+      b = a + width;
+    outTone.set(tone.subarray(a, b), y * width);
+    outBack.set(back.subarray(a, b), y * width);
+    outBackPal.set(backPal.subarray(a, b), y * width);
     outFlora.set(
       flora.subarray(y * WW + MARGIN, y * WW + MARGIN + width),
       y * width,
@@ -1292,6 +1327,11 @@ export function generateWindow(seed: number, x0: number, width: number) {
     state: outState,
     /** Per cell: 1 + the biome (biomes.ts) of the plant or ground cover there, or 0. */
     flora: outFlora,
+    /** Per cell: a crafted sprite's shade (1-6), or 0. */
+    tone: outTone,
+    /** Per cell: the forest behind the land, (layer << 3) | shade, or 0; and its palette. */
+    back: outBack,
+    backPal: outBackPal,
     surface: surface.slice(MARGIN, MARGIN + width),
   };
 }

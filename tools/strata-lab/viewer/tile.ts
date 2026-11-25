@@ -60,7 +60,7 @@ export function buildTile(seed: number, r: number): Tile {
     t1 = performance.now(),
     full = { motion: new Uint8Array(W * H), plants: new Uint8ClampedArray(W * H * 4) },
     lit = renderLand(
-      { W, H, cells: g.cells, state: g.state, flora: g.flora, surface: g.surface, x0, seed },
+      { W, H, cells: g.cells, state: g.state, flora: g.flora, tone: g.tone, back: g.back, backPal: g.backPal, surface: g.surface, x0, seed },
       full,
     ),
     t2 = performance.now(),

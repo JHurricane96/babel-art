@@ -108,7 +108,7 @@ if (out) {
   const zoom = Number(flag("--zoom") ?? 4),
     CW = 160,
     CH = 90,
-    rgba = renderLand({ W, H: WORLD_H, cells: g.cells, state: g.state, flora: g.flora, surface: g.surface, x0, seed }),
+    rgba = renderLand({ W, H: WORLD_H, cells: g.cells, state: g.state, flora: g.flora, tone: g.tone, back: g.back, backPal: g.backPal, surface: g.surface, x0, seed }),
     cy0 = Math.max(0, Math.min(WORLD_H - CH, y - CH / 2)),
     cx0 = X - CW / 2,
     PW = CW * zoom,

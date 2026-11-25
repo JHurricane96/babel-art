@@ -89,6 +89,36 @@ const GB = LAND.map((b) => {
     tintK: g ? g.tintK : 0,
   };
 });
+/** Ramps (rampOf) for each palette's leaf, grass, bark and bloom, and each rock kind, built on first use. */
+const RAMP_CACHE = new Map<number, number[][]>();
+function rampFor(pal: number, m: number): number[][] {
+  const key = pal * 64 + m;
+  let r = RAMP_CACHE.get(key);
+  if (r) return r;
+  const p = PAL[pal - 1],
+    base =
+      m === M.WOOD ? p.bark : m === M.GRASS ? p.grass : m === M.FLOWER ? p.bloom : p.leaf;
+  r = rampOf(base);
+  RAMP_CACHE.set(key, r);
+  return r;
+}
+const ROCK_RAMPS: number[][][] = [];
+const rockRamp = (kind: number) => (ROCK_RAMPS[kind] ??= rampOf(KIND[kind % KIND.length].map((v) => Math.min(1, v * 1.25))));
+const BACK_HAZE = [hex("#7d98ab"), hex("#a9c0d2")],
+  BACKC = [0, 0, 0];
+/** The colour of the forest behind the land at a cell (value from Land.back). */
+function backColor(v: number, pal: number) {
+  const layer = (v >> 3) & 3,
+    t = v & 7,
+    c = rampFor(pal, v & 32 ? M.WOOD : M.LEAF)[t - 1],
+    hz = BACK_HAZE[layer - 1] ?? BACK_HAZE[1],
+    k = layer === 1 ? 0.3 : 0.48;
+  BACKC[0] = c[0] + (hz[0] - c[0]) * k;
+  BACKC[1] = c[1] + (hz[1] - c[1]) * k;
+  BACKC[2] = c[2] + (hz[2] - c[2]) * k;
+  return BACKC;
+}
+
 /** Scratch colour for grass blades. */
 const BLADE = [0, 0, 0],
   SEED = hex("#e6d58e");
@@ -368,6 +398,11 @@ export interface Land {
   flora?: Uint8Array;
   /** Only shade rows [from, to) (the rest stay black): for stills that show part of the window. */
   rows?: [number, number];
+  /** Per cell: a crafted sprite's shade 1-6 (engine/strata/art.ts), or 0. */
+  tone?: Uint8Array;
+  /** Per cell: the forest behind the land, (wood ? 32 : 0) | (layer << 3) | shade; and its palette. */
+  back?: Uint8Array;
+  backPal?: Uint8Array;
   /** An alternative look to compare ("study": fewer details, layered misty depth, a strong land shape, a small unified palette). */
   style?: string;
 }
@@ -439,6 +474,8 @@ export const MOTION = {
   FALLS: 5,
   LAVA: 6,
   WATER_TOP: 7,
+  /** Baked (the forest behind the land), with plants swaying over it as over the sky. */
+  BACKDROP: 8,
 } as const;
 
 /**
@@ -536,7 +573,8 @@ function swayField(
         nX++;
       }
     }
-    if (rope || held === 0 || held > 0.3 * comp.length) continue; // stays still: all 1s
+    // Trees and anything big stand still; grass, flowers and ferns sway.
+    if (rope || held === 0 || held > 0.3 * comp.length || comp.length > 260) continue; // stays still: all 1s
     const baseX = Math.round(sumX / nX);
     for (const i of comp) {
       const x = i % W,
@@ -551,7 +589,7 @@ function swayField(
 /** Render land to RGBA, one pixel per cell. */
 export const renderTimes: Record<string, number> = {};
 export function renderLand(
-  { W, H, cells, state, surface, x0, seed = 0, flora, rows, style }: Land,
+  { W, H, cells, state, surface, x0, seed = 0, flora, rows, style, tone, back, backPal }: Land,
   layers?: MotionLayers,
 ) {
   let tt = performance.now();
@@ -858,6 +896,13 @@ export function renderLand(
           cg += (hz2[1] - cg) * k;
           cb += (hz2[2] - cb) * k;
         }
+        // The forest standing behind the land.
+        if (back && back[i]) {
+          const bc = backColor(back[i], backPal![i]);
+          cr = bc[0];
+          cg = bc[1];
+          cb = bc[2];
+        }
         lr = lg = lb = 1;
       } else if (m === M.WATER) {
         // Water: tinted, darker with depth, a bright line where it meets the air.
@@ -1049,6 +1094,15 @@ export function renderLand(
                         : m === M.SOIL || (m === M.SAND && pal.salt)
                           ? pal.earth
                           : null;
+          // A crafted sprite's cell: its shade on its colour's ramp.
+          const toned = tone ? tone[i] : 0,
+            tonedC = !toned
+              ? null
+              : m === M.ROCK
+                ? rockRamp(bandOf(st))[toned - 1]
+                : fl
+                  ? rampFor(fl, m)[toned - 1]
+                  : null;
           // Scree and sand are broken rock: they take the rock's colour.
           let loose: number[] | null = null;
           if (m === M.GRAVEL || (m === M.SAND && !(pal && pal.salt))) {
@@ -1088,6 +1142,7 @@ export function renderLand(
             }
           }
           const c =
+            tonedC ??
             tinted ??
             loose ??
             (m === M.ROCK
@@ -1141,10 +1196,18 @@ export function renderLand(
               nW = 0,
               nE = 0,
               edge = 0;
-            if (skyCell && (SILHOUETTE[m] || m === M.GRASS || m === M.FLOWER)) {
+            if (skyCell && (SILHOUETTE[m] || m === M.GRASS || m === M.FLOWER || tonedC)) {
               // A plant in the open: daylight from above, its own shade under
-              // its leaves, in two steps.
-              const k = y > 0 && isOpen(cells[i - W]) ? (study ? 1 : 1.04) : study ? 0.7 : 0.84;
+              // its leaves, in two steps (a crafted sprite carries its own).
+              const k = tonedC
+                ? 1
+                : y > 0 && isOpen(cells[i - W])
+                  ? study
+                    ? 1
+                    : 1.04
+                  : study
+                    ? 0.7
+                    : 0.84;
               lr = k * DAY[0];
               lg = k * DAY[1];
               lb = k * DAY[2];
@@ -1214,7 +1277,15 @@ export function renderLand(
           layers.plants[o + 3] = sway!.h[i];
           rgba[o + 3] = sway!.ax[i];
           c = MOTION.SKY;
-        } else if (m === M.AIR && skyCell) c = MOTION.SKY;
+          // Over the forest behind: that shows where the plant sways away.
+          if (back && back[i]) {
+            const bc = backColor(back[i], backPal![i]);
+            rgba[o] = bc[0] * 255;
+            rgba[o + 1] = bc[1] * 255;
+            rgba[o + 2] = bc[2] * 255;
+            c = MOTION.BACKDROP;
+          }
+        } else if (m === M.AIR && skyCell) c = back && back[i] ? MOTION.BACKDROP : MOTION.SKY;
         // Water under the open sky glints and shimmers; in a cave no sunlight
         // reaches it, and under ice it is held, so there it lies still.
         else if (m === M.WATER && skyCell && !frozen[x])
@@ -1229,6 +1300,32 @@ export function renderLand(
   if (study) unify(rgba, W, yFrom, yTo, x0);
   lap("shade");
   return rgba;
+}
+
+// ---- Colour ramps for crafted sprites ------------------------------------------
+
+/**
+ * Six shades of a colour for sprites, darkest first: lightness steps around
+ * the colour (which sits at tone 3-4), shadows shifted cooler and toward
+ * blue-violet, highlights warmer and toward yellow, chroma highest in the
+ * middle of the ramp. The way pixel artists build ramps.
+ */
+export function rampOf(base: number[]): number[][] {
+  const [L, a, b] = oklab(toLin(base[0]), toLin(base[1]), toLin(base[2])),
+    steps = [-0.2, -0.12, -0.05, 0.02, 0.09, 0.17],
+    out: number[][] = [];
+  for (let k = 0; k < 6; k++) {
+    const s = steps[k],
+      warm = s * 0.35,
+      chroma = k === 0 ? 0.8 : k === 5 ? 0.75 : 1.05,
+      [r, g, bb] = fromOklab(
+        Math.min(0.97, Math.max(0.08, L + s)),
+        a * chroma + warm * 0.15,
+        b * chroma + warm * 0.55,
+      );
+    out.push([r, g, bb].map((v) => toSrgb(Math.min(1, Math.max(0, v)))));
+  }
+  return out;
 }
 
 // ---- The study look's palette: graded toward the sky, then snapped ------------

@@ -110,6 +110,7 @@ void main() {
   uint m = texelFetch(uMotion, l, 0).r;
   vec3 c;
   if (m == 1u) c = sky(a, texelFetch(uSurf, ivec2(l.x, 1), 0).r - y, t, dev);
+  else if (m == 8u) c = texelFetch(uBg, l, 0).rgb;
   else {
     c = texelFetch(uBg, l, 0).rgb;
     if (m == 7u) {
@@ -131,7 +132,7 @@ void main() {
   // base (height in the plant layer's alpha, the base's x in the colour
   // layer's). Gather: look along the row for a plant cell whose own sway
   // lands it here.
-  if (m == 1u) {
+  if (m == 1u || m == 8u) {
     for (int k = 0; k < 7; k++) {
       int d = (k + 1) / 2 * ((k & 1) == 1 ? -1 : 1), sx = l.x - d;
       if (sx < 0 || sx >= uTileW) continue;

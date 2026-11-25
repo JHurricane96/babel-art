@@ -518,7 +518,7 @@ export const SPECIES: Species[] = [
   sp("stone pine", umbrella(12, 18, 8, 12, 3.5), 5, { leaf: "#2f4a2a", bark: "#7a5038" }),
   sp("cypress", column(14, 26, 2), 7, { leaf: "#22382a", bark: "#5a4030" }),
   sp("poplar", column(18, 30, 3), 5, { leaf: "#6a8a3a", bark: "#8a8070" }),
-  sp("oak", round(7, 11, 6, 9, 1.35, 1.1), 5),
+  sp("oak", round(7, 11, 6, 9, 1.35, 1.1), 5, { leaf: "#4a7428" }),
   sp("beech", round(8, 12, 6, 8, 1.1, 1.25), 5, { bark: "#8a8478" }),
   sp("maple", round(6, 9, 5, 7, 1.2, 1), 5),
   sp("teak", round(10, 15, 4, 6, 1.2, 0.9), 5),
