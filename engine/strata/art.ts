@@ -102,6 +102,8 @@ export interface CrownStyle {
   speckle: number;
   holes: number;
   needles?: boolean;
+  /** How ragged each clump's outline is (1 = usual; beech smoother, maple rougher). */
+  rag?: number;
 }
 
 /**
@@ -155,7 +157,7 @@ function clump(c: Canvas, cx: number, cy: number, r: number, pos: number, st: Cr
     // A ragged outline: the radius wobbles around the clump (a table by angle).
     lobes = 5 + Math.floor(R() * 4),
     phase = R() * 6.28,
-    rag = 0.12 + 0.08 * R();
+    rag = (0.12 + 0.08 * R()) * (st.rag ?? 1);
   for (let k = 0; k < 32; k++) {
     const a = (k / 32) * Math.PI * 2 - Math.PI;
     EDGE[k] = r * (1 + rag * Math.sin(lobes * a + phase) + rag * 0.5 * Math.sin(2.3 * lobes * a));
@@ -260,70 +262,151 @@ export function branch(c: Canvas, x0: number, y0: number, x1: number, y1: number
 
 export interface TreeKind {
   name: string;
-  /** Height range, trunk width at foot and top, crown size relative to height. */
+  /** How it grows: its silhouette. */
+  form: "oak" | "beech" | "maple" | "birch" | "hazel";
+  /** Height range; trunk width at foot and top. */
   h0: number;
   h1: number;
   w0: number;
   w1: number;
-  crownW: number;
-  crownH: number;
-  /** Where the crown starts, as a fraction of the height. */
-  crownBase: number;
   style: CrownStyle;
   bark: BarkStyle;
-  /** Main boughs reaching into the crown. */
-  boughs: number;
-  /** A cone of tiers (conifers) instead of a heap of clumps. */
-  conifer?: boolean;
 }
 
 export const TREES: Record<string, TreeKind> = {
   oak: {
-    name: "oak", h0: 52, h1: 80, w0: 6, w1: 4, crownW: 0.95, crownH: 0.55, crownBase: 0.35,
-    style: { r0: 6, r1: 11, density: 1.5, speckle: 0.5, holes: 0.3 },
-    bark: { cracks: 0.7 }, boughs: 4,
+    name: "oak", form: "oak", h0: 50, h1: 76, w0: 7, w1: 4,
+    style: { r0: 5, r1: 9, density: 1.6, speckle: 0.5, holes: 0.3, rag: 1.2 },
+    bark: { cracks: 0.8 },
   },
   beech: {
-    name: "beech", h0: 62, h1: 92, w0: 5, w1: 3, crownW: 0.62, crownH: 0.62, crownBase: 0.3,
-    style: { r0: 6, r1: 10, density: 1.6, speckle: 0.4, holes: 0.2 },
-    bark: { cracks: 0.1 }, boughs: 3,
+    name: "beech", form: "beech", h0: 66, h1: 96, w0: 5, w1: 3,
+    style: { r0: 6, r1: 10, density: 1.7, speckle: 0.35, holes: 0.15, rag: 0.6 },
+    bark: { cracks: 0.05 },
   },
   maple: {
-    name: "maple", h0: 48, h1: 70, w0: 4, w1: 3, crownW: 0.75, crownH: 0.6, crownBase: 0.32,
-    style: { r0: 5, r1: 9, density: 1.7, speckle: 0.45, holes: 0.2 },
-    bark: { cracks: 0.5 }, boughs: 3,
+    name: "maple", form: "maple", h0: 48, h1: 70, w0: 4, w1: 3,
+    style: { r0: 5, r1: 8, density: 1.8, speckle: 0.45, holes: 0.2, rag: 1.5 },
+    bark: { cracks: 0.5 },
   },
   birch: {
-    name: "birch", h0: 50, h1: 76, w0: 3, w1: 2, crownW: 0.38, crownH: 0.6, crownBase: 0.35,
-    style: { r0: 4, r1: 6, density: 1.3, speckle: 0.7, holes: 0.9 },
-    bark: { marks: true, cracks: 0 }, boughs: 2,
+    name: "birch", form: "birch", h0: 52, h1: 78, w0: 3, w1: 2,
+    style: { r0: 3, r1: 5, density: 1.2, speckle: 0.7, holes: 1.2, rag: 1.1 },
+    bark: { marks: true, cracks: 0 },
   },
   hazel: {
-    name: "hazel", h0: 12, h1: 18, w0: 1, w1: 1, crownW: 1.4, crownH: 0.8, crownBase: 0.2,
-    style: { r0: 3, r1: 5, density: 1.8, speckle: 0.4, holes: 0.1 },
-    bark: { cracks: 0 }, boughs: 2,
+    name: "hazel", form: "hazel", h0: 14, h1: 22, w0: 1, w1: 1,
+    style: { r0: 3, r1: 5, density: 1.7, speckle: 0.4, holes: 0.1 },
+    bark: { cracks: 0 },
   },
 };
 
-/** A tree standing on the ground at (x, ground) (the ground row): trunk, boughs, crown. */
+/** A limb: a crooked bough in two segments, thick at its root, lit on top. Returns its end. */
+function limb(c: Canvas, x0: number, y0: number, ang: number, len: number, w: number) {
+  const R = c.R,
+    kink = (R() - 0.5) * 0.7,
+    mx = x0 + Math.sin(ang) * len * 0.5,
+    my = y0 - Math.cos(ang) * len * 0.5,
+    ex = mx + Math.sin(ang + kink) * len * 0.5,
+    ey = my - Math.cos(ang + kink) * len * 0.5;
+  branch(c, x0, y0, mx, my, w);
+  branch(c, mx, my, ex, ey, Math.max(1, w - 1));
+  return { x: ex, y: ey };
+}
+
+/** Hanging fringes under a birch's crown: thin strands of leaves. */
+function fringe(c: Canvas, cx: number, cy: number, rx: number, ry: number) {
+  const R = c.R,
+    n = Math.round(rx * 1.4);
+  for (let k = 0; k < n; k++) {
+    const u = (k / Math.max(1, n - 1)) * 2 - 1,
+      x = Math.round(cx + u * rx * 0.95),
+      y0 = Math.round(cy + ry * Math.sqrt(Math.max(0, 1 - u * u)) * 0.8),
+      len = 3 + Math.floor(R() * (5 + 5 * (1 - Math.abs(u))));
+    for (let d = 0; d < len; d++) if (R() < 0.85) c.set(x + (d > len * 0.6 ? Math.sign(u) : 0), y0 + d, M.LEAF, d === len - 1 ? 2 : 3 + (d % 2));
+  }
+}
+
+/** A tree standing on the ground at (x, ground) (the ground row), grown in its kind's form. */
 export function tree(c: Canvas, kind: TreeKind, x: number, ground: number, scale = 1) {
   const R = c.R,
     h = Math.round((kind.h0 + (kind.h1 - kind.h0) * R()) * scale),
-    lean = (R() - 0.5) * h * 0.08,
-    cw = h * kind.crownW * (0.85 + 0.3 * R()),
-    ch = h * kind.crownH * (0.85 + 0.3 * R()),
-    crownBottom = ground - h * kind.crownBase,
-    cy = crownBottom - ch / 2,
-    trunkTop = Math.round(h - kind.crownBase * h + ch * 0.25);
-  const top = trunk(c, x, ground - 1, Math.min(h, trunkTop), kind.w0 * scale, kind.w1 * scale, lean, kind.bark);
-  for (let k = 0; k < kind.boughs; k++) {
-    const side = k % 2 ? 1 : -1,
-      by = crownBottom + (R() * 0.3 - 0.1) * ch,
-      ex = top.x + side * cw * (0.2 + 0.25 * R()),
-      ey = cy - ch * (0.1 + 0.3 * R());
-    branch(c, top.x + (lean > 0 ? 0 : 0), Math.min(by, ground - 6), ex, ey, Math.max(1, Math.round(kind.w1 * scale * 0.8)));
+    w0 = kind.w0 * scale,
+    w1 = kind.w1 * scale,
+    st = kind.style;
+  switch (kind.form) {
+    case "oak": {
+      // A short, stout, crooked trunk splitting into gnarled limbs, each
+      // carrying its own mass of leaves: a wide, broken crown.
+      const th = Math.round(h * (0.3 + 0.1 * R())),
+        top = trunk(c, x, ground - 1, th, w0, w1 + 1, (R() - 0.5) * 4, kind.bark),
+        n = 4 + Math.floor(R() * 2),
+        lobes: { x: number; y: number; r: number }[] = [];
+      for (let k = 0; k < n; k++) {
+        const side = n === 1 ? 0 : (k / (n - 1)) * 2 - 1,
+          ang = side * (0.95 + 0.3 * R()) + (R() - 0.5) * 0.2,
+          end = limb(c, top.x, top.y, ang, h * (0.4 + 0.16 * R()) * (1 - 0.2 * Math.abs(side)), Math.max(2, Math.round(w1))),
+          r = h * (0.15 + 0.05 * R());
+        lobes.push({ x: end.x, y: end.y - r * 0.2, r });
+      }
+      lobes.push({ x: top.x + (R() - 0.5) * 6, y: top.y - h * 0.5, r: h * 0.16 });
+      // Higher lobes are farther back: draw them first.
+      lobes.sort((a, b) => a.y - b.y);
+      for (const l of lobes) crown(c, l.x, l.y, l.r * 1.15, l.r * 0.72, st);
+      break;
+    }
+    case "beech": {
+      // A tall smooth grey column into a tall, smooth dome.
+      const th = Math.round(h * 0.62),
+        top = trunk(c, x, ground - 1, th, w0, w1, (R() - 0.5) * 2, kind.bark),
+        rx = h * (0.24 + 0.04 * R()),
+        ry = h * (0.33 + 0.04 * R()),
+        cy = ground - h + ry;
+      for (const s of [-1, 1]) limb(c, top.x, top.y + 6, s * 0.5, h * 0.25, Math.max(1, Math.round(w1 - 1)));
+      crown(c, top.x, cy, rx, ry, st);
+      crown(c, top.x + (R() - 0.5) * rx * 0.6, cy - ry * 0.55, rx * 0.55, ry * 0.4, st);
+      break;
+    }
+    case "maple": {
+      // A round, ragged crown, with lower lobes either side.
+      const th = Math.round(h * 0.42),
+        top = trunk(c, x, ground - 1, th, w0, w1, (R() - 0.5) * 3, kind.bark),
+        r = h * (0.27 + 0.04 * R()),
+        cy = ground - h + r;
+      for (const s of [-1, 1]) {
+        const e = limb(c, top.x, top.y, s * (0.7 + 0.2 * R()), h * 0.28, Math.max(1, Math.round(w1)));
+        crown(c, e.x, e.y + r * 0.1, r * 0.62, r * 0.5, st);
+      }
+      crown(c, top.x, cy, r * 1.05, r * 0.92, st);
+      break;
+    }
+    case "birch": {
+      // One to three slender stems, a narrow airy crown with hanging fringes.
+      const stems = R() < 0.45 ? 1 + Math.floor(R() * 3) : 1;
+      for (let k = 0; k < stems; k++) {
+        const hh = Math.round(h * (1 - 0.13 * k)),
+          dx = k === 0 ? 0 : (k % 2 ? -1 : 1) * (2 + Math.floor(R() * 2)),
+          lean = dx * 2.2 + (R() - 0.5) * 3,
+          top = trunk(c, x + dx, ground - 1, Math.round(hh * 0.8), w0, w1, lean, kind.bark),
+          rx = hh * (0.11 + 0.03 * R()),
+          ry = hh * (0.3 + 0.04 * R()),
+          cy = ground - hh + ry;
+        crown(c, top.x, cy, rx, ry, st);
+        fringe(c, top.x, cy, rx, ry);
+      }
+      break;
+    }
+    case "hazel": {
+      // A vase of thin stems from one stool, leafy toward their tips.
+      const n = 4 + Math.floor(R() * 3);
+      for (let k = 0; k < n; k++) {
+        const ang = ((k / (n - 1)) * 2 - 1) * 0.55,
+          e = limb(c, x, ground - 1, ang, h * (0.75 + 0.3 * R()), 1);
+        crown(c, e.x, e.y + 2, 4 + R() * 2, 3 + R() * 1.5, st);
+      }
+      break;
+    }
   }
-  crown(c, top.x, cy, cw / 2, ch / 2, kind.style);
   return h;
 }
 

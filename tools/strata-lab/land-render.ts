@@ -97,7 +97,17 @@ function rampFor(pal: number, m: number): number[][] {
   if (r) return r;
   const p = PAL[pal - 1],
     base =
-      m === M.WOOD ? p.bark : m === M.GRASS ? p.grass : m === M.FLOWER ? p.bloom : p.leaf;
+      m === M.WOOD
+        ? p.bark
+        : m === M.GRASS
+          ? p.grass
+          : m === M.FLOWER
+            ? p.bloom
+            : m === M.SOIL
+              ? p.earth
+              : m === M.MOSS
+                ? p.moss
+                : p.leaf;
   r = rampOf(base);
   RAMP_CACHE.set(key, r);
   return r;
@@ -754,6 +764,25 @@ export function renderLand(
     for (let x = W - 1; x >= 0; x--) if (colB[x] >= 0 && colB[x] !== -1) last = colB[x];
       else if (colB[x] < 0) colB[x] = last;
   }
+  // Under a crafted canopy the woods are in shade, but for flecks of sun:
+  // from a little under the canopy's top down to the forest floor.
+  const shadeTop = new Int32Array(W).fill(1 << 30);
+  if (tone)
+    for (let x = 0; x < W; x++)
+      for (let y = Math.max(0, surface[x] - 140); y < surface[x]; y++) {
+        const i = y * W + x;
+        if (cells[i] === M.LEAF && tone[i]) {
+          shadeTop[x] = y + 8;
+          break;
+        }
+      }
+  const SHADE = 0.7,
+    shadeAt = (x: number, y: number, wx: number) =>
+      y < shadeTop[x] || y > surface[x] + 3
+        ? 1
+        : grain((wx >> 1) + 777, (y >> 1) + 777) % 13 === 0
+          ? 1
+          : SHADE;
   // The ground's colours, smoothed over about 50 columns, so biome edges
   // (which dither column by column) blend instead of striping the rock.
   const G = Array.from({ length: W }, () => ({
@@ -1260,10 +1289,11 @@ export function renderLand(
           }
         }
       }
-      const o = i * 4;
-      rgba[o] = cr * lr * 255;
-      rgba[o + 1] = cg * lg * 255;
-      rgba[o + 2] = cb * lb * 255;
+      const o = i * 4,
+        sh = shadeTop[x] < 1 << 30 ? shadeAt(x, y, wx) : 1;
+      rgba[o] = cr * lr * sh * 255;
+      rgba[o + 1] = cg * lg * sh * 255;
+      rgba[o + 2] = cb * lb * sh * 255;
       rgba[o + 3] = 255;
       if (layers) {
         let c: number = MOTION.STILL;
@@ -1277,15 +1307,17 @@ export function renderLand(
           layers.plants[o + 3] = sway!.h[i];
           rgba[o + 3] = sway!.ax[i];
           c = MOTION.SKY;
-          // Over the forest behind: that shows where the plant sways away.
-          if (back && back[i]) {
-            const bc = backColor(back[i], backPal![i]);
-            rgba[o] = bc[0] * 255;
-            rgba[o + 1] = bc[1] * 255;
-            rgba[o + 2] = bc[2] * 255;
+          // Over the forest behind, or in the shade of the canopy: that
+          // shows where the plant sways away.
+          if ((back && back[i]) || sh < 1) {
+            const bc = back && back[i] ? backColor(back[i], backPal![i]) : SKY[1];
+            rgba[o] = bc[0] * sh * 255;
+            rgba[o + 1] = bc[1] * sh * 255;
+            rgba[o + 2] = bc[2] * sh * 255;
             c = MOTION.BACKDROP;
           }
-        } else if (m === M.AIR && skyCell) c = back && back[i] ? MOTION.BACKDROP : MOTION.SKY;
+        } else if (m === M.AIR && skyCell)
+          c = (back && back[i]) || sh < 1 ? MOTION.BACKDROP : MOTION.SKY;
         // Water under the open sky glints and shimmers; in a cave no sunlight
         // reaches it, and under ice it is held, so there it lies still.
         else if (m === M.WATER && skyCell && !frozen[x])

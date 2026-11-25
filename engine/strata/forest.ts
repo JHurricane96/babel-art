@@ -195,6 +195,47 @@ export function plantForests(w: ForestWin) {
     standable = (x: number) => groundOk(x) && cells[(surface[x] - 1) * WW + x] === M.AIR,
     slope = (x: number) => Math.abs(ground(x + 3) - ground(x - 3));
 
+  // How far each column is from the edge of the woods: trees thin out and
+  // shrink toward it, and scrub thickens there.
+  const edge = new Float32Array(WW).fill(999);
+  let last = -999;
+  for (let x = 0; x < WW; x++) {
+    if (!forestAt(x)) last = x;
+    edge[x] = x - last;
+  }
+  last = 9999;
+  for (let x = WW - 1; x >= 0; x--) {
+    if (!forestAt(x)) last = x;
+    edge[x] = Math.min(edge[x], last - x);
+  }
+  const ramp = (e: number, a: number, b: number) => Math.min(1, Math.max(0, (e - a) / (b - a)));
+
+  // 0. The forest floor: leaf litter over the earth, fallen leaves in it,
+  // moss in patches; no turf under the trees.
+  for (let x = 0; x < WW; x++) {
+    if (!forestAt(x) || !groundOk(x)) continue;
+    const wx = X0 + x,
+      inside = ramp(edge[x], 4, 30);
+    for (let d = 0; d < 3; d++) {
+      const y = surface[x] + d,
+        i = y * WW + x,
+        m = cells[i];
+      if (m !== M.GRASS && m !== M.MOSS && m !== M.SOIL) continue;
+      const h = hash3(wx, y, seed + 71),
+        moss = hash3(Math.floor(wx / 9), 72, seed) < 0.25;
+      // Near the edge of the woods the grass comes back.
+      if (hash3(wx, 73, seed) > inside) continue;
+      if (d === 0 && h < 0.1) {
+        cells[i] = M.LEAF;
+        w.tone[i] = 3 + Math.floor(h * 30);
+      } else {
+        cells[i] = d === 0 && moss ? M.MOSS : M.SOIL;
+        w.tone[i] = d === 0 ? 2 + Math.floor(hash3(wx, y, seed + 74) * 3.99) : d === 1 ? 2 + Math.floor(h * 2) : 1 + Math.floor(h * 2);
+      }
+      w.flora[i] = bio[x] + 1;
+    }
+  }
+
   // 1. Ground cover, every few columns.
   for (let x = 2; x < WW - 2; x++) {
     const f = forestAt(x);
@@ -223,7 +264,8 @@ export function plantForests(w: ForestWin) {
     const f = forestAt(x);
     if (!f || !standable(x) || slope(x) > 6) continue;
     const wx = X0 + x;
-    if (hash3(wx, 53, seed) >= f.understory) continue;
+    // Scrub thickens along the edge of the woods.
+    if (hash3(wx, 53, seed) >= f.understory * (1 + 3 * (1 - ramp(edge[x], 0, 40)))) continue;
     const R = rnd(wx, 54),
       r = R(),
       { c, flush } = plantCanvas(w, r < 0.55 ? speciesPal("bush", bio[x]) : bio[x] + 1, R);
@@ -238,29 +280,30 @@ export function plantForests(w: ForestWin) {
   const placeTrees = (
     spacingScale: number,
     salt: number,
-    draw: (x: number, kind: TreeKind, pal: number, R: () => number) => void,
+    draw: (x: number, kind: TreeKind, pal: number, R: () => number, grow: number) => void,
   ) => {
-    const list: { x: number; size: number; kind: TreeKind; pal: number; R: () => number }[] = [];
+    const list: { x: number; size: number; kind: TreeKind; pal: number; R: () => number; grow: number }[] = [];
     const step = 6;
     for (let g = Math.floor((X0 - 40) / step); g <= Math.floor((X0 + WW + 40) / step); g++) {
       const wx = g * step + Math.floor(hash3(g, salt, seed) * step),
         x = wx - X0;
       const f = forestAt(x);
       if (!f) continue;
-      // Thin the grid to this forest's spacing.
-      if (hash3(g, salt + 1, seed) >= (step / f.spacing) * spacingScale) continue;
+      // Thin the grid to this forest's spacing, and toward the woods' edge.
+      const thin = salt === 55 ? ramp(edge[x], 3, 45) : ramp(edge[x], 25, 100);
+      if (hash3(g, salt + 1, seed) >= (step / f.spacing) * spacingScale * thin) continue;
       // (Ground cover in front of a trunk is fine: the trunk goes behind it.)
       if (!groundOk(x) || slope(x) > 9) continue;
       const R = rnd(wx, salt + 2),
         [kindName, , sp] = pick(f.trees, R());
-      list.push({ x, size: R(), kind: TREES[kindName as string], pal: speciesPal(sp as string | null, bio[x]), R });
+      list.push({ x, size: R(), kind: TREES[kindName as string], pal: speciesPal(sp as string | null, bio[x]), R, grow: 0.72 + 0.28 * ramp(edge[x], 8, 70) });
     }
     list.sort((a, b) => a.size - b.size);
-    for (const t of list) draw(t.x, t.kind, t.pal, t.R);
+    for (const t of list) draw(t.x, t.kind, t.pal, t.R, t.grow);
   };
-  placeTrees(1, 55, (x, kind, pal, R) => {
+  placeTrees(1, 55, (x, kind, pal, R, grow) => {
     const { c, flush } = plantCanvas(w, pal, R);
-    tree(c, kind, x, surface[x], 0.85 + 0.3 * R());
+    tree(c, kind, x, surface[x], (0.85 + 0.3 * R()) * grow);
     flush();
   });
 
@@ -269,9 +312,9 @@ export function plantForests(w: ForestWin) {
     [1, 0.82, 61],
     [2, 0.66, 67],
   ] as const)
-    placeTrees(1.3, salt, (x, kind, pal, R) => {
+    placeTrees(1.3, salt, (x, kind, pal, R, grow) => {
       const { c, flush } = backCanvas(w, pal, layer, R);
-      tree(c, kind, x, surface[x] + Math.round(6 * scale), scale * (0.85 + 0.3 * R()));
+      tree(c, kind, x, surface[x] + Math.round(6 * scale), scale * (0.85 + 0.3 * R()) * grow);
       flush();
     });
 }
