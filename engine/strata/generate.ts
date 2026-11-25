@@ -803,14 +803,21 @@ export function generateWindow(seed: number, x0: number, width: number) {
       // Snow lies all over in the hard cold and in drifts and patches where
       // it is only just freezing.
       cold = warmthAt(seed, wx, s),
-      snowy =
-        !bed &&
-        cold < -1 &&
-        (cold < -10 || fbm1(wx / 90, seed + 545, 3) < 0.3 + (-1 - cold) / 30),
+      // How much snow lies here, 0..1: all of it in the hard cold; in
+      // patches where it is only just freezing, thinning out at their edges.
+      snowAmt = bed || cold >= -1
+        ? 0
+        : cold < -10
+          ? 1
+          : Math.min(1, Math.max(0, (0.3 + (-1 - cold) / 30 - fbm1(wx / 140, seed + 545, 3)) / 0.2)),
+      snowy = snowAmt > 0,
       bedrock = H - 22 - Math.floor(10 * fbm1(wx / 40, seed + 9)),
       // Snow lies thick enough to read from across a room, deeper in the
       // hard cold; turf is a few cells deep where grass or moss grows.
-      snowDepth = 4 + Math.round(4 * fbm1(wx / 40, seed + 546, 2)) + (cold < -10 ? 2 : 0),
+      snowDepth = Math.max(
+        1,
+        Math.round(snowAmt * (4 + 4 * fbm1(wx / 40, seed + 546, 2) + (cold < -10 ? 2 : 0))),
+      ),
       turf =
         cover.top === M.GRASS || cover.top === M.MOSS
           ? 2 + Math.round(fbm1(wx / 30, seed + 547, 2))
@@ -1120,9 +1127,14 @@ export function generateWindow(seed: number, x0: number, width: number) {
       put(cells, WW, x, s - stem - 1, M.FLOWER);
       if (R() < 0.4) put(cells, WW, x + 1, s - stem - 1, M.FLOWER);
     } else if (top === M.GRASS && hash3(wx, 33, seed) < grass.tufts) {
-      // Tufts of grass along the skyline, as tall as the biome grows them.
-      const tall = 1 + Math.floor(hash3(wx, 34, seed) * grass.tall);
-      for (let k = 1; k <= tall; k++) put(cells, WW, x, s - k, M.GRASS);
+      // Grass in tussocks: blades rise and fall in clumps along the
+      // skyline, the tall ones bending over at the tip, all one way in a
+      // stretch (the wind's), as tall as the biome grows them.
+      const clump = smoothstep(0.3, 0.7, fbm1(wx / 7, seed + 35, 2)),
+        tall = Math.max(1, Math.round(grass.tall * (0.35 + 0.65 * clump) * (0.75 + 0.5 * hash3(wx, 34, seed)))),
+        lean = fbm1(wx / 300, seed + 36, 2) < 0.5 ? -1 : 1;
+      for (let k = 1; k <= tall; k++)
+        put(cells, WW, x + (tall >= 3 && k === tall ? lean : 0), s - k, M.GRASS);
     }
   }
   stamp = null;
@@ -1312,11 +1324,26 @@ function volcanoes(
     const v = volcanoAt(w, seed, X0 + x);
     if (!v || seen.has(Math.round(v.cx))) continue;
     seen.add(Math.round(v.cx));
-    const lo = Math.floor(v.cx - v.half * 1.3),
-      hi = Math.ceil(v.cx + v.half * 1.3);
+    // The crater's rims: the highest ground either side of its centre.
+    const crest = (d: number) => {
+      let at = Math.round(v.cx),
+        best = groundRow(seed, at);
+      for (let k = 1; k <= v.half * 1.8; k++) {
+        const r = groundRow(seed, Math.round(v.cx) + d * k);
+        if (r < best) {
+          best = r;
+          at = Math.round(v.cx) + d * k;
+        }
+      }
+      return { at, row: best };
+    };
+    const L = crest(-1),
+      R = crest(1),
+      lo = L.at,
+      hi = R.at;
     if (hi < X0 || lo >= X0 + WW) continue;
-    // The crater fills to a little under its lower rim.
-    const rim = Math.max(groundRow(seed, lo), groundRow(seed, hi)) + 2,
+    // The crater fills to a little under its lower rim, between the rims only.
+    const rim = Math.max(L.row, R.row) + 2,
       wet = rainAt(seed, v.cx) > 550,
       fill = v.active ? M.LAVA : wet ? (warmthAt(seed, v.cx, rim) > 0 ? M.WATER : M.ICE) : -1;
     if (fill >= 0)
@@ -1351,10 +1378,12 @@ function volcanoes(
 }
 
 /**
- * Waterfalls: in wet country, a stream runs across high ground to the lip
- * of a cliff and falls down the face into a pool (or spray, where the
- * foot is uneven). At most one per stretch of 120 world columns, at the
- * first tall enough drop in it.
+ * Waterfalls: in wet country, rain soaked into a big massif comes out as a
+ * spring from a dark mouth in a cliff face, a few rows under its lip, falls
+ * down the face into a pool at its foot, and runs on as a stream downhill
+ * until it reaches a river, lake or the sea, or ends in a pond. Decided per
+ * stretch of 160 world columns from the world's ground (not the window's),
+ * so every window agrees.
  */
 function springs(
   cells: Uint8Array,
@@ -1364,64 +1393,104 @@ function springs(
   seed: number,
   surface: Int16Array,
 ) {
-  let bucket = -1;
-  for (let x = 8; x < WW - 8; x++) {
-    const wx = X0 + x,
-      b = Math.floor(wx / 120);
-    if (b === bucket) continue;
-    for (const dir of [1, -1]) {
-      let s0 = surface[x];
-      const far = surface[x + 4 * dir];
-      if (far - s0 < 36) continue;
-      const P = rainAt(seed, wx),
-        chance = Math.min(0.5, Math.max(0, (P - 700) / 900));
-      bucket = b;
-      if (hash3(b, 41, seed) >= chance || warmthAt(seed, wx, s0) < 1) break;
-      // Climb back from the drop to the real lip of the cliff.
-      let lip = x;
-      while (lip > 9 && lip < WW - 9 && surface[lip - dir] < surface[lip] - 2) lip -= dir;
-      s0 = surface[lip];
-      // A stream runs across the top toward the lip, in a shallow channel.
-      const len = 14 + Math.floor(hash3(b, 42, seed) * 24);
-      for (let k = 0; k <= len; k++) {
-        const sc = lip - k * dir;
-        if (sc <= 0 || sc >= WW - 1 || Math.abs(surface[sc] - s0) > 3) break;
-        for (let d = 0; d < 2; d++) cells[(surface[sc] + d) * WW + sc] = M.STREAM;
-        cells[(surface[sc] + 2) * WW + sc] = M.GRAVEL;
-      }
-      // Over the lip and down the face, column by column, five cells wide.
-      let c = lip + dir,
-        y = s0;
-      for (let step = 0; step < 12 && c > 0 && c < WW - 1; step++) {
-        const foot = surface[c];
-        for (; y < foot && y < H - 30; y++)
-          for (let k = -1; k < 4; k++) {
-            const cc = c + k * dir;
-            if (cc <= 0 || cc >= WW - 1) continue;
-            const i = y * WW + cc;
-            if (cells[i] === M.AIR && y < surface[cc]) cells[i] = M.FALLS;
-          }
-        if (surface[c + dir] - foot <= 2) break;
-        c += dir;
-      }
-      // Where it lands: a pool if the ground is flat there, else spray.
-      let flat = true;
-      for (let k = -1; k <= 6 && flat; k++) {
-        const pc = c + k * dir;
-        if (pc <= 0 || pc >= WW - 1 || Math.abs(surface[pc] - surface[c]) > 0) flat = false;
-      }
-      if (flat)
-        for (let k = 0; k <= 5; k++) {
-          const pc = c + k * dir;
-          for (let d = 0; d < 3; d++) cells[(surface[pc] + d) * WW + pc] = d === 0 && k < 3 ? M.FALLS : M.WATER;
+  const gr = (wx: number) => Math.round(groundAt(seed, wx)),
+    STEP = 240;
+  for (let b = Math.floor((X0 - 900) / STEP); b <= Math.floor((X0 + WW + 900) / STEP); b++) {
+    const P = rainAt(seed, b * STEP),
+      chance = Math.min(0.3, Math.max(0, (P - 700) / 1200));
+    if (hash3(b, 41, seed) >= chance) continue;
+    // The first tall drop in the stretch, either way.
+    let lip = 0,
+      dir = 0;
+    for (let wx = b * STEP; wx < (b + 1) * STEP && !dir; wx += 2)
+      for (const d of [1, -1])
+        if (gr(wx + 6 * d) - gr(wx) >= 30) {
+          lip = wx;
+          dir = d;
+          break;
         }
-      else
-        for (let k = -2; k <= 5; k++) {
-          const pc = c + k * dir,
-            i = (surface[pc] - 1) * WW + pc;
-          if (pc > 0 && pc < WW - 1 && cells[i] === M.AIR && hash3(pc + X0, 43, seed) < 0.7) cells[i] = M.FALLS;
+    if (!dir) continue;
+    // Back to the real lip of the cliff.
+    while (gr(lip - dir) < gr(lip) - 2) lip -= dir;
+    const s0 = gr(lip);
+    if (warmthAt(seed, lip, s0) < 1) continue;
+    // Only out of a massif that can hold water: wide ground behind the lip.
+    let wide = 0;
+    for (let k = 4; k <= 160; k += 4) if (Math.abs(gr(lip - k * dir) - s0) < 60) wide++;
+    if (wide < 20) continue;
+    // The spring's mouth: a few rows under the lip, where the face is.
+    const my = s0 + 6 + Math.floor(hash3(b, 42, seed) * 6);
+    let face = lip;
+    while (gr(face + dir) <= my && Math.abs(face - lip) < 30) face += dir;
+    const foot = (wx: number) => gr(wx);
+    // Tall enough below the mouth (the face may come down in steps).
+    let drop = 0;
+    for (let k = 1; k <= 14; k++) drop = Math.max(drop, foot(face + k * dir) - my);
+    if (drop < 20) continue;
+    const put2 = (wx: number, y: number, m: number, onlyAir = true) => {
+      const lx = wx - X0;
+      if (lx < 0 || lx >= WW || y < 0 || y >= H) return;
+      const i = y * WW + lx;
+      if (cells[i] === M.BEDROCK) return;
+      if (!onlyAir || cells[i] === M.AIR) cells[i] = m;
+    };
+    // The mouth: a dark oval opening driven into the face, its floor
+    // running with water.
+    const mx = face - 4 * dir;
+    for (let dy = -7; dy <= 0; dy++)
+      for (let dx = -6; dx <= 6; dx++) {
+        const e = (dx * dx) / 36 + ((dy + 3.5) * (dy + 3.5)) / 16;
+        if (e > 1 || (dir > 0 ? mx + dx > face : mx + dx < face)) continue;
+        put2(mx + dx, my + dy, dy === 0 ? M.STREAM : M.AIR, false);
+      }
+    for (let k = 0; k <= 9; k++) put2(face - k * dir, my, M.STREAM, false);
+    // Down the face, five cells wide, stepping out as the face steps.
+    // In tiers: every 22-34 rows a ledge juts out under the water, it
+    // splashes there and spills off the ledge's end to fall again.
+    let c = face + dir,
+      y = my,
+      tier = 0,
+      next = 22 + Math.floor(hash3(b, 44, seed) * 12);
+    for (let step = 0; step < 24; step++) {
+      const f = foot(c);
+      for (; y < f && y < H - 30; y++) {
+        for (let k = 0; k < 5; k++) put2(c + k * dir, y, M.FALLS);
+        if (++tier >= next && f - y > 20) {
+          for (let k = 0; k < 6; k++) put2(c + k * dir, y + 1, M.ROCK, false);
+          c += 5 * dir;
+          y += 1;
+          tier = 0;
+          next = 22 + Math.floor(hash3(b, 45 + step, seed) * 12);
+          break;
         }
-      break;
+      }
+      if (y >= foot(c) && foot(c + dir) - foot(c) <= 2) break;
+      if (y >= foot(c)) c += dir;
+    }
+    // Where it lands: a plunge pool dug into the ground, a little spray.
+    const land = c + 2 * dir,
+      base = foot(land);
+    for (let k = -1; k <= 5; k++)
+      for (let d = 0; d < 3; d++) {
+        const pc = land + k * dir;
+        if (Math.abs(foot(pc) - base) > 1) continue;
+        put2(pc, foot(pc) + d, d === 0 && k <= 1 ? M.FALLS : M.WATER, false);
+      }
+    // On downhill as a stream, until it meets water or the ground rises.
+    let cur = land + 6 * dir;
+    for (let n = 0; n < 700; n++, cur += dir) {
+      if (waterAt(seed, cur)) break;
+      const here = foot(cur),
+        next = foot(cur + dir);
+      put2(cur, here, M.STREAM, false);
+      put2(cur, here + 1, M.GRAVEL, false);
+      if (next < here - 1) {
+        // The ground rises: it ends in a pond.
+        for (let k = -4; k <= 0; k++)
+          for (let d = 0; d < 3; d++)
+            if (Math.abs(foot(cur + k * dir) - here) <= 1) put2(cur + k * dir, foot(cur + k * dir) + d, M.WATER, false);
+        break;
+      }
     }
   }
 }

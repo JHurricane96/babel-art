@@ -8,7 +8,9 @@
 // builds it the same way. Features reach at most ~120 cells from where they
 // are decided, well inside a window's margin.
 import { BIOMES, type Params, groundAt, regionBiome } from "./generate";
-import { riversIn, waterAt } from "./worldmap";
+import { kindAt, riversIn, rockAt, waterAt, worldOf } from "./worldmap";
+import { LANDFORM, landformAt } from "./landforms";
+import { ROCK, SEA_ROW } from "./history";
 import {
   M,
   REGION_W,
@@ -206,6 +208,18 @@ function archOf(seed: number, q: number): Arch | null {
       gr = groundAt(seed, xm + span),
       floor = Math.max(gl, gr);
     if (Math.min(gl, gr) - top < 20) continue; // not a narrow enough hill
+    // Arches are carved by weather from sandstone and limestone, never on a
+    // volcano's cone or a glacier.
+    const form = landformAt(worldOf(seed), seed, xm).form,
+      kind = kindAt(rockAt(seed, xm), SEA_ROW - top - 12);
+    if (form === LANDFORM.VOLCANO || form === LANDFORM.GLACIAL) continue;
+    if (
+      kind !== ROCK.SANDSTONE &&
+      kind !== ROCK.DUNE &&
+      kind !== ROCK.LIMESTONE &&
+      kind !== ROCK.CONGLOMERATE
+    )
+      continue;
     if (
       reserved(seed, xm - span) ||
       reserved(seed, xm + span) ||
@@ -275,7 +289,17 @@ export function raiseSurface(w: Win) {
       p = w.params[f.hx],
       drop = f.foot - f.top;
     if (reserved(seed, wx, 30)) continue;
-    if (drop >= 20 && hash3(wx, 724, seed) < 0.8 * p.scree)
+    // (No scree where a waterfall comes down the face.)
+    let falls = false;
+    for (let k = -2; k <= 30 && !falls; k++) {
+      const x = f.lx + f.dir * k;
+      if (x <= 0 || x >= WW - 1) continue;
+      for (let d = -4; d <= 2 && !falls; d++) {
+        const m = w.cells[(f.foot + d) * WW + x];
+        if (m === M.FALLS || m === M.STREAM) falls = true;
+      }
+    }
+    if (!falls && drop >= 20 && hash3(wx, 724, seed) < 0.8 * p.scree)
       scree(w, f, rng(wx, 725, seed));
     if (drop >= 14 && p.ivy > 0) ivy(w, f, p.ivy, w.colBiome[f.hx]);
   }

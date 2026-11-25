@@ -89,6 +89,35 @@ const GB = LAND.map((b) => {
     tintK: g ? g.tintK : 0,
   };
 });
+/** Scratch colour for grass blades. */
+const BLADE = [0, 0, 0],
+  SEED = hex("#e6d58e");
+/**
+ * A grass blade's colour: darker at its base, lighter toward its tip, and
+ * in tall grass (steppe, prairie, savanna) the tip turns to a pale seed
+ * head; each tuft a little different in hue.
+ */
+function blade(
+  pal: { grass: number[] },
+  cells: Uint8Array,
+  i: number,
+  W: number,
+  y: number,
+  ground: number,
+  wx: number,
+) {
+  const h = ground - y,
+    tip = cells[i - W] !== M.GRASS,
+    jit = 0.94 + 0.12 * ((grain(wx >> 2, 4242) & 255) / 255),
+    k = (h <= 1 ? 0.72 : tip ? 1.14 : 0.92) * jit;
+  BLADE[0] = pal.grass[0] * k;
+  BLADE[1] = pal.grass[1] * k;
+  BLADE[2] = pal.grass[2] * k;
+  if (tip && h >= 4)
+    for (let c = 0; c < 3; c++) BLADE[c] += (SEED[c] - BLADE[c]) * 0.55;
+  return BLADE;
+}
+
 /** Scratch colours (no allocation per pixel). */
 const WR = [0, 0, 0],
   WR2 = [0, 0, 0],
@@ -873,8 +902,18 @@ export function renderLand(
                 ? STREAM[1]
                 : STREAM[0];
         else {
-          const landing = y + 3 < H && cells[i + 3 * W] !== M.FALLS;
-          c = landing ? FALLS[2] : fall.at(wx) < 0.42 ? FALLS[1] : FALLS[0];
+          // Thin streaks of light down the fall, a bright splash where it lands.
+          const landing = y + 3 < H && cells[i + 3 * W] !== M.FALLS,
+            streak = grain(wx, 3131) % 5;
+          c = landing
+            ? FALLS[2]
+            : streak === 0
+              ? FALLS[2]
+              : streak === 3
+                ? FALLS[1]
+                : fall.at(wx) < 0.42
+                  ? FALLS[1]
+                  : FALLS[0];
         }
         cr = c[0];
         cg = c[1];
@@ -996,7 +1035,9 @@ export function renderLand(
               : m === M.LEAF
                 ? pal.leaf
                 : m === M.GRASS
-                  ? pal.grass
+                  ? y < surface[x]
+                    ? blade(pal, cells, i, W, y, surface[x], wx)
+                    : pal.grass
                   : m === M.MOSS
                     ? pal.moss
                     : m === M.WOOD
@@ -1019,13 +1060,31 @@ export function renderLand(
             LOOSE[2] = base[2] + (rock[2] * lift - base[2]) * k;
             loose = LOOSE;
             if (m === M.GRAVEL) {
-              // Pebbles: 2x2 stones in three tones, with dark gaps between.
-              const ph = grain(wx >> 1, (y >> 1) + 7777),
-                tone = (ph & 3) === 0 ? 0.72 : [0.84, 1, 1.14][(ph >>> 2) % 3],
-                lit = (y & 1) === 0 ? 1.06 : 0.94;
-              LOOSE[0] *= tone * lit;
-              LOOSE[1] *= tone * lit;
-              LOOSE[2] *= tone * lit;
+              // Stones, three or four cells wide and three tall, in courses
+              // offset row by row, each lit on top and shaded underneath, in
+              // a few tones (some dark with desert varnish), bedded in a
+              // paler matrix of grit that shows between them.
+              const band = Math.floor(y / 3),
+                ox = wx + (grain(band, 9191) % 5),
+                cell = Math.floor(ox / 5),
+                id = grain(cell, band + 5151),
+                lx = ox - cell * 5,
+                ly = y - band * 3,
+                wide = 3 + ((id >>> 3) & 1),
+                // (Rounded: the top corners of each stone are grit.)
+                gap =
+                  lx >= wide ||
+                  (ly === 2 && ((id >>> 4) & 3) === 0) ||
+                  (ly === 0 && (lx === 0 || lx === wide - 1) && ((id >>> 9) & 1) === 0);
+              let k: number;
+              if (gap) k = 1.28;
+              else {
+                const tone = [0.62, 0.82, 0.95, 1.08][(id >>> 6) & 3];
+                k = tone * (ly === 0 ? 1.14 : ly === 2 ? 0.8 : 1) * (lx === 0 ? 0.94 : 1);
+              }
+              LOOSE[0] *= k;
+              LOOSE[1] *= k;
+              LOOSE[2] *= k;
             }
           }
           const c =

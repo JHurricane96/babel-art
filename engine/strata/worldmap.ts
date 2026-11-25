@@ -20,7 +20,7 @@ import {
   zoneOf,
 } from "./biomes";
 import { fbm1, hash3 } from "./world";
-import { landformAt } from "./landforms";
+import { landformAt, volcanoAt } from "./landforms";
 
 const worlds = new Map<number, World>();
 
@@ -618,10 +618,12 @@ export function looksAt(seed: number, x: number, out = new Float32Array(6)) {
   return out;
 }
 
-/** What to call the place at x: its biome and its climate zone. */
+/** What to call the place at x: a volcano if it is on one, its biome and its climate zone. */
 export function biomeNameAt(seed: number, x: number) {
-  const p = placeAt(seed, x);
+  const p = placeAt(seed, x),
+    v = volcanoAt(worldOf(seed), seed, x),
+    on = v && Math.abs(x - v.cx) < v.r ? `${v.active ? "Active" : "Dormant"} volcano · ` : "";
   return p.biome < 0
-    ? ZONES[p.zone].name
-    : `${BIOMES[p.biome].name} · ${ZONES[p.zone].name}`;
+    ? on + ZONES[p.zone].name
+    : `${on}${BIOMES[p.biome].name} · ${ZONES[p.zone].name}`;
 }
