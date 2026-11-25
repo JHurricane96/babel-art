@@ -20,6 +20,7 @@ import {
   zoneOf,
 } from "./biomes";
 import { fbm1, hash3 } from "./world";
+import { landformAt } from "./landforms";
 
 const worlds = new Map<number, World>();
 
@@ -185,6 +186,10 @@ export function rockAt(seed: number, x: number): RockColumn {
       i++;
     }
   }
+  // The beds rise with the landform, so its valleys cut down through them.
+  const lift = landformAt(w, seed, x).U;
+  out.b += lift;
+  for (let k = 0; k < out.tops.length; k++) out.tops[k] += lift;
   return out;
 }
 
@@ -268,13 +273,17 @@ export function waterAt(
  */
 export function groundElevation(seed: number, x: number, channels = true) {
   const w = worldOf(seed),
-    slope = slopeAt(w, x),
-    amp = 3 + 70 * Math.min(0.25, slope);
-  // Rolling ground at the scale of a screen or two (the world's columns are
-  // too coarse to hold it), and finer roughness, more on slopes.
+    lf = landformAt(w, seed, x).L,
+    lfSlope =
+      Math.abs(landformAt(w, seed, x + 8).L - landformAt(w, seed, x - 8).L) / 16,
+    slope = slopeAt(w, x) + lfSlope,
+    amp = 2 + 26 * Math.min(0.5, slope);
+  // The world's land, its landform (hills, mesas, peaks: landforms.ts), and
+  // finer roughness, more on slopes.
   let z =
     smoothElevation(w, x) +
-    22 * (2 * fbm1(x / 700, seed + 503, 3) - 1) +
+    lf +
+    6 * (2 * fbm1(x / 300, seed + 503, 2) - 1) +
     amp * (2 * fbm1(x / 45, seed + 501, 3) - 1) +
     0.4 * amp * (2 * fbm1(x / 13, seed + 502, 2) - 1);
   const c = colAt(w, x),
@@ -291,9 +300,10 @@ export function groundElevation(seed: number, x: number, channels = true) {
       if (z > top) break;
       if (z <= bottom) continue;
       if (hard(col.kinds[k]) && top - bottom > 4) {
+        // Small ledges only: the landforms make the big cliffs.
         const gap = top - z,
-          step = 16 + 320 * Math.min(0.25, slope);
-        if (gap < step) z = top - gap * 0.12;
+          step = 4 + 24 * Math.min(0.4, slope);
+        if (gap < step) z = top - gap * 0.3;
       }
       break;
     }
@@ -321,9 +331,9 @@ export function warmthAt(seed: number, x: number, row: number) {
   return T - 0.025 * (SEA_ROW - row - coarse);
 }
 
-/** The land's shape at the scale of habitats: the world's land and its rolling relief, without the fine detail. */
+/** The land's shape at the scale of habitats: the world's land and its landform, without the fine detail. */
 function relief(w: World, seed: number, x: number) {
-  return smoothElevation(w, x) + 22 * (2 * fbm1(x / 700, seed + 503, 3) - 1);
+  return smoothElevation(w, x) + landformAt(w, seed, x).L;
 }
 
 /** Is the place by the sea or a lake, or by a river? (Local: these keep their own edges.) */
@@ -344,11 +354,11 @@ function shoreAt(w: World, seed: number, x: number) {
 export function habitatAt(seed: number, x: number) {
   const w = worldOf(seed),
     by = shoreAt(w, seed, x);
-  return by >= 0 ? by : landformAt(w, seed, x);
+  return by >= 0 ? by : habitatFormAt(w, seed, x);
 }
 
 /** The land's form at x, away from water: ridge, valley, cliff, slope, flat or wetland. */
-function landformAt(w: World, seed: number, x: number) {
+function habitatFormAt(w: World, seed: number, x: number) {
   const z = relief(w, seed, x);
   // Cliffs from the ground itself (benches and drops included).
   if (Math.abs(groundElevation(seed, x + 24) - groundElevation(seed, x - 24)) > 30)
@@ -462,7 +472,7 @@ function patchOf(w: World, seed: number, k: number): Patch {
       zones,
       near === ZONE.SALT_FLAT ? ZONE.SALT_FLAT : zoneOf(Ts, Ps, lerp(w.S), lerp(w.O), zs),
     );
-    add(habs, landformAt(w, seed, x));
+    add(habs, habitatFormAt(w, seed, x));
     add(soils, SOIL_OF[kindAt(rockAt(seed, x), groundElevation(seed, x) - 3)]);
   }
   const habitat = habs.size ? mode(habs) : HABITAT.FLAT;

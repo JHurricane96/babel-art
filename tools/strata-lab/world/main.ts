@@ -16,6 +16,7 @@ import {
 } from "../../../engine/strata/history.ts";
 import { REGION_W, WORLD_H } from "../../../engine/strata/world.ts";
 import { adoptWorld, placeAt } from "../../../engine/strata/worldmap.ts";
+import { landformNameAt } from "../../../engine/strata/landforms.ts";
 import {
   BIOMES,
   HABITATS,
@@ -454,7 +455,7 @@ zoomCanvas.addEventListener("pointermove", (ev) => {
   $("here").textContent =
     p.biome < 0
       ? `${where} · ${ZONE_LIST[p.zone].name} (water)`
-      : `${where} · ${BIOMES[p.biome].name} · ${ZONE_LIST[p.zone].name} · ${HABITATS[p.habitat].toLowerCase()} · ${SOILS[p.soil].toLowerCase()} soil`;
+      : `${where} · ${BIOMES[p.biome].name} · ${ZONE_LIST[p.zone].name} · ${landformNameAt(world, seedNow, x).toLowerCase()} · ${HABITATS[p.habitat].toLowerCase()} · ${SOILS[p.soil].toLowerCase()} soil`;
 });
 
 new ResizeObserver(() => drawAll()).observe(document.body);

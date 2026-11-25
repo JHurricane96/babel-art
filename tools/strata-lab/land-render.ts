@@ -18,6 +18,7 @@ import {
 } from "../../engine/strata/world.ts";
 import { groundAt } from "../../engine/strata/generate.ts";
 import { BIOMES as LAND } from "../../engine/strata/biomes.ts";
+import { SPECIES } from "../../engine/strata/plants.ts";
 
 const hex = (h: string) =>
   [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
@@ -40,7 +41,15 @@ const KIND = [
   "#9a8a76",
   "#9a9ea8",
   "#e2dcd2",
-].map(hex);
+]
+  .map(hex)
+  // Muted: each rock keeps a hint of its own hue and lightness, so beds read
+  // without striping the screen.
+  .map((c) => {
+    const g = 0.3 * c[0] + 0.55 * c[1] + 0.15 * c[2],
+      v = 0.3 + 0.45 * g;
+    return c.map((ch) => (v + 0.3 * (ch - g)) * 0.78);
+  });
 const rockOf = (st: number) => KIND[bandOf(st) % KIND.length];
 /** All rock averaged: a cave's back wall leans to it. */
 const KIND_AVG = [0, 1, 2].map(
@@ -59,6 +68,17 @@ const PAL = LAND.map((b) => {
     salt: b.earth.toLowerCase() === "#e8e2d8",
   };
 });
+// Then each species with colours of its own (plants.ts): flora value
+// LAND.length + 1 + species id.
+for (const sp of SPECIES) {
+  const base = PAL[0];
+  PAL.push({
+    ...base,
+    leaf: sp.leaf ? hex(sp.leaf) : base.leaf,
+    bark: sp.bark ? hex(sp.bark) : base.bark,
+    bloom: sp.bloom ? hex(sp.bloom) : base.bloom,
+  });
+}
 /** Looks (generate.ts BIOMES) that leaves and caps take their colours from. */
 const LOOKS = 6;
 const SOLID: number[][] = [];
@@ -467,6 +487,12 @@ export function renderLand(
 
   // Sky light enters the ground through its openings: seed the flood from sky
   // cells that touch open space below the ground line.
+  // How deep each cell lies under open ground: under the ground straight
+  // above, or the hillside beside it (light comes in from the side too, half
+  // as far), so the dark below a steep slope follows the slope.
+  const reach = Float32Array.from(surface);
+  for (let x = 1; x < W; x++) reach[x] = Math.min(reach[x], reach[x - 1] + 2);
+  for (let x = W - 2; x >= 0; x--) reach[x] = Math.min(reach[x], reach[x + 1] + 2);
   const below = (x: number, y: number) => y >= surface[x];
   const sky: number[] = [];
   for (let x = 0; x < W; x++) {
@@ -557,7 +583,8 @@ export function renderLand(
       12 * fbm1(wx / 90, seed + 704, 2);
   }
   for (let y = 0; y < H; y++) {
-    const cut = 0.6 - 0.24 * Math.min(1, Math.max(0, (y - 400) / 900));
+    // Cut-away light: full at the ground, fading with depth below it (set per column below).
+    let cut = 0.6;
     fine.row(y);
     coarse.row(y);
     flow.row(y);
@@ -571,7 +598,9 @@ export function renderLand(
         st = state[i],
         biome = biomeOf(st) % LOOKS,
         bay = BAYER[(y & 3) * 4 + (wx & 3)];
-      const skyCell = y < surface[x];
+      const skyCell = y < surface[x],
+        below = y - reach[x];
+      cut = below <= 4 ? 0.6 : 0.6 * (0.2 + 0.8 * Math.exp(-(below - 4) / 60));
       let cr: number, cg: number, cb: number;
       const wd = m === M.WATER ? waterAbove[x] : 0;
       waterAbove[x] = m === M.WATER ? wd + 1 : 0;

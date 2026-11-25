@@ -46,6 +46,7 @@ import {
 } from "./surface";
 import { ROCK as KIND, SEA_ROW } from "./history";
 import { BIOMES as LAND, coverOf } from "./biomes";
+import { type Grow, SPECIES, mixOf, pick } from "./plants";
 import {
   type RockColumn,
   placeAt,
@@ -423,6 +424,13 @@ const NUMERIC = (Object.keys(BIOMES[0]) as (keyof Biome)[]).filter(
 ) as (keyof Params)[];
 
 /** Parameters a column's biome decides (the rest come from its climate zone's look). */
+/** Each land biome's species, parsed once. */
+const MIXES = LAND.map((b) => ({
+  trees: mixOf(b.trees),
+  bushes: mixOf(b.bushes),
+  cacti: mixOf(b.cactusKinds),
+}));
+
 /** Grass where no land biome is (under water, at the shore). */
 const DEFAULT_GRASS = { tufts: 0.3, tall: 3 };
 
@@ -562,7 +570,7 @@ function cavernAt(
   bias = 0,
 ) {
   const depth = y - g,
-    thr = 0.74 - 0.2 * p.cavern,
+    thr = 0.77 - 0.2 * p.cavern,
     // Wide, low pockets; a few more of them deeper down.
     deepen = 0.05 * smoothstep(150, 700, depth),
     o =
@@ -891,7 +899,8 @@ export function generateWindow(seed: number, x0: number, width: number) {
     }
   let top = H;
   for (let x = 0; x < WW; x++) top = Math.min(top, surface[x] - 10);
-  tidy(cells, before, WW, H, Math.max(0, top), 160, 90);
+  // Small pockets and stubs are filled back in: caves come as caverns, not crumbs.
+  tidy(cells, before, WW, H, Math.max(0, top), 1400, 90);
   const win: Win = {
     seed,
     cells,
@@ -992,18 +1001,42 @@ export function generateWindow(seed: number, x0: number, width: number) {
     // Trees gather in groves with clearings between.
     const trees = 0.25 + 1.5 * smoothstep(0.35, 0.65, grove(seed, wx));
     let h = hash3(wx, 31, seed);
-    if (slope < 6 && (h -= p.pines * trees) < 0)
+    const mix = bio[x] >= 0 ? MIXES[bio[x]] : null,
+      // A species from the biome's mix, drawn in its own colours if it has them.
+      grow = (list: { id: number; w: number }[], salt: number) => {
+        const id = pick(list, hash3(wx, salt, seed)),
+          spc = SPECIES[id];
+        if (slope >= spc.slope) return;
+        // (Only species with leaves of their own; the rest take the biome's.)
+        if (spc.leaf) stampFlora = LAND.length + 1 + id;
+        spc.shape(grower, x, s, top === M.SNOW);
+        stampFlora = bio[x] + 1;
+      },
+      grower: Grow = { put: (px, py, m) => put(cells, WW, px, py, m), R };
+    if (mix && mix.trees.length) {
+      if ((h -= (p.pines + p.giants + p.broad) * trees) < 0) {
+        grow(mix.trees, 35);
+        continue;
+      }
+    } else if (slope < 6 && (h -= p.pines * trees) < 0) {
       pine(cells, WW, x, s, R, top === M.SNOW);
-    else if (slope < 4 && (h -= p.giants * trees) < 0)
+      continue;
+    } else if (slope < 4 && (h -= p.giants * trees) < 0) {
       giantTree(cells, WW, x, s, R, wx, seed);
-    else if (slope < 5 && (h -= p.broad * trees) < 0)
+      continue;
+    } else if (slope < 5 && (h -= p.broad * trees) < 0) {
       broadTree(cells, WW, x, s, R, wx, seed);
-    else if (slope < 4 && (h -= p.shrooms) < 0) toadstool(cells, WW, x, s, R);
-    else if (slope < 6 && (h -= p.cacti) < 0) cactus(cells, WW, x, s, R);
-    else if (slope < 8 && (h -= p.dead) < 0) deadTree(cells, WW, x, s, R);
-    else if ((h -= p.shrubs * (0.5 + 0.5 * trees)) < 0)
-      shrub(cells, WW, x, s, R);
-    else if (slope < 2 && (h -= p.logs * trees) < 0)
+      continue;
+    }
+    if (slope < 4 && (h -= p.shrooms) < 0) toadstool(cells, WW, x, s, R);
+    else if (slope < 6 && (h -= p.cacti) < 0) {
+      if (mix && mix.cacti.length) grow(mix.cacti, 36);
+      else cactus(cells, WW, x, s, R);
+    } else if (slope < 8 && (h -= p.dead) < 0) deadTree(cells, WW, x, s, R);
+    else if ((h -= p.shrubs * (0.5 + 0.5 * trees)) < 0) {
+      if (mix && mix.bushes.length) grow(mix.bushes, 37);
+      else shrub(cells, WW, x, s, R);
+    } else if (slope < 2 && (h -= p.logs * trees) < 0)
       fallenLog(cells, WW, x, s, R, ground);
     else if (top === M.GRASS && (h -= p.flowers * (1.6 - 0.6 * trees)) < 0) {
       // Flowers in the clearings, on stems as tall as the grass, some in pairs.

@@ -350,8 +350,19 @@ function setScale(s: number, ax = canvas.width / 2, ay = canvas.height / 2) {
   view.x = wx - (ax - canvas.width / 2) / s;
   view.y = wy - (ay - canvas.height / 2) / s;
 }
+/** Where the camera sits to frame the land at x: the ground, smoothed over the screen, a little below the middle. */
+function surfaceY(x: number) {
+  const half = canvas.width / view.scale / 2;
+  let sum = 0;
+  for (let k = -4; k <= 4; k++) sum += groundAt(view.seed, x + (k * half) / 4);
+  // Never above the world's top.
+  return Math.max(
+    canvas.height / view.scale / 2,
+    sum / 9 - (0.14 * canvas.height) / view.scale,
+  );
+}
 function toSurface() {
-  view.y = groundAt(view.seed, view.x) + (0.1 * canvas.height) / view.scale;
+  view.y = surfaceY(view.x);
 }
 function toEdge(dir: number) {
   const k = view.x / REGION_W;
@@ -476,7 +487,11 @@ function frame(now: number) {
     if (held.has("ArrowUp")) view.y -= v;
     if (held.has("ArrowDown")) view.y += v;
   }
-  if (view.drift) view.x += DRIFT * dt;
+  if (view.drift) {
+    // Drifting, the camera rises and falls with the land, gently.
+    view.x += DRIFT * dt;
+    view.y += (surfaceY(view.x) - view.y) * Math.min(1, 0.6 * dt);
+  }
   if (view.motion) clock += dt;
   schedule();
   const t0 = performance.now();
