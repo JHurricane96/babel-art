@@ -126,14 +126,15 @@ const LAVA = [hex("#ff8a3a"), hex("#ffb04a"), hex("#c23e1c"), hex("#8a2416")];
 const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map(
   (v) => (v + 0.5) / 16,
 );
-const SKY = [hex("#191c3c"), hex("#5a3f78"), hex("#f0a060")];
+/** The day sky, rows above the horizon: pale at the horizon, blue overhead. */
+const SKY = [hex("#dce8ef"), hex("#8cbbe3"), hex("#4a7fc2")];
 const CYAN = hex("#5ff0e0"),
   VIOLET = hex("#c08cff"),
   WARM = hex("#ffae5a"),
   EMBER = hex("#ff9a6a"),
-  SKYL = hex("#ffd2b0"),
-  AMB = hex("#9aa0d0"),
-  WATER = hex("#2f6f86"),
+  SKYL = hex("#fff4e4"),
+  AMB = hex("#c2c6d4"),
+  WATER = hex("#3f86a8"),
   DEEP = hex("#123049"),
   BACK_TINT = [0.11, 0.1, 0.18];
 
@@ -143,7 +144,7 @@ const isOpen = (m: number) =>
   m === M.STREAM ||
   m === M.FALLS ||
   m === M.BACKWALL;
-/** Plants and rope stand dark against the dusk; rock, built stone, grass and flowers above the ground are lit. */
+/** Plants and rope: in the open air they take daylight from above and shade under their own leaves. */
 const SILHOUETTE = new Uint8Array(64);
 for (const m of [
   M.LEAF,
@@ -161,10 +162,13 @@ for (const m of [
 const BRICK = hex("#8a7f6c"),
   FLOWERS = ["#f2d35a", "#f0ece0", "#e889b0", "#8fb0f0", "#e06a4a"].map(hex),
   REED = [hex("#6f7a3a"), hex("#5a3a22")],
-  HAZE = hex("#3a2c5a"),
-  CLOUD_TOP = hex("#7a5c95"),
-  CLOUD_LIT = hex("#f4b490"),
-  STAR = hex("#fff4e0");
+  // Distant hills in the day's blue haze: the farther, the paler.
+  HAZE_NEAR = hex("#7d98ab"),
+  HAZE_FAR = hex("#a9c0d2"),
+  CLOUD_SHADE = hex("#b6c6d6"),
+  CLOUD_LIT = hex("#fbfcfd"),
+  // Daylight on plants in the open.
+  DAY = hex("#fff8ee");
 const STREAM = ["#4f9ab4", "#cfe9f2", "#e0f4fa"].map(hex),
   FALLS = ["#bfe3f0", "#7fb8d0", "#f4fbfd"].map(hex),
   ICE = ["#e8f6fb", "#a6d4e6", "#7fb3cc", "#f2fbff"].map(hex);
@@ -564,8 +568,12 @@ export function renderLand(
     frozen = new Uint8Array(W),
     // Clouds: two value noises, broad and fine; distant ridges: a far range
     // of peaks and nearer rolling hills, both behind the land.
-    cloudA = new RowNoise(x0, W, 230, 30, seed + 711),
-    cloudB = new RowNoise(x0, W, 70, 12, seed + 712),
+    cloudA = new RowNoise(x0, W, 150, 46, seed + 711),
+    cloudB = new RowNoise(x0, W, 42, 18, seed + 712),
+    // The same clouds a few rows up: where there is less cloud above, a
+    // cloud is lit; where there is more, it is in its own shade.
+    upA = new RowNoise(x0, W, 150, 46, seed + 711),
+    upB = new RowNoise(x0, W, 42, 18, seed + 712),
     far = new Float32Array(W),
     near = new Float32Array(W),
     hz = horizonRow(seed, x0, W);
@@ -591,6 +599,8 @@ export function renderLand(
     fall.row(y);
     cloudA.row(y);
     cloudB.row(y);
+    upA.row(y - 4);
+    upB.row(y - 4);
     for (let x = 0; x < W; x++) {
       const i = y * W + x,
         wx = x0 + x,
@@ -600,7 +610,9 @@ export function renderLand(
         bay = BAYER[(y & 3) * 4 + (wx & 3)];
       const skyCell = y < surface[x],
         below = y - reach[x];
-      cut = below <= 4 ? 0.6 : 0.6 * (0.2 + 0.8 * Math.exp(-(below - 4) / 60));
+      // In daylight the cut face is lit near the ground, dimming with depth
+      // to a low glow, never quite black.
+      cut = below <= 4 ? 0.95 : 0.95 * (0.3 + 0.7 * Math.exp(-(below - 4) / 85));
       let cr: number, cg: number, cb: number;
       const wd = m === M.WATER ? waterAbove[x] : 0;
       waterAbove[x] = m === M.WATER ? wd + 1 : 0;
@@ -608,58 +620,47 @@ export function renderLand(
       iceAbove[x] = m === M.ICE ? id + 1 : 0;
       frozen[x] = m === M.ICE ? 1 : m === M.WATER ? frozen[x] : 0;
       if (m === M.AIR && skyCell) {
-        // Open sky: a dusk gradient, dithered into bands, measured in rows
-        // above the horizon (d): glowing at it, darkening upward.
+        // Open sky: a day gradient, dithered into bands, measured in rows
+        // above the horizon (d): pale and hazy at it, bluer upward.
         const d = hz[x] - y,
-          t = Math.min(1, Math.max(0, 1 - d / 420)),
-          a = t < 0.55 ? SKY[0] : SKY[1],
-          b = t < 0.55 ? SKY[1] : SKY[2],
-          u = t < 0.55 ? t / 0.55 : (t - 0.55) / 0.45;
-        cr = Math.floor((a[0] + (b[0] - a[0]) * u) * 18 + bay) / 18;
-        cg = Math.floor((a[1] + (b[1] - a[1]) * u) * 18 + bay) / 18;
-        cb = Math.floor((a[2] + (b[2] - a[2]) * u) * 18 + bay) / 18;
-        // Clouds: thin bands, sunlit underneath toward the horizon, stepped.
+          g = Math.min(1, Math.max(0, d / 700)),
+          a = g < 0.35 ? SKY[0] : SKY[1],
+          b = g < 0.35 ? SKY[1] : SKY[2],
+          u = g < 0.35 ? g / 0.35 : (g - 0.35) / 0.65;
+        cr = Math.floor((a[0] + (b[0] - a[0]) * u) * 24 + bay) / 24;
+        cg = Math.floor((a[1] + (b[1] - a[1]) * u) * 24 + bay) / 24;
+        cb = Math.floor((a[2] + (b[2] - a[2]) * u) * 24 + bay) / 24;
+        // Clouds: heaped, lit on top and shaded underneath, in a few steps.
         const env =
-            Math.min(1, Math.max(0, (d - 30) / 40)) *
-            Math.min(1, Math.max(0, (340 - d) / 60)),
+            Math.min(1, Math.max(0, (d - 90) / 50)) *
+            Math.min(1, Math.max(0, (560 - d) / 90)),
+          cl = 0.65 * cloudA.at(wx) + 0.35 * cloudB.at(wx),
           amt =
             Math.floor(
-              Math.min(
-                1,
-                Math.max(
-                  0,
-                  (0.65 * cloudA.at(wx) + 0.35 * cloudB.at(wx) - 0.54) / 0.12,
-                ),
-              ) *
-                env *
-                3 +
-                bay,
+              Math.min(1, Math.max(0, (cl - 0.6) / 0.06)) * env * 3 + bay,
             ) / 3;
         if (amt > 0) {
-          const lit = Math.min(1, Math.max(0, (420 - d) / 260)),
-            k = amt * 0.6;
-          cr += (CLOUD_TOP[0] + (CLOUD_LIT[0] - CLOUD_TOP[0]) * lit - cr) * k;
-          cg += (CLOUD_TOP[1] + (CLOUD_LIT[1] - CLOUD_TOP[1]) * lit - cg) * k;
-          cb += (CLOUD_TOP[2] + (CLOUD_LIT[2] - CLOUD_TOP[2]) * lit - cb) * k;
-        } else if (d > 230 && grain(wx, y) % 997 === 0) {
-          // The first stars, high up where the sky is darkest.
-          const k = 0.6 * Math.min(1, (d - 230) / 120);
-          cr += (STAR[0] - cr) * k;
-          cg += (STAR[1] - cg) * k;
-          cb += (STAR[2] - cb) * k;
+          const up = 0.65 * upA.at(wx) + 0.35 * upB.at(wx),
+            lit =
+              Math.floor(Math.min(1, Math.max(0, 0.55 + (cl - up) * 9)) * 3 + bay) / 3,
+            k = 0.35 + 0.6 * amt;
+          cr += (CLOUD_SHADE[0] + (CLOUD_LIT[0] - CLOUD_SHADE[0]) * lit - cr) * k;
+          cg += (CLOUD_SHADE[1] + (CLOUD_LIT[1] - CLOUD_SHADE[1]) * lit - cg) * k;
+          cb += (CLOUD_SHADE[2] + (CLOUD_LIT[2] - CLOUD_SHADE[2]) * lit - cb) * k;
         }
-        // Distant hills behind the land: flat silhouettes with crisp tops,
-        // always darker than the sky behind them, the nearer the darker, and
-        // a little darker again lower down in a few dithered steps.
+        // Distant hills behind the land, in haze: flat silhouettes with
+        // crisp tops, the nearer the deeper in colour, a little darker
+        // lower down in a few dithered steps.
         const into = d < near[x] ? near[x] - d : d < far[x] ? far[x] - d : -1;
         if (into >= 0) {
           const nearer = d < near[x],
+            hz2 = nearer ? HAZE_NEAR : HAZE_FAR,
             k =
-              (nearer ? 0.52 : 0.3) +
+              (nearer ? 0.85 : 0.6) +
               (0.08 * Math.floor(Math.min(1, into / 120) * 3 + bay)) / 3;
-          cr += (HAZE[0] * 0.55 - cr) * k;
-          cg += (HAZE[1] * 0.55 - cg) * k;
-          cb += (HAZE[2] * 0.55 - cb) * k;
+          cr += (hz2[0] - cr) * k;
+          cg += (hz2[1] - cg) * k;
+          cb += (hz2[2] - cb) * k;
         }
         lr = lg = lb = 1;
       } else if (m === M.WATER) {
@@ -855,6 +856,14 @@ export function renderLand(
               nW = 0,
               nE = 0,
               edge = 0;
+            if (skyCell && SILHOUETTE[m]) {
+              // A plant in the open: daylight from above, its own shade under
+              // its leaves, in two steps.
+              const k = y > 0 && isOpen(cells[i - W]) ? 1.04 : 0.84;
+              lr = k * DAY[0];
+              lg = k * DAY[1];
+              lb = k * DAY[2];
+            } else {
             if (!skyCell || !SILHOUETTE[m]) {
               const up = y > 0 ? i - W : -1,
                 down = y < H - 1 ? i + W : -1,
@@ -878,7 +887,7 @@ export function renderLand(
             // light the faces they touch more strongly.
             if (nS + nC + nV + nW + nE > 0)
               lightAt(
-                nS * 0.35,
+                nS * (skyCell || y <= surface[x] + 2 ? 0.7 : 0.35),
                 nC * 0.85,
                 nV * 0.85,
                 nW * 0.85,
@@ -892,6 +901,7 @@ export function renderLand(
             lr += amb * AMB[0];
             lg += amb * AMB[1];
             lb += amb * AMB[2];
+            }
           }
         }
       }
