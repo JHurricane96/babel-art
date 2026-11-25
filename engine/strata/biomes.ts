@@ -285,7 +285,7 @@ export const BIOMES: BiomeDef[] = [
   // Desert
   b(Z.DESERT, "Dune sea", { ground: "sand", dunes: 1, soil: 6 , tufts: 0, tall: 1 }),
   b(Z.DESERT, "Rocky desert", { ground: "rock", soil: 0, boulders: 0.006, scree: 1, dead: 0.002 , tufts: 0.01, tall: 1 , trees: "joshua tree 1", bushes: "rosette 1", cactusKinds: "barrel 1, saguaro 1" , broad: 0.0015}),
-  b(Z.DESERT, "Gravel plain", { ground: "gravel", shrubs: 0.004, dead: 0.002, leaf: "#7a7a5a", soil: 3 , tufts: 0.03, tall: 1 , trees: "joshua tree 1", bushes: "rosette 1, sage 1", cactusKinds: "saguaro 2, barrel 1" , broad: 0.002}),
+  b(Z.DESERT, "Gravel plain", { ground: "gravel", shrubs: 0.004, dead: 0.002, leaf: "#7a7a5a", soil: 7 , tufts: 0.03, tall: 1 , trees: "joshua tree 1", bushes: "rosette 1, sage 1", cactusKinds: "saguaro 2, barrel 1" , broad: 0.002}),
   b(Z.DESERT, "Slickrock canyons", { ground: "sand", soil: 1, hoodoos: 0.6, cacti: 0.004 , tufts: 0.02, tall: 1 , trees: "juniper 1, joshua tree 1", bushes: "rosette 2, sage 1", cactusKinds: "prickly pear 1, barrel 1" , broad: 0.003}),
   b(Z.DESERT, "Badlands", { ground: "rock", soil: 0, hoodoos: 1, scree: 0.8 , tufts: 0, tall: 1 , trees: "", bushes: "sage 1", cactusKinds: "barrel 1" }),
   b(Z.DESERT, "Salt pan", { ground: "sand", earth: "#e8e2d8", soil: 4 , tufts: 0, tall: 1 }),

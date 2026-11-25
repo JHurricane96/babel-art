@@ -15,6 +15,8 @@ export interface Emitters {
   spores: Float32Array;
   /** Lava meeting air: embers. */
   embers: Float32Array;
+  /** Lava open to the sky (a crater's lake): a plume of smoke and steam. */
+  vents: Float32Array;
   /** Where waterfalls land: spray. */
   spray: Float32Array;
   /** Leaves on trees: some fall. */
@@ -116,6 +118,7 @@ function emitters(
   void r;
   const spores: number[] = [],
     embers: number[] = [],
+    vents: number[] = [],
     spray: number[] = [],
     leaves: number[] = [],
     meadows: number[] = [],
@@ -152,7 +155,10 @@ function emitters(
           (tip ? tips : ceilings).push(wx, y + 1, f);
         }
       }
-      else if (m === M.LAVA && cells[i - W] === M.AIR) embers.push(wx, y - 1);
+      else if (m === M.LAVA && cells[i - W] === M.AIR) {
+        embers.push(wx, y - 1);
+        if (y <= s) vents.push(wx, y - 1);
+      }
       else if (m === M.FALLS && cells[i + W] !== M.FALLS) spray.push(wx, y);
       else if (m === M.LEAF && y < s) leaves.push(wx, y);
       else if (m === M.WATER && cells[i - W] === M.AIR && cells[i - 1] !== M.WATER) {
@@ -176,6 +182,7 @@ function emitters(
   return {
     spores: thin(spores, 600),
     embers: thin(embers, 300),
+    vents: thin(vents, 40),
     spray: thin(spray, 200),
     leaves: thin(leaves, 500),
     meadows: thin(meadows, 400),

@@ -184,7 +184,7 @@ const BRICK = hex("#8a7f6c"),
   // Daylight on plants in the open.
   DAY = hex("#fff8ee");
 const STREAM = ["#4f9ab4", "#cfe9f2", "#e0f4fa"].map(hex),
-  FALLS = ["#bfe3f0", "#7fb8d0", "#f4fbfd"].map(hex),
+  FALLS = ["#a8d6ee", "#5f9fca", "#f4fbfd"].map(hex),
   ICE = ["#e8f6fb", "#a6d4e6", "#7fb3cc", "#f2fbff"].map(hex);
 
 const DX = [-1, 1, 0, 0, -1, 1, -1, 1],
@@ -883,13 +883,12 @@ export function renderLand(
             y > 0 &&
             cells[i - W] === M.ROCK &&
             bandOf(state[i - W]) !== bandOf(st),
-          // Basalt cools into columns: dark joints every few cells.
-          joint = bandOf(st) === 2 && wx % 5 === 0,
+          joint = false,
           tex =
             (1 + (0.05 * ((h & 3) - 1.5)) / 1.5 + 0.12 * (mottle - 0.5)) *
             ((h >>> 8) % 97 === 0 ? 1.25 : 1) *
             (seam ? 0.8 : 1) *
-            (joint ? 0.78 : 1);
+            (joint ? 0.9 : 1);
         // Brick courses: rows three cells high, joints offset row by row.
         const mortar =
           y % 3 === 0 || (wx + (Math.floor(y / 3) % 2) * 3) % 6 === 0
@@ -948,6 +947,15 @@ export function renderLand(
             LOOSE[1] = base[1] + (rock[1] * lift - base[1]) * k;
             LOOSE[2] = base[2] + (rock[2] * lift - base[2]) * k;
             loose = LOOSE;
+            if (m === M.GRAVEL) {
+              // Pebbles: 2x2 stones in three tones, with dark gaps between.
+              const ph = grain(wx >> 1, (y >> 1) + 7777),
+                tone = (ph & 3) === 0 ? 0.72 : [0.84, 1, 1.14][(ph >>> 2) % 3],
+                lit = (y & 1) === 0 ? 1.06 : 0.94;
+              LOOSE[0] *= tone * lit;
+              LOOSE[1] *= tone * lit;
+              LOOSE[2] *= tone * lit;
+            }
           }
           const c =
             tinted ??
@@ -1003,7 +1011,7 @@ export function renderLand(
               nW = 0,
               nE = 0,
               edge = 0;
-            if (skyCell && SILHOUETTE[m]) {
+            if (skyCell && (SILHOUETTE[m] || m === M.GRASS || m === M.FLOWER)) {
               // A plant in the open: daylight from above, its own shade under
               // its leaves, in two steps.
               const k = y > 0 && isOpen(cells[i - W]) ? 1.04 : 0.84;
@@ -1044,7 +1052,8 @@ export function renderLand(
             else lr = lg = lb = 0;
             // Faces on open space keep a brighter rim even in the dark, so a
             // cave's outline reads at any depth.
-            const amb = cut * (1 + 0.7 * edge);
+            // (Softer on the ground's own top, so its edge doesn't glow.)
+            const amb = cut * (1 + (y <= surface[x] + 2 ? 0.25 : 0.7) * edge);
             lr += amb * AMB[0];
             lg += amb * AMB[1];
             lb += amb * AMB[2];

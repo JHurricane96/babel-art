@@ -300,7 +300,8 @@ function shape(u: Unit, x: number) {
         cone = (c: number, r: number, h: number) => {
           const d = Math.abs(x - c) / r;
           if (d >= 1) return 0;
-          const crater = d < 0.06 ? 0.12 * Math.sqrt(1 - d / 0.06) : 0;
+          // A crater a fifth of the cone's top wide, a tenth of its height deep.
+          const crater = d < CRATER ? 0.25 * (1 - (d / CRATER) ** 2) : 0;
           return h * (Math.pow(1 - d, 1.7) - crater);
         };
       return Math.max(
@@ -439,6 +440,31 @@ export function landformAt(w: World, seed: number, x: number) {
     cut = Math.max(cut, D * g);
   }
   return { L: L * coast * valley, U: U * coast, cut: cut * coast, form: u.form };
+}
+
+/** A crater's half-width, as a fraction of its cone's radius. */
+const CRATER = 0.09;
+
+/**
+ * The volcano whose main cone is near x, if any: its crater's centre and
+ * half-width (art columns), its cone's radius, and whether it is active (a
+ * lava lake, glowing flows and a plume) or dormant (old black flows, a crater
+ * lake where it rains enough). Half are active.
+ */
+export function volcanoAt(w: World, seed: number, x: number) {
+  const u = unitOf(w, seed, unitIndex(seed, x));
+  if (u.form !== LANDFORM.VOLCANO) return null;
+  const wd = u.x1 - u.x0,
+    s = u.s,
+    cx = u.x0 + wd * (0.35 + 0.3 * hash3(s, 3, 9)),
+    r = wd * (0.28 + 0.07 * hash3(s, 4, 9));
+  return {
+    cx,
+    half: CRATER * r,
+    r,
+    active: hash3(s, 17, 9) < 0.5,
+    side: hash3(s, 18, 9) < 0.5 ? -1 : 1,
+  };
 }
 
 /** The landform name of the unit at x (for labels). */

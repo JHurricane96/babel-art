@@ -23,6 +23,8 @@ const enum K {
   Leaf,
   /** A water drop: hangs from a cave ceiling, swells, then falls. */
   Drip,
+  /** A puff of smoke and steam over a lava lake: rises, drifts, swells, fades. */
+  Smoke,
 }
 interface Particle {
   k: K;
@@ -152,6 +154,10 @@ export class Life {
       spawn(e.embers, 0.25, (x, y) =>
         this.parts.push({ k: K.Ember, x: x + rnd(-1, 1), y, vx: rnd(-1, 1), vy: rnd(-9, -4), age: 0, life: rnd(1, 2.5), floor: 1e9 }),
       );
+      if (e.vents)
+        spawn(e.vents, 0.15, (x, y) =>
+          this.parts.push({ k: K.Smoke, x: x + rnd(-2, 2), y, vx: rnd(-1, 1), vy: rnd(-16, -11), age: 0, life: rnd(14, 22), floor: 1e9 }),
+        );
       spawn(e.spray, 4, (x, y) =>
         this.parts.push({ k: K.Spray, x: x + rnd(-2, 2), y, vx: rnd(-8, 8), vy: rnd(-10, -3), age: 0, life: rnd(0.5, 1), floor: 1e9 }),
       );
@@ -236,6 +242,11 @@ export class Life {
         p.y += p.vy * dt;
       } else if (p.k === K.Ember) {
         p.x += (p.vx + w * 1.5) * dt;
+        p.y += p.vy * dt;
+      } else if (p.k === K.Smoke) {
+        // Rises, slowing, and leans downwind more the higher it gets.
+        p.vy *= 1 - 0.03 * dt;
+        p.x += (p.vx + w * (2 + p.age * 0.5)) * dt;
         p.y += p.vy * dt;
       } else if (p.k === K.Spray) {
         p.vy += 30 * dt;
@@ -355,6 +366,13 @@ export class Life {
       }
       else if (p.k === K.Ember) put(p.x, p.y, 0.5, 1, 0.55 + 0.3 * fade, 0.25, fade);
       else if (p.k === K.Spray) put(p.x, p.y, 0.5, 0.9, 0.96, 1, 0.75 * fade);
+      else if (p.k === K.Smoke) {
+        // Blocky puffs, swelling as they rise; pale grey, thinning out.
+        const grow = Math.min(1, p.age / p.life),
+          size = Math.round(3 + 9 * grow),
+          g = 0.8 + 0.12 * grow;
+        put(p.x, p.y, size, g, g, g * 1.02, 0.55 * (1 - grow * 0.8) * Math.min(1, p.age * 2));
+      }
       else if (p.k === K.Snow) {
         // Cool blue-white, never the stars' warm white.
         if (p.vx) put(p.x, p.y, 1, 0.78, 0.86, 1, 0.8);
