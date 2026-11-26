@@ -1,0 +1,128 @@
+<title>Strata Atlas</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500&family=Space+Grotesk:wght@500;600&display=swap">
+<style>
+/* Layout: the map is the page; the worlds to choose from, the views and the readout beside it; the section through the world beneath. One dark look, like the other Strata tools. */
+:root {
+  --bg: #111418;
+  --panel: #191d23;
+  --raised: #232831;
+  --fg: #e9e5da;
+  --muted: #979aa3;
+  --accent: #e8a95c;
+  --line: #2d333d;
+  --sky: #a9c3d8;
+  --display: "Space Grotesk", system-ui, sans-serif;
+  --body: "Inter", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  color-scheme: dark;
+}
+html, body { min-height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 14px; overflow-x: hidden; }
+.app {
+  box-sizing: border-box; display: flex; flex-direction: column; gap: 14px;
+  padding-block: 14px 24px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  max-width: 1360px; margin: 0 auto;
+}
+header { display: flex; flex-direction: column; gap: 4px; }
+h1 { font-family: var(--display); font-weight: 600; font-size: 20px; margin: 0; letter-spacing: 0.01em; }
+header p { margin: 0; color: var(--muted); font-size: 13px; max-width: 86ch; line-height: 1.5; }
+h2 { font-family: var(--mono); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.09em; color: var(--muted); margin: 0; }
+.main { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; }
+.mapwrap { position: relative; min-width: 0; }
+#map { display: block; width: 100%; aspect-ratio: 1; max-width: 100%; border-radius: 4px; background: var(--panel); cursor: crosshair; touch-action: none; image-rendering: pixelated; }
+#busy { position: absolute; left: 12px; top: 12px; font-family: var(--mono); font-size: 12px; color: var(--fg); background: rgba(17, 20, 24, 0.78); padding: 5px 9px; border-radius: 3px; }
+#busy[hidden] { display: none; }
+.hint { position: absolute; right: 12px; bottom: 12px; font-size: 12px; color: var(--fg); background: rgba(17, 20, 24, 0.7); padding: 4px 8px; border-radius: 3px; pointer-events: none; }
+.side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.story { margin: 0; font-size: 13.5px; line-height: 1.5; }
+.story b { font-family: var(--display); font-weight: 600; font-size: 16px; display: block; margin-bottom: 2px; }
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-family: var(--mono); font-size: 12px; margin: 0; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; font-variant-numeric: tabular-nums; }
+.worlds { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.world { position: relative; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); cursor: pointer; overflow: hidden; aspect-ratio: 1; }
+.world canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+.world span { position: absolute; left: 4px; bottom: 4px; font-family: var(--mono); font-size: 10.5px; background: rgba(17, 20, 24, 0.75); padding: 1px 5px; border-radius: 2px; color: var(--fg); }
+.world[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+button { font: 500 13px var(--body); color: var(--fg); background: var(--raised); border: 1px solid var(--line); border-radius: 4px; padding: 5px 9px; cursor: pointer; }
+button:hover { border-color: var(--muted); }
+button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+input[type="text"] { font: 500 13px var(--mono); color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; width: 9ch; }
+#readout { font-family: var(--mono); font-size: 12px; line-height: 1.55; min-height: 7.5em; margin: 0; color: var(--fg); white-space: pre-wrap; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); }
+.legend i { display: inline-flex; align-items: center; gap: 5px; font-style: normal; }
+.legend b { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.section { display: flex; flex-direction: column; gap: 8px; }
+.section .top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; align-items: baseline; }
+#sect-note { font-size: 12.5px; color: var(--muted); margin: 0; }
+#section { display: block; width: 100%; height: 230px; border-radius: 4px; background: var(--panel); }
+@media (max-width: 900px) {
+  .main { grid-template-columns: minmax(0, 1fr); }
+  .worlds { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  #section { height: 190px; }
+}
+@media (max-width: 520px) {
+  .worlds { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  button { padding: 4px 7px; font-size: 12px; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="app">
+  <header>
+    <h1>Strata Atlas</h1>
+    <p>Worlds made the way Strata makes them, as maps: about 100 km of land lived through three and a half million years. Ranges rise, rivers wear them down and branch out on their own, hollows fill as lakes, the wind brings rain to one side of the mountains and leaves the other dry. Every day has its own world. Drag across the map to cut a section through it.</p>
+  </header>
+  <div class="main">
+    <div class="mapwrap">
+      <canvas id="map" width="512" height="512" aria-label="Map of the selected world"></canvas>
+      <div id="busy">Making today's world…</div>
+      <div class="hint">Drag to cut a section</div>
+    </div>
+    <aside class="side">
+      <p class="story" id="story"><b>–</b></p>
+      <dl class="facts" id="facts"></dl>
+      <div class="section-pick" style="display:flex;flex-direction:column;gap:8px">
+        <h2>Worlds</h2>
+        <div class="worlds" id="worlds"></div>
+        <div class="row">
+          <button id="more">Six more</button>
+          <label for="seed-in" style="color:var(--muted);font-size:12px">Seed</label>
+          <input id="seed-in" type="text" inputmode="numeric" aria-label="A world by its seed">
+          <button id="seed-go">Make</button>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <h2>Show</h2>
+        <div class="row" role="group" aria-label="Map view">
+          <button id="v-land" data-view="land" aria-pressed="true">Land</button>
+          <button id="v-height" data-view="height" aria-pressed="false">Height</button>
+          <button id="v-rain" data-view="rain" aria-pressed="false">Rain</button>
+          <button id="v-warmth" data-view="warmth" aria-pressed="false">Warmth</button>
+          <button id="v-rock" data-view="rock" aria-pressed="false">Rock</button>
+        </div>
+        <div class="legend" id="legend"></div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <h2>Here</h2>
+        <p id="readout">Point at the map.</p>
+      </div>
+    </aside>
+  </div>
+  <div class="section">
+    <div class="top">
+      <h2>Section</h2>
+      <p id="sect-note">–</p>
+    </div>
+    <canvas id="section" aria-label="A section through the world along the line on the map: the land, the water and the rock beneath"></canvas>
+    <div class="legend" id="rock-legend"></div>
+  </div>
+</div>
+<!-- SCRIPT -->
