@@ -113,6 +113,7 @@ in vec3 vW;
 in float vZ;
 uniform sampler2D uN0, uN1, uN2, uK0, uK1, uK2, uPal, uRoad;
 uniform vec4 uG0, uG1, uG2;
+uniform int uBiome0;
 out vec4 oColor;
 bool inside(vec4 g, vec2 xz) { vec2 f = (xz - g.xy) / g.z; return all(greaterThanEqual(f, vec2(1.0))) && all(lessThan(f, vec2(g.w - 2.0))); }
 vec4 nrmAt(int gi, vec2 xz) {
@@ -120,10 +121,16 @@ vec4 nrmAt(int gi, vec2 xz) {
   if (gi == 1) return texture(uN1, ((xz - uG1.xy) / uG1.z + 0.5) / uG1.w);
   return texture(uN2, ((xz - uG2.xy) / uG2.z + 0.5) / uG2.w);
 }
-int kindAt(int gi, vec2 xz) {
-  if (gi == 0) return int(texelFetch(uK0, ivec2(floor((xz - uG0.xy) / uG0.z + 0.5)), 0).r * 255.0 + 0.5);
-  if (gi == 1) return int(texelFetch(uK1, ivec2(floor((xz - uG1.xy) / uG1.z + 0.5)), 0).r * 255.0 + 0.5);
-  return int(texelFetch(uK2, ivec2(clamp(floor((xz - uG2.xy) / uG2.z + 0.5), vec2(0.0), vec2(uG2.w - 1.0))), 0).r * 255.0 + 0.5);
+vec2 kindTex(int gi, vec2 xz) {
+  if (gi == 0) return texelFetch(uK0, ivec2(floor((xz - uG0.xy) / uG0.z + 0.5)), 0).rg;
+  if (gi == 1) return texelFetch(uK1, ivec2(floor((xz - uG1.xy) / uG1.z + 0.5)), 0).rg;
+  return texelFetch(uK2, ivec2(clamp(floor((xz - uG2.xy) / uG2.z + 0.5), vec2(0.0), vec2(uG2.w - 1.0))), 0).rg;
+}
+int kindAt(int gi, vec2 xz) { return int(kindTex(gi, xz).r * 255.0 + 0.5); }
+// Rows of a biome's own ramps: grass, leaves, sand (or -1 where there is no biome: water).
+int biomeRamp(int gi, vec2 xz, int which) {
+  int b = int(kindTex(gi, xz).g * 255.0 + 0.5);
+  return b == 255 ? -1 : uBiome0 + b * 3 + which;
 }
 vec3 pal(int ramp, float tone) { return texelFetch(uPal, ivec2(clamp(int(floor(tone)), 0, 5), ramp), 0).rgb; }
 void main() {
@@ -169,13 +176,14 @@ void main() {
   int ramp = 0;
   float pat = 0.0;
   vec2 Q = P.xz;
-  if (k == 0 || k == 1) { // meadow, alpine meadow
-    ramp = k;
+  int bg = biomeRamp(gi, P.xz + warp, 0);
+  if (k == 0 || k == 1) { // meadow, alpine meadow: the biome's own grass
+    ramp = bg >= 0 ? bg : k;
     pat = 0.7 * bn(Q, 13.0, s, 1u) + 0.55 * bn(Q, 2.6, s, 2u) + 0.6 * bn(Q, 0.5, s, 3u) + 0.45 * bn(Q, 0.13, s, 4u);
   } else if (k == 2 || k == 3) { // woods: the floor near, the canopy far
     bool canopy = d > 700.0 + 300.0 * bayer(ti) || gi != 0;
     if (canopy) {
-      ramp = k == 2 ? 4 : 5;
+      ramp = bg >= 0 ? bg + 1 : k == 2 ? 4 : 5;
       float cl = vnoise(Q / (k == 2 ? 7.0 : 5.0), 7u);
       pat = (cl > 0.62 ? 1.1 : cl < 0.32 ? -1.3 : 0.0) * clamp(7.0 / s - 1.0, 0.0, 1.0) + 0.6 * bn(Q, 2.2, s, 8u) + 0.5 * bn(Q, 40.0, s, 9u);
       light = 0.12 + 0.75 * lam;
@@ -227,6 +235,11 @@ void main() {
   } else if (k == 14) { // yards and lanes in the town
     ramp = 19;
     pat = 0.7 * bn(Q, 0.5, s, 28u) + 0.5 * bn(Q, 5.0, s, 29u) + 0.5 * (hashf(ti, 30u) - 0.5) * clamp(0.25 / s - 0.5, 0.0, 1.0);
+  } else if (k == 16) { // sand: ripples on the flat, the biome's own colour
+    ramp = bg >= 0 ? bg + 2 : 20;
+    float ru = dot(Q, vec2(0.6, 0.8));
+    pat = (fract(ru / 1.7 + 0.3 * vnoise(Q / 9.0, 46u)) < 0.35 ? 0.55 : 0.0) * clamp(1.7 / s * 0.5 - 0.8, 0.0, 1.0) + 0.6 * bn(Q, 11.0, s, 47u) + 0.3 * bn(Q, 0.4, s, 48u);
+    light = 0.3 + 0.85 * lam;
   } else { // shores: gravel
     ramp = 20;
     pat = 1.0 * (hashf(ti, 31u) - 0.5) * clamp(0.3 / s - 0.5, 0.0, 1.0) + 0.5 * bn(Q, 2.0, s, 32u);
@@ -321,11 +334,11 @@ vec4 spriteColour(int atlas, ivec2 src, int slot, uint seed) {
   if (v.r == 0u) return vec4(0.0);
   uint m = v.r >> 3, t = v.r & 7u;
   uint re = texelFetch(uMat, ivec2(int(m), slot), 0).r;
-  int ramp = int(re & 0x7fffu);
+  int ramp = int(re & 0x3fffu);
   if ((re & 0x8000u) != 0u) {
     ramp += int(seed & 15u);
-    // About one tree in ten turning: some of its cells, all in one shade.
-    if (m == 11u && ((seed >> 8) & 255u) < 26u) {
+    // About one broadleaf in ten turning: some of its cells, all in one shade.
+    if (m == 11u && (re & 0x4000u) != 0u && ((seed >> 8) & 255u) < 26u) {
       float a = 0.15 + float((seed >> 16) & 255u) / 255.0 * 0.35;
       if (float(hashu(uvec2(v.g, seed)) & 1023u) / 1024.0 < a) ramp = uAutumn0 + int((seed >> 24) % 3u);
     }
@@ -586,6 +599,7 @@ export class Renderer {
   grids: { h: WebGLTexture; n: WebGLTexture; k: WebGLTexture; spec: GridSpec }[] = [];
   road!: WebGLTexture;
   pal: WebGLTexture;
+  palBase: Uint8Array;
   patchVao!: WebGLVertexArrayObject;
   patchBuf!: WebGLBuffer;
   patchIdx = 0;
@@ -632,13 +646,14 @@ export class Renderer {
         spec,
         h: this.tex2d(gl.R32F, spec.n, spec.n, gl.RED, gl.FLOAT, null, gl.NEAREST),
         n: this.tex2d(gl.RGBA8, spec.n, spec.n, gl.RGBA, gl.UNSIGNED_BYTE, null, gl.LINEAR),
-        k: this.tex2d(gl.R8, spec.n, spec.n, gl.RED, gl.UNSIGNED_BYTE, null, gl.NEAREST),
+        k: this.tex2d(gl.RG8, spec.n, spec.n, gl.RG, gl.UNSIGNED_BYTE, null, gl.NEAREST),
       });
     this.road = this.tex2d(gl.R8, GRIDS[0].n, GRIDS[0].n, gl.RED, gl.UNSIGNED_BYTE, null, gl.LINEAR);
     // The palette.
     const pal = new Uint8Array(6 * RAMP_COLOURS.length * 4);
     RAMP_COLOURS.forEach(([c, spread], r) => rampOf(hex(c), spread).forEach((rgb, t) => pal.set([...rgb.map((v) => Math.round(v * 255)), 255], (r * 6 + t) * 4)));
     this.pal = this.tex2d(gl.RGBA8, 6, RAMP_COLOURS.length, gl.RGBA, gl.UNSIGNED_BYTE, pal, gl.NEAREST);
+    this.palBase = pal;
     this.makePatch();
     // A quad for sprites, a triangle pair for full-screen passes.
     this.quadBuf = gl.createBuffer()!;
@@ -706,7 +721,7 @@ export class Renderer {
     gl.bindTexture(gl.TEXTURE_2D, g.n);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, r0, n, r1 - r0, gl.RGBA, gl.UNSIGNED_BYTE, nrm);
     gl.bindTexture(gl.TEXTURE_2D, g.k);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, r0, n, r1 - r0, gl.RED, gl.UNSIGNED_BYTE, kind);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, r0, n, r1 - r0, gl.RG, gl.UNSIGNED_BYTE, kind);
     if (gi === 0) {
       gl.bindTexture(gl.TEXTURE_2D, this.road);
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, r0, n, r1 - r0, gl.RED, gl.UNSIGNED_BYTE, road);
@@ -885,6 +900,16 @@ export class Renderer {
     });
     gl.uniform1i(this.u(p, "uAutumn0"), this.autumn0);
   }
+  /** Each biome's grass, leaves and sand (three ramps a biome, after the ground's own). */
+  setBiomeRamps(ramps: number[][][]) {
+    const gl = this.gl,
+      rows = RAMP_COLOURS.length + ramps.length,
+      pal = new Uint8Array(6 * rows * 4);
+    pal.set(this.palBase);
+    ramps.forEach((r, k) => r.forEach((rgb, t) => pal.set([...rgb.map((v) => Math.round(v * 255)), 255], ((RAMP_COLOURS.length + k) * 6 + t) * 4)));
+    gl.deleteTexture(this.pal);
+    this.pal = this.tex2d(gl.RGBA8, 6, rows, gl.RGBA, gl.UNSIGNED_BYTE, pal, gl.NEAREST);
+  }
   setClouds(w: number, h: number, data: Uint8Array) {
     this.clouds = this.tex2d(this.gl.RGBA8, w, h, this.gl.RGBA, this.gl.UNSIGNED_BYTE, data, this.gl.NEAREST);
   }
@@ -951,8 +976,12 @@ export class Renderer {
         visit(x0, z0, h); visit(x0 + h, z0, h); visit(x0, z0 + h, h); visit(x0 + h, z0 + h, h);
       } else out.push(x0, z0, size, dist);
     };
-    const R = 131072;
-    visit(2000 - R / 2, 2000 - R / 2, R);
+    // The root square: centred on the far grid (the whole world), with room past its edges.
+    const R = 131072,
+      far = GRIDS[GRIDS.length - 1],
+      cx = far.x0 + (far.cell * far.n) / 2,
+      cz = far.z0 + (far.cell * far.n) / 2;
+    visit(cx - R / 2, cz - R / 2, R);
     // Near first, so the depth test saves work further off.
     const n = out.length / 4,
       order = Array.from({ length: n }, (_, i) => i).sort((a, b) => out[a * 4 + 3] - out[b * 4 + 3]),
@@ -1034,6 +1063,7 @@ export class Renderer {
     gl.activeTexture(gl.TEXTURE0 + unit + 1);
     gl.bindTexture(gl.TEXTURE_2D, this.road);
     gl.uniform1i(this.u(p, "uRoad"), unit + 1);
+    gl.uniform1i(this.u(p, "uBiome0"), RAMP_COLOURS.length);
     const patches = this.patches(cam);
     gl.bindVertexArray(this.patchVao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.patchBuf);

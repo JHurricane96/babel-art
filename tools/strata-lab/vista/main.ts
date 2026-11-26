@@ -1,9 +1,10 @@
 // Strata Vista: the page. Builds the valley in workers, packs the sprites,
 // walks the party along the route, directs the camera, and draws.
 import { ART_H, ART_W, F, FOV, Renderer, type Camera, type PartsFrame, type Sprites, type SpriteData } from "./render";
-import {
-  BRIDGE, FAR, FINE, GRIDS, KIND, MID, ROAD2, ROUTE, along, bridgeOf, cumulative, hash2, layoutBuildings, mulberry,
-} from "./valley";
+import { BIOMES as BIOME_DEFS, ZONE } from "../../../engine/strata/biomes";
+import { BIOMES as BIOME_MAP, type World2D } from "../../../engine/strata/world2d";
+import { G, type LandData, type Place, ground, land, landFromWorld, setLand, worldSize } from "./land";
+import { FAR, FINE, GRIDS, KIND, MID, ROUTE, along, cumulative, hash2, mulberry, placeGrids } from "./valley";
 import { M } from "../../../engine/strata/world";
 import { hex, rampOf, shiftColor } from "./color";
 import { HMAX, type Plan, type SlotPack } from "./pack";
@@ -20,8 +21,6 @@ let mode: "auto" | "follow" | "turn" = "auto",
   paused = matchMedia("(prefers-reduced-motion: reduce)").matches,
   simTime = 0,
   s = 0,
-  caravan = 300,
-  caravanDir = 1,
   walked = 0;
 const cam: Camera = { x: 0, y: 0, z: 0, yaw: 0 };
 let snap = true,
@@ -37,6 +36,7 @@ const LEAD_FX = 0.27,
 // CPU copies of the grids (heights for all three; kinds for the fine one).
 const HGT = GRIDS.map((g) => new Float32Array(g.n * g.n));
 const FINE_K = new Uint8Array(FINE.n * FINE.n),
+  FINE_B = new Uint8Array(FINE.n * FINE.n),
   FINE_R = new Uint8Array(FINE.n * FINE.n);
 function heightIn(gi: number, x: number, z: number) {
   const g = GRIDS[gi],
@@ -66,35 +66,115 @@ function surfaceMax(x: number, z: number, r: number) {
 }
 
 // ---- The route ---------------------------------------------------------------------------------
-const RC = cumulative(ROUTE),
-  TOTAL = RC[RC.length - 1],
-  R2C = cumulative(ROAD2);
+// Each place has its own walk: across the fine grid, through the place, by the easiest way.
+let RC = [0, 1],
+  TOTAL = 1,
+  place: Place = { name: "", x: 0, z: 0 },
+  placeIndex = 0;
 const routeAt = (v: number) => along(ROUTE, RC, v);
-let bridge = { ax: 0, az: 0, bx: 0, bz: 0, deck: 0 };
-function partyY(v: number) {
-  const p = routeAt(v),
-    g = surfaceAt(p.x, p.z),
-    s0 = RC[BRIDGE],
-    s1 = RC[BRIDGE + 1];
-  if (v >= s0 && v <= s1) return bridge.deck;
-  const dd = v < s0 ? s0 - v : v - s1;
-  return Math.max(g, bridge.deck - dd * 0.35);
-}
-const CHAPTERS = [
-  { name: "Riverside", long: "Riverside meadows", s: 0 },
-  { name: "Up the valley", long: "Up the valley", s: RC[3] },
-  { name: "Bridge", long: "The bridge", s: RC[BRIDGE] - 60 },
-  { name: "Town", long: "The hill town", s: RC[9] },
-  { name: "Ridge road", long: "The ridge road", s: RC[15] },
-  { name: "Switchbacks", long: "Switchbacks", s: RC[17] },
-  { name: "Pass", long: "The pass", s: RC[22] - 160 },
-  { name: "Lake", long: "Down to the lake", s: RC[22] + 40 },
-];
-const chapterAt = (v: number) => {
-  let c = 0;
-  for (let k = 0; k < CHAPTERS.length; k++) if (v >= CHAPTERS[k].s) c = k;
-  return c;
+const partyY = (v: number) => {
+  const p = routeAt(v);
+  return surfaceAt(p.x, p.z);
 };
+/** The walk at a place: A* over a 32 m lattice on the fine grid (steep ground costs, rivers can be forded,
+ * lakes and the sea cannot), from one side of the grid to the other, then smoothed. */
+function planRoute(p: Place): [number, number][] {
+  const g = FINE,
+    size = g.cell * g.n,
+    margin = 220,
+    step = 32,
+    m = Math.floor((size - 2 * margin) / step),
+    x0 = g.x0 + margin,
+    z0 = g.z0 + margin,
+    H = new Float32Array(m * m),
+    W = new Uint8Array(m * m);
+  for (let j = 0; j < m; j++)
+    for (let i = 0; i < m; i++) {
+      const h = ground(x0 + i * step, z0 + j * step);
+      H[j * m + i] = h;
+      W[j * m + i] = G.level > h ? (G.lake || G.sea ? 2 : 1) : 0;
+    }
+  const node = (x: number, z: number) => {
+    const i = Math.min(m - 1, Math.max(0, Math.round((x - x0) / step))),
+      j = Math.min(m - 1, Math.max(0, Math.round((z - z0) / step)));
+    // The nearest dry node.
+    for (let r = 0; r < m; r++)
+      for (let dj = -r; dj <= r; dj++)
+        for (let di = -r; di <= r; di++) {
+          if (Math.max(Math.abs(di), Math.abs(dj)) !== r) continue;
+          const ii = i + di,
+            jj = j + dj;
+          if (ii < 0 || jj < 0 || ii >= m || jj >= m) continue;
+          if (!W[jj * m + ii]) return jj * m + ii;
+        }
+    return j * m + i;
+  };
+  const cx = Math.min(g.x0 + size - 600, Math.max(g.x0 + 600, p.x)),
+    cz = Math.min(g.z0 + size - 600, Math.max(g.z0 + 600, p.z)),
+    R0 = size / 2 - margin - 80,
+    a0 = hash2(land().seed & 0xffff, placeIndex, 5) * Math.PI * 2;
+  let best: number[] | null = null;
+  for (let tries = 0; tries < 6 && !best; tries++) {
+    const a = a0 + tries * (Math.PI / 6),
+      s0 = node(cx - Math.cos(a) * R0, cz - Math.sin(a) * R0),
+      s1 = node(cx + Math.cos(a) * R0, cz + Math.sin(a) * R0);
+    // A*.
+    const cost = new Float32Array(m * m).fill(Infinity),
+      from = new Int32Array(m * m).fill(-1),
+      open: number[] = [s0],
+      est = (k: number) => Math.hypot((k % m) - (s1 % m), Math.floor(k / m) - Math.floor(s1 / m)) * step;
+    cost[s0] = 0;
+    const done = new Uint8Array(m * m);
+    while (open.length) {
+      let bi = 0;
+      for (let q = 1; q < open.length; q++) if (cost[open[q]] + est(open[q]) < cost[open[bi]] + est(open[bi])) bi = q;
+      const k = open[bi];
+      open[bi] = open[open.length - 1];
+      open.pop();
+      if (done[k]) continue;
+      done[k] = 1;
+      if (k === s1) break;
+      const ki = k % m,
+        kj = Math.floor(k / m);
+      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+        const ii = ki + di,
+          jj = kj + dj;
+        if (ii < 0 || jj < 0 || ii >= m || jj >= m) continue;
+        const q = jj * m + ii;
+        if (done[q] || W[q] === 2) continue;
+        const len = Math.hypot(di, dj) * step,
+          sl = Math.abs(H[q] - H[k]) / len,
+          c = cost[k] + len * (1 + 60 * sl * sl + (sl > 0.45 ? 40 : 0)) + (W[q] === 1 ? 500 : 0);
+        if (c < cost[q]) {
+          cost[q] = c;
+          from[q] = k;
+          open.push(q);
+        }
+      }
+    }
+    if (from[s1] < 0) continue;
+    const path: number[] = [];
+    for (let k = s1; k >= 0; k = from[k]) path.push(k);
+    best = path.reverse();
+  }
+  let pts: [number, number][] = (best ?? [node(cx - R0, cz), node(cx + R0, cz)]).map((k) => [x0 + (k % m) * step, z0 + Math.floor(k / m) * step]);
+  for (let it = 0; it < 3; it++) {
+    const q: [number, number][] = [pts[0]];
+    for (let k = 0; k < pts.length - 1; k++) {
+      const [ax, az] = pts[k],
+        [bx, bz] = pts[k + 1];
+      q.push([0.75 * ax + 0.25 * bx, 0.75 * az + 0.25 * bz], [0.25 * ax + 0.75 * bx, 0.25 * az + 0.75 * bz]);
+    }
+    q.push(pts[pts.length - 1]);
+    pts = q;
+  }
+  // Every 16 m or so is plenty.
+  const out: [number, number][] = [pts[0]];
+  for (const pt of pts) if (Math.hypot(pt[0] - out[out.length - 1][0], pt[1] - out[out.length - 1][1]) > 16) out.push(pt);
+  out.push(pts[pts.length - 1]);
+  return out;
+}
+const chapterAt = (_v: number) => 0;
 
 // ---- The camera director ----------------------------------------------------------------------
 const angleTo = (a: number, b: number, k: number) => {
@@ -243,8 +323,10 @@ function buildSprites(packs: SlotPack[]): SpriteData {
       tree = TREE_NAMES.includes(kind);
     let first = -1;
     for (const [m, r] of pk.ramps) {
-      const id = tree && m === M.LEAF ? leafFamily(kind) | 0x8000 : addRamp(r);
-      if (first < 0) first = id & 0x7fff;
+      // Leaves: the tree's own colour (0x8000), and broadleaves may turn for autumn (0x4000).
+      const turns = ["oak", "beech", "maple", "birch"].includes(kind),
+        id = tree && m === M.LEAF ? leafFamily(kind) | 0x8000 | (turns ? 0x4000 : 0) : addRamp(r);
+      if (first < 0) first = id & 0x3fff;
       mat[pk.slot * 32 + m] = id;
     }
     for (let m = 0; m < 32; m++) if (!pk.ramps.some(([q]) => q === m)) mat[pk.slot * 32 + m] = Math.max(0, first);
@@ -435,22 +517,37 @@ function partsFrame(c: Camera, lists: { data: Float32Array; near: number; far: n
   return { trees: partTrees.subarray(0, n * 8), draws };
 }
 
-/** Ground cover for one 32 m tile: what grows depends on the ground. */
-const COVER_BY_KIND: Record<number, [string, number][]> = {
-  [KIND.GRASS]: [["grass", 0.32], ["grass2", 0.24], ["flowers white", 0.02], ["flowers yellow", 0.025], ["flowers purple", 0.012], ["stone", 0.01], ["shrub", 0.004]],
-  [KIND.ALPINE]: [["dry grass", 0.32], ["grass2", 0.1], ["flowers purple", 0.02], ["flowers white", 0.015], ["stone", 0.05], ["stone2", 0.03], ["boulder", 0.005]],
-  [KIND.FOREST]: [["fern", 0.12], ["fern2", 0.07], ["shrub", 0.03], ["grass2", 0.07], ["boulder2", 0.005], ["stone", 0.02]],
-  [KIND.CONIFER]: [["fern2", 0.05], ["shrub2", 0.02], ["stone", 0.05], ["boulder", 0.008], ["dry grass", 0.05]],
-  [KIND.ROCK]: [["stone", 0.04], ["boulder2", 0.006]],
-  [KIND.SCREE]: [["stone", 0.18], ["stone2", 0.1], ["boulder", 0.02], ["boulder2", 0.02]],
-  [KIND.PATH]: [["stone2", 0.01]],
-  [KIND.WHEAT]: [["dry grass", 0.6], ["flowers red", 0.012]],
-  [KIND.GREEN]: [["grass", 0.45]],
-  [KIND.FALLOW]: [["grass2", 0.06], ["stone", 0.02]],
-  [KIND.HEDGE]: [["shrub", 0.15], ["shrub2", 0.1]],
-  [KIND.YARD]: [["grass2", 0.05], ["stone", 0.01]],
-  [KIND.SHORE]: [["stone", 0.25], ["stone2", 0.15], ["boulder2", 0.01]],
-};
+/** Ground cover for one 32 m tile: what grows depends on the biome (its look: grass, flowers,
+ * shrubs, boulders, scree) and on the ground (woods, rock, scree, shore, the road). */
+const BLOOMS: [string, number[]][] = [["white", [232, 228, 216]], ["yellow", [226, 192, 64]], ["purple", [138, 100, 176]], ["red", [196, 80, 60]]];
+const coverLists = new Map<number, [string, number][]>();
+function coverFor(b: number, kind: number): [string, number][] {
+  if (kind === KIND.ROCK) return [["stone", 0.04], ["boulder2", 0.006]];
+  if (kind === KIND.SCREE) return [["stone", 0.18], ["stone2", 0.1], ["boulder", 0.02], ["boulder2", 0.02]];
+  if (kind === KIND.SHORE) return [["stone", 0.25], ["stone2", 0.15], ["boulder2", 0.01]];
+  if (kind === KIND.SNOW) return [["stone", 0.01]];
+  const key = b * 32 + kind;
+  let list = coverLists.get(key);
+  if (list) return list;
+  const look = BIOME_DEFS[b],
+    dry = look.zone === ZONE.STEPPE || look.zone === ZONE.DESERT || look.zone === ZONE.SAVANNA || look.zone === ZONE.MEDITERRANEAN,
+    woods = kind === KIND.FOREST || kind === KIND.CONIFER,
+    moist = look.ground === "moss" || look.zone === ZONE.OCEANIC || look.zone === ZONE.RAINFOREST || look.zone === ZONE.MONSOON,
+    bc = [1, 3, 5].map((k) => parseInt(look.bloom.slice(k, k + 2), 16)),
+    bloom = BLOOMS.reduce((a, c) => (Math.hypot(...c[1].map((v, k) => v - bc[k])) < Math.hypot(...a[1].map((v, k) => v - bc[k])) ? c : a))[0];
+  const tufts = Math.min(0.5, look.tufts * (woods ? 0.25 : 0.55));
+  list = [];
+  if (tufts > 0) list.push(dry ? ["dry grass", tufts] : ["grass", tufts * 0.6], dry ? ["grass2", tufts * 0.15] : ["grass2", tufts * 0.4]);
+  if (look.flowers > 0) list.push([`flowers ${bloom}`, Math.min(0.08, look.flowers * 0.5)]);
+  if (woods && moist) list.push(["fern", 0.1], ["fern2", 0.06]);
+  if (look.reeds > 0) list.push(["grass2", look.reeds * 0.2]);
+  if (look.shrubs > 0) list.push(["shrub", Math.min(0.12, look.shrubs * 0.35)], ["shrub2", Math.min(0.06, look.shrubs * 0.15)]);
+  if (look.boulders > 0) list.push(["boulder", Math.min(0.03, look.boulders * 3)]);
+  if (look.scree > 0.5 || kind === KIND.SAND) list.push(["stone", 0.015 * look.scree + (kind === KIND.SAND ? 0.01 : 0)]);
+  coverLists.set(key, list);
+  return list;
+}
+const COVER_PATH: [string, number][] = [["stone2", 0.01]];
 const TILE = 32;
 function coverTile(tx: number, tz: number): Float32Array {
   const out: number[] = [],
@@ -462,8 +559,8 @@ function coverTile(tx: number, tz: number): Float32Array {
     if (!inside(0, x, z)) continue;
     const ri = Math.round((z - FINE.z0) / FINE.cell) * FINE.n + Math.round((x - FINE.x0) / FINE.cell),
       rd = FINE_R[ri] / 20;
-    const list = rd < 2.1 ? COVER_BY_KIND[KIND.PATH] : COVER_BY_KIND[kindAt(x, z)];
-    if (!list) continue;
+    if (FINE_B[ri] === 255) continue;
+    const list = rd < 2.1 ? COVER_PATH : coverFor(FINE_B[ri], FINE_K[ri]);
     let r = R() * 0.65;
     for (const [name, d] of list) {
       if ((r -= d) < 0) {
@@ -496,7 +593,8 @@ let treeAll = new Float32Array(0),
 function bucketTrees(t: Float32Array) {
   const n = t.length / 6,
     count = new Int32Array(TNB * TNB + 1),
-    bk = (i: number) => Math.min(TNB - 1, Math.max(0, Math.floor(t[i * 6 + 2] / TBK))) * TNB + Math.min(TNB - 1, Math.max(0, Math.floor(t[i * 6] / TBK)));
+    bk = (i: number) =>
+      Math.min(TNB - 1, Math.max(0, Math.floor((t[i * 6 + 2] - FINE.z0) / TBK))) * TNB + Math.min(TNB - 1, Math.max(0, Math.floor((t[i * 6] - FINE.x0) / TBK)));
   for (let i = 0; i < n; i++) count[bk(i) + 1]++;
   for (let b = 0; b < TNB * TNB; b++) count[b + 1] += count[b];
   treeStart = count.slice();
@@ -510,6 +608,7 @@ function cullTrees(c: Camera) {
   while (dy > Math.PI) dy -= 2 * Math.PI;
   while (dy < -Math.PI) dy += 2 * Math.PI;
   if (Math.hypot(c.x - lastCull.x, c.z - lastCull.z) < 15 && Math.abs(dy) < 0.05) return null;
+  if (!treeAll.length) return new Float32Array(0);
   lastCull = { x: c.x, z: c.z, yaw: c.yaw };
   let n = 0;
   for (let bz = 0; bz < TNB; bz++)
@@ -517,7 +616,7 @@ function cullTrees(c: Camera) {
       const b = bz * TNB + bx,
         a0 = treeStart[b],
         a1 = treeStart[b + 1];
-      if (a0 === a1 || !inView(bx * TBK + TBK / 2, bz * TBK + TBK / 2, TBK * 0.75, c.x, c.z, c.yaw, 6000)) continue;
+      if (a0 === a1 || !inView(FINE.x0 + bx * TBK + TBK / 2, FINE.z0 + bz * TBK + TBK / 2, TBK * 0.75, c.x, c.z, c.yaw, 6000)) continue;
       treeOut.set(treeAll.subarray(a0 * 6, a1 * 6), n);
       n += (a1 - a0) * 6;
     }
@@ -583,17 +682,6 @@ function actors(c: Camera) {
   if (opt.marker) {
     const p = routeAt(s);
     out.push(p.x, partyY(s) + 2.4, p.z, 1, SLOTS.get("marker")!, 4);
-  }
-  const r2 = (v: number) => along(ROAD2, R2C, v);
-  const o = r2(caravan),
-    back = r2(caravan - 3.4 * caravanDir),
-    lead = r2(caravan + 2.2 * caravanDir),
-    fc = facing(o.hx * caravanDir, o.hz * caravanDir),
-    fr = Math.floor(caravan / 0.5) & 3;
-  if (inside(0, o.x, o.z)) {
-    others.push(o.x, surfaceAt(o.x, o.z), o.z, 1.6, SLOTS.get(`ox ${fr}`)!, fc.f === 0 ? fc.mirror : 0);
-    others.push(back.x, surfaceAt(back.x, back.z), back.z, 2.6, SLOTS.get("cart")!, fc.f === 0 ? fc.mirror : 0);
-    others.push(lead.x, surfaceAt(lead.x, lead.z), lead.z, 1.75, SLOTS.get(`person 4 ${fc.f} ${fr}`)!, fc.mirror);
   }
   return { party: Float32Array.from(out), others: Float32Array.from(others) };
 }
@@ -684,56 +772,60 @@ function layout() {
 }
 addEventListener("resize", layout);
 
-// The map: the valley from above, north up.
-const MX0 = -300,
-  MZ0 = -400,
-  MSPAN = 4900,
-  MAPN = 256,
+// The map: the whole world from above, north up: its biomes, shaded; the fine grid's square.
+const MAPN = 256,
   mapBase = document.createElement("canvas");
 mapBase.width = MAPN;
 mapBase.height = MAPN;
-const KIND_RGB = [
-  [110, 154, 62], [151, 153, 78], [70, 110, 48], [44, 74, 52], [150, 144, 132], [138, 132, 122], [230, 236, 244], [90, 138, 164],
-  [79, 126, 158], [180, 154, 112], [205, 176, 90], [122, 160, 64], [142, 118, 86], [62, 96, 48], [156, 142, 108], [164, 154, 136],
-];
+const MAP_RGB = BIOME_MAP.map((b) => [1, 3, 5].map((k) => parseInt(b.color.slice(k, k + 2), 16)));
 function buildMap() {
   const c = mapBase.getContext("2d")!,
-    im = c.createImageData(MAPN, MAPN);
+    im = c.createImageData(MAPN, MAPN),
+    L = land(),
+    size = worldSize();
   for (let py = 0; py < MAPN; py++)
     for (let px = 0; px < MAPN; px++) {
-      const x = MX0 + ((px + 0.5) / MAPN) * MSPAN,
-        z = MZ0 + MSPAN - ((py + 0.5) / MAPN) * MSPAN,
-        h = surfaceAt(x, z),
-        hx = surfaceAt(x + 10, z) - h,
-        sh = 0.85 + Math.max(-0.3, Math.min(0.3, -hx * 0.04));
-      const k = inside(0, x, z) ? kindAt(x, z) : h > 1400 ? 6 : h > 1100 ? 4 : h > 600 ? 3 : 0,
-        rgb = KIND_RGB[k] ?? [100, 100, 100];
+      const u = Math.floor(((px + 0.5) / MAPN) * L.n),
+        v = Math.floor(((py + 0.5) / MAPN) * L.n),
+        i = v * L.n + u,
+        hx = L.h[v * L.n + Math.min(L.n - 1, u + 1)] - L.h[i],
+        sh = 0.85 + Math.max(-0.3, Math.min(0.3, -hx * 0.004)),
+        b = L.biome[i],
+        rgb = L.wet[i] > -1e8 ? [79, 126, 158] : (MAP_RGB[b] ?? [100, 100, 100]);
       im.data.set([rgb[0] * sh, rgb[1] * sh, rgb[2] * sh, 255], (py * MAPN + px) * 4);
     }
   c.putImageData(im, 0, 0);
+  void size;
 }
 function drawMap(c2: Camera) {
   const m = $("map") as HTMLCanvasElement,
     c = m.getContext("2d")!,
     n = m.width,
-    k = n / MSPAN,
-    mx = (x: number) => (x - MX0) * k,
-    my = (z: number) => (MZ0 + MSPAN - z) * k,
+    size = worldSize(),
+    k = n / size,
+    mx = (x: number) => x * k,
+    my = (z: number) => (size - z) * k,
     u = n / 236;
+  c.imageSmoothingEnabled = false;
   c.drawImage(mapBase, 0, 0, n, n);
   c.lineCap = "round";
   c.lineJoin = "round";
-  c.strokeStyle = "rgba(244,239,226,0.5)";
+  // Places to go, and the fine grid's square (where the walk is).
+  c.fillStyle = "rgba(244,239,226,0.9)";
+  for (const pl of land().places) {
+    c.beginPath();
+    c.arc(mx(pl.x), my(pl.z), 2 * u, 0, 7);
+    c.fill();
+  }
+  c.strokeStyle = "rgba(244,239,226,0.8)";
   c.lineWidth = u;
-  c.beginPath();
-  ROAD2.forEach(([x, z], i) => (i ? c.lineTo(mx(x), my(z)) : c.moveTo(mx(x), my(z))));
-  c.stroke();
+  c.strokeRect(mx(FINE.x0), my(FINE.z0 + FINE.cell * FINE.n), FINE.cell * FINE.n * k, FINE.cell * FINE.n * k);
   c.strokeStyle = "rgba(244,239,226,0.95)";
   c.lineWidth = 1.6 * u;
   c.beginPath();
   ROUTE.forEach(([x, z], i) => (i ? c.lineTo(mx(x), my(z)) : c.moveTo(mx(x), my(z))));
   c.stroke();
-  const L = 1500,
+  const L = 12000,
     a0 = c2.yaw - FOV / 2,
     a1 = c2.yaw + FOV / 2;
   c.fillStyle = "rgba(127,196,255,0.22)";
@@ -757,7 +849,7 @@ function drawMap(c2: Camera) {
 }
 
 const NOTES: Record<string, string> = {
-  auto: "Picks for each stretch: Turn where the way runs straight, Follow where it winds (the town, the switchbacks).",
+  auto: "Picks for each stretch: Turn where the way runs straight, Follow where it winds.",
   follow: "Faces the way the route is heading and lets the party walk away into the scene before moving after them.",
   turn: "Swings round as the route turns, so the party walks across the screen while the land turns behind them.",
 };
@@ -773,7 +865,7 @@ function hud(now: number, c2: Camera) {
     d = ex * Math.sin(c2.yaw) + ez * Math.cos(c2.yaw),
     px = (1.75 * F) / Math.max(1, d),
     st = renderer.stats;
-  $("r-stretch").textContent = CHAPTERS[chapterAt(s)].long;
+  $("r-stretch").textContent = place.name;
   $("r-camera").textContent = mode === "auto" ? `auto: ${current}` : current;
   $("r-dist").textContent = `${Math.round(Math.hypot(ex, ez))} m from the camera`;
   $("r-size").textContent = `${px.toFixed(1)} px tall, ${Math.round(px * (1084 / ART_W))} mm on the wall`;
@@ -815,15 +907,18 @@ $("play").onclick = () => {
   paused = !paused;
   $("play").textContent = paused ? "Play" : "Pause";
 };
-for (const ch of CHAPTERS) {
-  const b = document.createElement("button");
-  b.textContent = ch.name;
-  b.id = `c-${ch.name.toLowerCase().replace(/\s+/g, "-")}`;
-  b.onclick = () => {
-    s = ch.s;
-    snap = true;
-  };
-  $("chapters").appendChild(b);
+/** Buttons for the places to go (once the world is made). */
+function placeButtons() {
+  const el = $("chapters");
+  el.querySelectorAll("button").forEach((b) => b.remove());
+  land().places.forEach((pl, i) => {
+    const b = document.createElement("button");
+    b.textContent = pl.name;
+    b.id = `c-${i}`;
+    b.setAttribute("aria-pressed", String(i === placeIndex));
+    b.onclick = () => goPlace(i);
+    el.appendChild(b);
+  });
 }
 // Seeking: a slider along the whole route, steps of 10 and 100 m, a single frame on.
 const routeEl = $("route") as HTMLInputElement;
@@ -835,9 +930,8 @@ const seekTo = (v: number) => {
 };
 function showRoute() {
   if (!dragging) routeEl.value = String(Math.round(s));
-  $("route-at").textContent = `${(s / 1000).toFixed(2)} of ${(TOTAL / 1000).toFixed(1)} km · ${CHAPTERS[chapterAt(s)].name}`;
+  $("route-at").textContent = `${(s / 1000).toFixed(2)} of ${(TOTAL / 1000).toFixed(1)} km · ${place.name}`;
 }
-routeEl.max = String(Math.floor(TOTAL - 1));
 routeEl.oninput = () => {
   dragging = true;
   seekTo(Number(routeEl.value));
@@ -864,43 +958,141 @@ window.addEventListener("keydown", (e: KeyboardEvent) => {
 $("mode-note").textContent = NOTES[mode];
 if (paused) $("play").textContent = "Play";
 
-// ---- Building the valley -------------------------------------------------------------------------
+// ---- Making the world, and the land at a place --------------------------------------------------------
+// Workers make the sprites and today's world; the world's land goes to every worker; then they build
+// the grids' bands for the place being visited (the far grid once: it covers the whole world).
 const nW = Math.max(2, Math.min(8, (navigator.hardwareConcurrency || 4) - 1)),
   workerUrl = URL.createObjectURL(new Blob([WORKER_SOURCE], { type: "text/javascript" })),
-  jobs: any[] = [];
-// Sprites: trees and shrubs one slot a job (the heavy ones), the rest a dozen at a time.
-const nSlots = DEFS.length;
-for (let a = 0; a < nSlots; ) {
-  const heavy = DEFS[a].maxClass >= 25 || DEFS[a].name.startsWith("shrub"),
-    b = heavy ? a + 1 : Math.min(nSlots, a + 12);
-  let to = a + 1;
-  while (to < b && !(DEFS[to].maxClass >= 25 || DEFS[to].name.startsWith("shrub"))) to++;
-  jobs.push({ type: "sprites", from: a, to: heavy ? a + 1 : to });
-  a = heavy ? a + 1 : to;
+  workers: Worker[] = [],
+  idle: Worker[] = [],
+  queue: { msg: any; done: (d: any) => void }[] = [],
+  running = new Map<Worker, { msg: any; done: (d: any) => void }>();
+function run(msg: any, done: (d: any) => void) {
+  queue.push({ msg, done });
+  pump();
 }
-for (const [gi, step] of [[2, 128], [1, 128], [0, 128]]) for (let r = 0; r < GRIDS[gi].n; r += step) jobs.push({ type: "band", gi, r0: r, r1: Math.min(GRIDS[gi].n, r + step) });
-jobs.forEach((j, i) => (j.id = i));
-let done = 0,
-  next = 0;
-const spritePacks: SlotPack[] = [],
-  treeParts: Float32Array[] = [];
-let ready = false,
+function pump() {
+  while (idle.length && queue.length) {
+    const w = idle.pop()!,
+      j = queue.shift()!;
+    running.set(w, j);
+    w.postMessage(j.msg);
+  }
+}
+const today = new Date(),
+  SEED = today.getFullYear() * 10000 + (today.getMonth() + 1) * 100 + today.getDate();
+let worldProgress = 0;
+for (let k = 0; k < nW; k++) {
+  const w = new Worker(workerUrl);
+  w.onmessage = (e) => {
+    if (e.data.progress !== undefined) {
+      worldProgress = e.data.progress;
+      $("loading").textContent = `Making today's world… ${Math.round(worldProgress * 100)}%`;
+      return;
+    }
+    const j = running.get(w)!;
+    running.delete(w);
+    idle.push(w);
+    j.done(e.data);
+    pump();
+  };
+  workers.push(w);
+  idle.push(w);
+}
+const spritePacks: SlotPack[] = [];
+let treeParts: Float32Array[] = [],
+  spritesLeft = 0,
+  ready = false,
   treesList: Sprites | null = null,
   coverList: Sprites | null = null,
   partyList: Sprites | null = null,
   actorList: Sprites | null = null;
+const t0 = performance.now();
+let buildMs = 0,
+  started = false;
 
-function onDone() {
-  bridge = bridgeOf((x, z) => heightIn(0, x, z));
-  const isWater = (x: number, z: number) => {
-    const k = kindAt(x, z);
-    return k === KIND.RIVER || k === KIND.LAKE;
-  };
-  const buildings = layoutBuildings((x, z) => heightIn(0, x, z), isWater);
-  renderer.setBuildings(buildings, { ...bridge, bed: (x, z) => heightIn(0, x, z) - (isWater(x, z) ? 3 : 0) });
-  renderer.setSprites(buildSprites(spritePacks));
-  const cl = buildClouds();
-  renderer.setClouds(cl.W, cl.H, cl.data);
+// Sprites: trees and shrubs one slot a job (the heavy ones), the rest a dozen at a time.
+const nSlots = DEFS.length;
+for (let a = 0; a < nSlots; ) {
+  const heavy = DEFS[a].maxClass >= 25 || DEFS[a].name.startsWith("shrub");
+  let to = a + 1;
+  if (!heavy) while (to < Math.min(nSlots, a + 12) && !(DEFS[to].maxClass >= 25 || DEFS[to].name.startsWith("shrub"))) to++;
+  spritesLeft++;
+  run({ type: "sprites", from: a, to }, (d) => {
+    spritePacks.push(...d.slots);
+    spritesLeft--;
+    maybeStart();
+  });
+  a = to;
+}
+// Today's world, first in the queue.
+queue.unshift({
+  msg: { type: "world", seed: SEED, n: 512 },
+  done: (d) => onWorld(d.world),
+});
+pump();
+
+/** Each biome's grass, leaves and sand, for the ground's palette. */
+function biomeRamps() {
+  const out: number[][][] = [];
+  for (const b of BIOME_DEFS) {
+    const sand = b.ground === "sand" ? b.earth : b.ground === "snow" ? "#e4ecf4" : b.earth;
+    out.push(rampOf(hex(b.grass)), rampOf(hex(b.leaf)), rampOf(hex(sand)));
+  }
+  return out;
+}
+function onWorld(w: World2D) {
+  const L = landFromWorld(w);
+  setLand(L);
+  for (const wk of workers) wk.postMessage({ type: "land", data: L });
+  renderer.setBiomeRamps(biomeRamps());
+  buildMap();
+  placeButtons();
+  goPlace(0);
+}
+let bandsLeft = 0;
+/** Go to a place: lay the mid and fine grids over it, plan its walk, rebuild their bands. */
+function goPlace(i: number) {
+  const L: LandData = land();
+  placeIndex = Math.min(L.places.length - 1, Math.max(0, i));
+  place = L.places[placeIndex];
+  placeGrids(place.x, place.z, worldSize());
+  ROUTE.splice(0, ROUTE.length, ...planRoute(place));
+  RC = cumulative(ROUTE);
+  TOTAL = RC[RC.length - 1];
+  routeEl.max = String(Math.floor(TOTAL - 1));
+  s = 0;
+  walked = 0;
+  snap = true;
+  document.querySelectorAll("#chapters button").forEach((b) => b.setAttribute("aria-pressed", String(b.id === `c-${placeIndex}`)));
+  $("loading").hidden = false;
+  $("loading").textContent = `Going to ${place.name}…`;
+  treeParts = [];
+  const grids = started ? [1, 0] : [2, 1, 0],
+    route = ROUTE.map((p) => [p[0], p[1]]);
+  for (const gi of grids)
+    for (let r = 0; r < GRIDS[gi].n; r += 128) {
+      bandsLeft++;
+      run({ type: "band", gi, r0: r, r1: Math.min(GRIDS[gi].n, r + 128), spec: { ...GRIDS[gi] }, route }, (d) => {
+        const b = d.band,
+          g = GRIDS[b.gi];
+        renderer.uploadBand(b.gi, b.r0, b.r1, b.h, b.nrm, b.kind, b.road);
+        HGT[b.gi].set(b.h, b.r0 * g.n);
+        if (b.gi === 0) {
+          for (let q = 0; q < b.kind.length / 2; q++) {
+            FINE_K[b.r0 * g.n + q] = b.kind[q * 2];
+            FINE_B[b.r0 * g.n + q] = b.kind[q * 2 + 1];
+          }
+          FINE_R.set(b.road, b.r0 * g.n);
+          treeParts.push(b.trees);
+        }
+        bandsLeft--;
+        if (!bandsLeft) placeReady();
+        else $("loading").textContent = `${started ? `Going to ${place.name}` : "Building the land"}… ${Math.round((1 - bandsLeft / 400) * 100)}%`;
+      });
+    }
+}
+function placeReady() {
   // Trees: x, y, z, height, slot (kind * 3 + variant), flipped with the sun.
   let n = 0;
   for (const t of treeParts) n += t.length / 6;
@@ -912,11 +1104,24 @@ function onDone() {
       o += 6;
     }
   bucketTrees(trees);
+  lastCull = { x: 1e9, z: 0, yaw: 0 };
+  coverCache.clear();
+  coverKey = "";
+  snap = true;
+  maybeStart();
+  if (started) $("loading").hidden = true;
+}
+function maybeStart() {
+  if (started || spritesLeft > 0 || bandsLeft > 0 || !treeParts.length) return;
+  started = true;
+  buildMs = performance.now() - t0;
+  renderer.setSprites(buildSprites(spritePacks));
+  const cl = buildClouds();
+  renderer.setClouds(cl.W, cl.H, cl.data);
   treesList = renderer.sprites(new Float32Array(0));
   coverList = renderer.sprites(new Float32Array(0));
   actorList = renderer.sprites(new Float32Array(0));
   partyList = renderer.sprites(new Float32Array(0));
-  buildMap();
   $("loading").hidden = true;
   layout();
   ready = true;
@@ -924,37 +1129,6 @@ function onDone() {
     last = t;
     frame(t);
   });
-  void 0;
-}
-const t0 = performance.now();
-let buildMs = 0;
-function feed(w: Worker) {
-  if (next >= jobs.length) return;
-  w.postMessage(jobs[next++]);
-}
-for (let k = 0; k < nW; k++) {
-  const w = new Worker(workerUrl);
-  w.onmessage = (e) => {
-    const d = e.data;
-    if (d.type === "band") {
-      const b = d.band,
-        g = GRIDS[b.gi];
-      renderer.uploadBand(b.gi, b.r0, b.r1, b.h, b.nrm, b.kind, b.road);
-      HGT[b.gi].set(b.h, b.r0 * g.n);
-      if (b.gi === 0) {
-        FINE_K.set(b.kind, b.r0 * g.n);
-        FINE_R.set(b.road, b.r0 * g.n);
-        treeParts.push(b.trees);
-      }
-    } else spritePacks.push(...d.slots);
-    done++;
-    $("loading").textContent = `Building the valley… ${Math.round((done / jobs.length) * 100)}%`;
-    if (done === jobs.length) {
-      buildMs = performance.now() - t0;
-      onDone();
-    } else feed(w);
-  };
-  feed(w);
 }
 void MID;
 void FAR;
@@ -1033,12 +1207,13 @@ async function runCheck(o: { quick?: boolean; timing?: boolean; settle?: number;
       });
     }
     const stretches = [];
-    for (const name of o.timing === false ? [] : ["Riverside", "Town", "Switchbacks"]) {
-      say(`Timing frames: ${name}…`);
+    // Three stretches of this place's walk: the start, the middle, near the end.
+    for (const [name, at] of o.timing === false ? [] : ([["start", 0.08], ["middle", 0.45], ["end", 0.8]] as const)) {
+      say(`Timing frames: the ${name} of the walk…`);
       mode = "auto";
       speed = 6;
       paused = false;
-      s = CHAPTERS.find((c) => c.name === name)!.s;
+      s = TOTAL * at;
       snap = true;
       await pause(quick ? 300 : 1200);
       frameLog = [];
@@ -1063,14 +1238,14 @@ async function runCheck(o: { quick?: boolean; timing?: boolean; settle?: number;
     // 2. Stability: step one shot frame by frame, with whole-pixel snapping on and off.
     hold = true;
     const stability = [];
-    for (const [shot, m] of [["Up the valley", "turn"], ["Town", "follow"]] as const)
+    for (const [shot, m, at] of [["a third of the way", "turn", 0.3], ["two thirds of the way", "follow", 0.62]] as const)
       for (const snapOn of [true, false]) {
         say(`Counting pixels that don't move like pixel art: ${shot}, snapping ${snapOn ? "on" : "off"}…`);
         opt.snap = snapOn;
         mode = m;
         speed = 3;
         paused = false;
-        s = CHAPTERS.find((c) => c.name === shot)!.s;
+        s = TOTAL * at;
         snap = true;
         for (let k = 0; k < (o.settle ?? (quick ? 3 : 30)); k++) frame(performance.now(), 1 / 60);
         let prev = renderer.readArt(),
@@ -1169,16 +1344,6 @@ function frame(now: number, forced = -1) {
     s = 0;
     snap = true;
   }
-  caravan += 1.1 * dt * caravanDir;
-  const c2end = R2C[R2C.length - 1];
-  if (caravan > c2end - 5) {
-    caravan = c2end - 5;
-    caravanDir = -1;
-  }
-  if (caravan < 10) {
-    caravan = 10;
-    caravanDir = 1;
-  }
   updateCamera(dt);
   const rc = renderCamera();
   const visTrees = cullTrees(rc);
@@ -1233,10 +1398,16 @@ Object.assign(window, {
     get buildMs() {
       return buildMs;
     },
-    jump(name: string) {
-      const ch = CHAPTERS.find((c) => c.name === name)!;
-      s = ch.s;
-      snap = true;
+    /** Go to a place, by its number or name. */
+    jump(which: number | string) {
+      const i = typeof which === "number" ? which : land().places.findIndex((p) => p.name === which);
+      goPlace(Math.max(0, i));
+    },
+    get places() {
+      return land().places.map((p) => p.name);
+    },
+    get place() {
+      return place.name;
     },
     setS(v: number) {
       s = v;
@@ -1257,6 +1428,16 @@ Object.assign(window, {
       return { s, mode, current, cam: { ...cam }, stats: { ...renderer.stats }, gpuMs: renderer.timer.ms, cpuMs, fps, total: TOTAL };
     },
     readArt: () => renderer.readArt(),
+    /** What the fine grid holds: its place, and how many cells of each kind and biome. */
+    probe() {
+      const kinds: Record<number, number> = {},
+        biomes: Record<number, number> = {};
+      for (let i = 0; i < FINE_K.length; i++) {
+        kinds[FINE_K[i]] = (kinds[FINE_K[i]] ?? 0) + 1;
+        biomes[FINE_B[i]] = (biomes[FINE_B[i]] ?? 0) + 1;
+      }
+      return { grids: GRIDS.map((g) => ({ ...g })), cam: { ...cam }, ground: surfaceAt(cam.x, cam.z), kinds, biomes };
+    },
     /** Stop the loop (for slow software GL in checks); step() then advances by dt seconds of real time and draws once. */
     hold() {
       hold = true;

@@ -2,7 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { CLASS_H, NC, drawSlots, slotDefs } from "../tools/strata-lab/vista/sprites.ts";
 import { buildBand } from "../tools/strata-lab/vista/grids.ts";
-import { FINE, ROUTE } from "../tools/strata-lab/vista/valley.ts";
+import { FAR, FINE, KIND_COUNT, placeGrids } from "../tools/strata-lab/vista/valley.ts";
+import { landFromWorld, setLand } from "../tools/strata-lab/vista/land.ts";
+import { BIOMES, generateWorld } from "../engine/strata/world2d.ts";
 
 test("vista sprites draw at every size class, growing with the class", () => {
   const defs = slotDefs();
@@ -24,17 +26,29 @@ test("vista sprites draw at every size class, growing with the class", () => {
   }
 });
 
-test("vista valley: the route runs over dry ground, with no trees on the road", () => {
-  // The band of the fine grid where the day starts.
-  const r0 = Math.floor((ROUTE[0][1] - FINE.z0) / FINE.cell) - 8,
-    band = buildBand(0, r0, r0 + 16);
-  for (let i = 0; i < band.h.length; i++) assert.ok(Number.isFinite(band.h[i]), "heights are numbers");
-  const t = band.trees;
-  for (let i = 0; i < t.length; i += 6) {
-    const dz = Math.abs(t[i + 2] - ROUTE[0][1]),
-      onRoad = t[i] > ROUTE[0][0] && t[i] < ROUTE[1][0] && dz < 2;
-    assert.ok(!onRoad, `a tree stands on the road at ${t[i].toFixed(0)}, ${t[i + 2].toFixed(0)}`);
+test("vista land from a generated world: heights, water, kinds and biomes, no trees on the road", () => {
+  const w = generateWorld(20261126, { n: 128 }),
+    L = landFromWorld(w);
+  setLand(L);
+  assert.ok(L.places.length >= 4, `${L.places.length} places to go`);
+  assert.ok(L.rivers.length / 7 > 20, "rivers traced");
+  const p = L.places[0];
+  placeGrids(p.x, p.z, L.n * L.cell);
+  // A straight walk across the middle of the fine grid.
+  const mid = FINE.z0 + FINE.cell * FINE.n * 0.5,
+    route = [[FINE.x0 + 300, mid], [FINE.x0 + FINE.cell * FINE.n - 300, mid]],
+    r0 = Math.floor((mid - FINE.z0) / FINE.cell) - 8,
+    band = buildBand(0, r0, r0 + 16, FINE, route);
+  for (let i = 0; i < band.h.length; i++) {
+    assert.ok(Number.isFinite(band.h[i]) && band.h[i] > -3000 && band.h[i] < 8000, `height ${band.h[i]}`);
+    assert.ok(band.kind[i * 2] < KIND_COUNT, "a kind of ground");
+    assert.ok(band.kind[i * 2 + 1] < BIOMES.length || band.kind[i * 2 + 1] === 255, "a biome");
   }
+  const t = band.trees;
+  for (let i = 0; i < t.length; i += 6) assert.ok(Math.abs(t[i + 2] - mid) > 4, `a tree stands on the road at ${t[i].toFixed(0)}, ${t[i + 2].toFixed(0)}`);
+  // The far grid covers the whole world.
+  assert.equal(FAR.x0, 0);
+  assert.ok(Math.abs(FAR.cell * FAR.n - L.n * L.cell) < 1);
 });
 
 import { assemble, packSlot, partAt, partH } from "../tools/strata-lab/vista/pack.ts";

@@ -73,19 +73,19 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 <div class="app">
   <header>
     <h1>Strata Vista</h1>
-    <p>The layered valley at the wall's resolution (980 × 637 art pixels, four screen pixels each), on the GPU. Everything is drawn at its exact size in whole pixels: trees near the camera are put together from their clumps, each in its own place, and no two trees are coloured alike. The ground is pixel art fixed to the land.</p>
+    <p>Today's world, made fresh from today's date: about 100 km of land with every climate in it, seen at the wall's resolution (980 × 637 art pixels, four screen pixels each). Go to a place to walk there; the rest of the world stands in the distance. Everything is drawn at its exact size in whole pixels, and the ground is pixel art fixed to the land.</p>
   </header>
   <div class="main">
     <div class="viewarea" id="viewarea">
-      <canvas id="view" aria-label="The valley, drawn as receding layers, with the party walking through it"></canvas>
-      <div id="loading">Building the valley…</div>
+      <canvas id="view" aria-label="Today's world, drawn as receding layers, with the party walking through it"></canvas>
+      <div id="loading">Making today's world…</div>
     </div>
     <aside class="side">
       <canvas id="map" aria-label="Map of the valley from above: the route, the party and what the camera sees"></canvas>
       <div class="readout">
         <div class="key"><i><b style="background:#f4efe2"></b>route</i><i><b style="background:var(--accent)"></b>party</i><i><b style="background:#7fc4ff"></b>camera view</i></div>
         <dl>
-          <dt>Stretch</dt><dd id="r-stretch">–</dd>
+          <dt>Place</dt><dd id="r-stretch">–</dd>
           <dt>Camera</dt><dd id="r-camera">–</dd>
           <dt>Distance</dt><dd id="r-dist">–</dd>
           <dt>Figure</dt><dd id="r-size">–</dd>
@@ -127,7 +127,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
       <button id="frame-step" aria-label="One frame on">Frame ▶</button>
       <output id="route-at" for="route">–</output>
     </div>
-    <div class="group" role="group" aria-label="Jump to" id="chapters"><span>Jump to</span></div>
+    <div class="group" role="group" aria-label="Go to" id="chapters"><span>Go to</span></div>
     <div class="group" role="group" aria-label="Show">
       <span>Show</span>
       <button id="t-snap" data-toggle="snap" aria-pressed="true">Snap to pixels</button>

@@ -17,6 +17,18 @@ export const FINE: GridSpec = { x0: 0, z0: 0, cell: 2, n: 2048 };
 export const MID: GridSpec = { x0: -14000, z0: -12000, cell: 16, n: 2048 };
 export const FAR: GridSpec = { x0: -40000, z0: -30000, cell: 96, n: 1024 };
 export const GRIDS = [FINE, MID, FAR];
+/** Lay the grids over a world `size` metres a side: the far grid over all of it, the mid and fine
+ * grids centred on (x, z), kept inside the world. */
+export function placeGrids(x: number, z: number, size: number) {
+  FAR.x0 = 0;
+  FAR.z0 = 0;
+  FAR.cell = size / FAR.n;
+  for (const g of [MID, FINE]) {
+    const span = g.cell * g.n;
+    g.x0 = Math.min(size - span, Math.max(0, x - span / 2));
+    g.z0 = Math.min(size - span, Math.max(0, z - span / 2));
+  }
+}
 
 // ---- Noise -------------------------------------------------------------------------
 export function hash2(ix: number, iz: number, s: number) {
@@ -91,20 +103,19 @@ export const RIVER: [number, number, number][] = [
 ];
 export const LAKE = { x: 2450, z: 4420, level: 380 };
 /** The party's route for the day. */
-export const ROUTE: [number, number][] = [
-  [430, 330], [700, 310], [1000, 300], [1300, 300], // riverside meadows, walking east
-  [1330, 700], [1280, 1100], [1360, 1480], // up the valley, north
-  [1405, 1488], [1515, 1495], // the bridge
-  [1600, 1520], [1720, 1560], [1660, 1630], [1800, 1680], [1740, 1750], [1900, 1790], // the town's streets
-  [2050, 1850], [2250, 2150], [2380, 2550], // the ridge road
-  [2700, 2720], [2420, 2880], [2760, 3030], [2480, 3160], [2650, 3300], // switchbacks to the pass
-  [2700, 3500], [2620, 3800], [2520, 4000], // down to the lake
+/** The party's route for the day: planned for each place (main.ts), filled in place. */
+export const ROUTE: [number, number][] = [];
+/** The hand-shaped valley's route (kept for its town and bridge, which a generated world does not have yet). */
+const VALLEY_ROUTE: [number, number][] = [
+  [430, 330], [700, 310], [1000, 300], [1300, 300], [1330, 700], [1280, 1100], [1360, 1480], [1405, 1488], [1515, 1495],
+  [1600, 1520], [1720, 1560], [1660, 1630], [1800, 1680], [1740, 1750], [1900, 1790], [2050, 1850], [2250, 2150], [2380, 2550],
+  [2700, 2720], [2420, 2880], [2760, 3030], [2480, 3160], [2650, 3300], [2700, 3500], [2620, 3800], [2520, 4000],
 ];
 /** The route's segment that is the bridge (ROUTE[BRIDGE] to ROUTE[BRIDGE + 1]). */
 export const BRIDGE = 7;
 /** The valley road the carts use. */
 export const ROAD2: [number, number][] = [[1600, -250], [1640, 300], [1600, 800], [1620, 1200], [1560, 1460]];
-export const TOWN = ROUTE.slice(9, 16);
+export const TOWN = VALLEY_ROUTE.slice(9, 16);
 export const TOWER = { x: 1885, z: 1832 };
 
 /** Distance from (x, z) to a polyline, and where along it (segment, fraction). */
@@ -198,8 +209,9 @@ export const KIND = {
   HEDGE: 13,
   YARD: 14,
   SHORE: 15,
+  SAND: 16,
 } as const;
-export const KIND_COUNT = 16;
+export const KIND_COUNT = 17;
 
 /** Tree kinds, as sprite families (sprites.ts draws them; heights in metres). */
 export const TREE_KINDS = [
@@ -293,8 +305,8 @@ export function layoutBuildings(groundAt: (x: number, z: number) => number, isWa
 
 /** The bridge: its deck height and the line it spans. */
 export function bridgeOf(groundAt: (x: number, z: number) => number) {
-  const [ax, az] = ROUTE[BRIDGE],
-    [bx, bz] = ROUTE[BRIDGE + 1];
+  const [ax, az] = VALLEY_ROUTE[BRIDGE],
+    [bx, bz] = VALLEY_ROUTE[BRIDGE + 1];
   return { ax, az, bx, bz, deck: Math.max(groundAt(ax, az), groundAt(bx, bz)) + 2.5 };
 }
 
