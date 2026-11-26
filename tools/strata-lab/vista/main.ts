@@ -373,6 +373,24 @@ function buildSprites(packs: SlotPack[]): SpriteData {
   };
 }
 
+/**
+ * The trees (or shrubs) in a list that could come near enough to be drawn in parts before the list is
+ * next rebuilt: those within reach of the camera where it was then, with a margin for how far it
+ * may move meanwhile. So a frame looks at a few hundred, not every sprite.
+ */
+function nearSubset(d: Float32Array, cx: number, cz: number, margin: number) {
+  const out: number[] = [];
+  for (let i = 0; i < d.length; i += 6) {
+    const pl = PLANS[d[i + 4]];
+    if (!pl || !pl.T) continue;
+    const reach = (d[i + 3] * F) / (pl.T - 2) + margin,
+      dx = d[i] - cx,
+      dz = d[i + 2] - cz;
+    if (dx * dx + dz * dz > reach * reach) continue;
+    for (let k = 0; k < 6; k++) out.push(d[i + k]);
+  }
+  return Float32Array.from(out);
+}
 /** Trees and shrubs near enough this frame to be drawn in parts: grouped by slot, for one draw each. */
 let partTrees = new Float32Array(4096 * 8);
 function partsFrame(c: Camera, lists: { data: Float32Array; near: number; far: number }[]): PartsFrame {
@@ -1166,12 +1184,12 @@ function frame(now: number, forced = -1) {
   const visTrees = cullTrees(rc);
   if (visTrees && treesList) {
     renderer.sprites(visTrees, treesList);
-    treeVis = visTrees;
+    treeVis = nearSubset(visTrees, rc.x, rc.z, 40);
   }
   const cover = coverAround(rc.x, rc.z, rc.yaw);
   if (cover && coverList) {
     renderer.sprites(cover, coverList);
-    coverVis = cover;
+    coverVis = nearSubset(cover, rc.x, rc.z, 90);
   }
   if (actorList && partyList) {
     const a = actors(rc);
