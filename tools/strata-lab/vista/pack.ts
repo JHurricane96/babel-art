@@ -195,7 +195,7 @@ export function packSlot(slot: number, def: SlotDef): SlotPack {
       }
     }
     // Near: the parts of a big drawing, clumps grouped by cell.
-    const raw = drawParts(def, plan.K, seed, "cluster").flatMap(slices);
+    const raw = drawParts(def, plan.K, seed).flatMap(slices);
     for (const p of raw) {
       const cr = Math.floor(p.h / 2),
         cc = Math.floor(p.w / 2),

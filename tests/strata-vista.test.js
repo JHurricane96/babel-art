@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { CLASS_H, NC, drawSlots, slotDefs } from "../tools/strata-lab/vista/sprites.ts";
 import { buildBand } from "../tools/strata-lab/vista/grids.ts";
-import { FAR, FINE, KIND_COUNT, placeGrids } from "../tools/strata-lab/vista/valley.ts";
+import { FAR, FINE, KIND_COUNT, placeGrids } from "../tools/strata-lab/vista/common.ts";
 import { landFromWorld, setLand } from "../tools/strata-lab/vista/land.ts";
 import { BIOMES, generateWorld } from "../engine/strata/world2d.ts";
 

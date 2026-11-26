@@ -17,154 +17,23 @@ import {
   hash3,
 } from "../../engine/strata/world.ts";
 import { groundAt } from "../../engine/strata/generate.ts";
-import { BIOMES as LAND, GROUND } from "../../engine/strata/biomes.ts";
-import { SPECIES } from "../../engine/strata/plants.ts";
 
 const hex = (h: string) =>
   [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
-// Rock by kind (the band bits of a cell's state hold it; history.ts ROCK
-// order): basement gneiss, granite, basalt, volcanic ash, limestone, shale,
-// sandstone, mudstone, red beds, dune sandstone, coal, conglomerate, glacial
-// till, salt.
-const KIND = [
-  "#5a5468",
-  "#a88480",
-  "#4a4450",
-  "#c4b8a2",
-  "#c2bb98",
-  "#6e6c80",
-  "#c4925c",
-  "#8e7a66",
-  "#b0583c",
-  "#d8b07a",
-  "#2c2830",
-  "#9a8a76",
-  "#9a9ea8",
-  "#e2dcd2",
-]
-  .map(hex)
-  // Muted: each rock keeps a hint of its own hue and lightness, so beds read
-  // without striping the screen.
-  .map((c) => {
-    const g = 0.3 * c[0] + 0.55 * c[1] + 0.15 * c[2],
-      v = 0.42 + 0.38 * g;
-    return c.map((ch) => (v + 0.32 * (ch - g)) * 0.86);
-  });
-const rockOf = (st: number) => KIND[bandOf(st) % KIND.length];
-/** All rock averaged: a cave's back wall leans to it. */
-const KIND_AVG = [0, 1, 2].map(
-  (k) => KIND.reduce((s, c) => s + c[k], 0) / KIND.length,
+// Rock strata per biome, in BIOMES order: highlands sandstone, fungal violet
+// shale, canyon red beds, forest limestone, peaks granite, basalt.
+const ROCK = [
+  ["#b98a5e", "#a8784f", "#c29a6a", "#9c6c4a", "#b08560", "#8f6448"],
+  ["#6f5f86", "#5f5578", "#7a6a90", "#574d6e", "#6a5c80", "#4f4766"],
+  ["#c8643c", "#d98a4e", "#b5523a", "#e0a066", "#a84a32", "#cf7a48"],
+  ["#b4ad90", "#a29c80", "#c2bb9e", "#958f76", "#aca68a", "#8a846c"],
+  ["#9aa3b2", "#8a93a3", "#a9b1bf", "#7c8596", "#949db0", "#6f7889"],
+  ["#6e6670", "#7d7280", "#625b68", "#8a7068", "#5a5462", "#94746a"],
+].map((p) => p.map(hex));
+/** Each biome's rock averaged over its strata: a cave's back wall leans to it. */
+const ROCK_AVG = ROCK.map((p) =>
+  [0, 1, 2].map((k) => p.reduce((s, c) => s + c[k], 0) / p.length),
 );
-/** Each biome's colours for leaves, grass, moss, bark, flowers and bare earth. */
-const PAL = LAND.map((b) => {
-  const grass = hex(b.grass);
-  return {
-    leaf: hex(b.leaf),
-    grass,
-    moss: grass.map((v) => v * 0.8),
-    bark: hex(b.bark),
-    bloom: hex(b.bloom),
-    earth: hex(b.earth),
-    salt: b.earth.toLowerCase() === "#e8e2d8",
-  };
-});
-// Then each species with colours of its own (plants.ts): flora value
-// LAND.length + 1 + species id.
-for (const sp of SPECIES) {
-  const base = PAL[0];
-  PAL.push({
-    ...base,
-    leaf: sp.leaf ? hex(sp.leaf) : base.leaf,
-    bark: sp.bark ? hex(sp.bark) : base.bark,
-    bloom: sp.bloom ? hex(sp.bloom) : base.bloom,
-  });
-}
-/** How each biome's ground weathers its rock (biomes.ts GROUND, by zone). */
-const GB = LAND.map((b) => {
-  const g = GROUND[b.zone];
-  return {
-    earth: hex(b.earth),
-    weather: g ? g.weather : 12,
-    tint: hex(g ? g.tint : "#808080"),
-    tintK: g ? g.tintK : 0,
-  };
-});
-/** Ramps (rampOf) for each palette's leaf, grass, bark and bloom, and each rock kind, built on first use. */
-const RAMP_CACHE = new Map<number, number[][]>();
-function rampFor(pal: number, m: number): number[][] {
-  const key = pal * 64 + m;
-  let r = RAMP_CACHE.get(key);
-  if (r) return r;
-  const p = PAL[pal - 1],
-    base =
-      m === M.WOOD
-        ? p.bark
-        : m === M.GRASS
-          ? p.grass
-          : m === M.FLOWER
-            ? p.bloom
-            : m === M.SOIL
-              ? p.earth
-              : m === M.MOSS
-                ? p.moss
-                : p.leaf;
-  r = rampOf(base);
-  RAMP_CACHE.set(key, r);
-  return r;
-}
-const ROCK_RAMPS: number[][][] = [];
-const rockRamp = (kind: number) => (ROCK_RAMPS[kind] ??= rampOf(KIND[kind % KIND.length].map((v) => Math.min(1, v * 1.25))));
-const BACK_HAZE = [hex("#7d98ab"), hex("#a9c0d2")],
-  BACKC = [0, 0, 0];
-/** The colour of the forest behind the land at a cell (value from Land.back). */
-function backColor(v: number, pal: number) {
-  const layer = (v >> 3) & 3,
-    t = v & 7,
-    c = rampFor(pal, v & 32 ? M.WOOD : M.LEAF)[t - 1],
-    hz = BACK_HAZE[layer - 1] ?? BACK_HAZE[1],
-    k = layer === 1 ? 0.3 : 0.48;
-  BACKC[0] = c[0] + (hz[0] - c[0]) * k;
-  BACKC[1] = c[1] + (hz[1] - c[1]) * k;
-  BACKC[2] = c[2] + (hz[2] - c[2]) * k;
-  return BACKC;
-}
-
-/** Scratch colour for grass blades. */
-const BLADE = [0, 0, 0],
-  SEED = hex("#e6d58e");
-/**
- * A grass blade's colour: darker at its base, lighter toward its tip, and
- * in tall grass (steppe, prairie, savanna) the tip turns to a pale seed
- * head; each tuft a little different in hue.
- */
-function blade(
-  pal: { grass: number[] },
-  cells: Uint8Array,
-  i: number,
-  W: number,
-  y: number,
-  ground: number,
-  wx: number,
-) {
-  const h = ground - y,
-    tip = cells[i - W] !== M.GRASS,
-    jit = 0.94 + 0.12 * ((grain(wx >> 2, 4242) & 255) / 255),
-    k = (h <= 1 ? 0.72 : tip ? 1.14 : 0.92) * jit;
-  BLADE[0] = pal.grass[0] * k;
-  BLADE[1] = pal.grass[1] * k;
-  BLADE[2] = pal.grass[2] * k;
-  if (tip && h >= 4)
-    for (let c = 0; c < 3; c++) BLADE[c] += (SEED[c] - BLADE[c]) * 0.55;
-  return BLADE;
-}
-
-/** Scratch colours (no allocation per pixel). */
-const WR = [0, 0, 0],
-  WR2 = [0, 0, 0],
-  LOOSE = [0, 0, 0];
-
-/** Looks (generate.ts BIOMES) that leaves and caps take their colours from. */
-const LOOKS = 6;
 const SOLID: number[][] = [];
 for (const [m, c] of [
   [M.SOIL, "#6b4a34"],
@@ -210,16 +79,15 @@ const LAVA = [hex("#ff8a3a"), hex("#ffb04a"), hex("#c23e1c"), hex("#8a2416")];
 const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map(
   (v) => (v + 0.5) / 16,
 );
-/** The day sky, rows above the horizon: pale at the horizon, blue overhead. */
-const SKY = [hex("#dce8ef"), hex("#8cbbe3"), hex("#4a7fc2")];
+const SKY = [hex("#191c3c"), hex("#5a3f78"), hex("#f0a060")];
 const CYAN = hex("#5ff0e0"),
   VIOLET = hex("#c08cff"),
   WARM = hex("#ffae5a"),
   EMBER = hex("#ff9a6a"),
-  SKYL = hex("#fff4e4"),
-  AMB = hex("#d0d3dc"),
-  WATER = hex("#3f86a8"),
-  DEEP = hex("#1d4a6e"),
+  SKYL = hex("#ffd2b0"),
+  AMB = hex("#9aa0d0"),
+  WATER = hex("#2f6f86"),
+  DEEP = hex("#123049"),
   BACK_TINT = [0.11, 0.1, 0.18];
 
 const isOpen = (m: number) =>
@@ -228,7 +96,7 @@ const isOpen = (m: number) =>
   m === M.STREAM ||
   m === M.FALLS ||
   m === M.BACKWALL;
-/** Plants and rope: in the open air they take daylight from above and shade under their own leaves. */
+/** Plants and rope stand dark against the dusk; rock and built stone above the ground are lit. */
 const SILHOUETTE = new Uint8Array(64);
 for (const m of [
   M.LEAF,
@@ -239,6 +107,7 @@ for (const m of [
   M.SPOT,
   M.VINE,
   M.REED,
+  M.FLOWER,
   M.ROPE,
   M.SHROOM,
 ])
@@ -246,18 +115,12 @@ for (const m of [
 const BRICK = hex("#8a7f6c"),
   FLOWERS = ["#f2d35a", "#f0ece0", "#e889b0", "#8fb0f0", "#e06a4a"].map(hex),
   REED = [hex("#6f7a3a"), hex("#5a3a22")],
-  // Distant hills in the day's blue haze: the farther, the paler.
-  HAZE_NEAR = hex("#7d98ab"),
-  HAZE_FAR = hex("#a9c0d2"),
-  CLOUD_SHADE = hex("#b6c6d6"),
-  CLOUD_LIT = hex("#fbfcfd"),
-  // Daylight on plants in the open.
-  DAY = hex("#fff8ee"),
-  // The study look's hill planes, far to near, and the mist they fade into.
-  PLANES = ["#c6d6e0", "#a6bccb", "#86a2b3", "#6a8899"].map(hex),
-  MIST = hex("#e2ecf1");
+  HAZE = hex("#3a2c5a"),
+  CLOUD_TOP = hex("#7a5c95"),
+  CLOUD_LIT = hex("#f4b490"),
+  STAR = hex("#fff4e0");
 const STREAM = ["#4f9ab4", "#cfe9f2", "#e0f4fa"].map(hex),
-  FALLS = ["#a8d6ee", "#5f9fca", "#f4fbfd"].map(hex),
+  FALLS = ["#bfe3f0", "#7fb8d0", "#f4fbfd"].map(hex),
   ICE = ["#e8f6fb", "#a6d4e6", "#7fb3cc", "#f2fbff"].map(hex);
 
 const DX = [-1, 1, 0, 0, -1, 1, -1, 1],
@@ -404,17 +267,6 @@ export interface Land {
   x0: number;
   /** The world's seed: shapes the distant ridges and the clouds. */
   seed?: number;
-  /** Per cell: 1 + the biome (biomes.ts) of the plant or ground cover there, or 0: sets its colours. */
-  flora?: Uint8Array;
-  /** Only shade rows [from, to) (the rest stay black): for stills that show part of the window. */
-  rows?: [number, number];
-  /** Per cell: a crafted sprite's shade 1-6 (engine/strata/art.ts), or 0. */
-  tone?: Uint8Array;
-  /** Per cell: the forest behind the land, (wood ? 32 : 0) | (layer << 3) | shade; and its palette. */
-  back?: Uint8Array;
-  backPal?: Uint8Array;
-  /** An alternative look to compare ("study": fewer details, layered misty depth, a strong land shape, a small unified palette). */
-  style?: string;
 }
 
 /**
@@ -444,35 +296,6 @@ export function horizonRow(seed: number, x0: number, W: number) {
   return out;
 }
 
-/**
- * The valley floors around each column: the lowest ground within about 2000
- * columns, smoothed, on the same world grid as the horizon (so it is
- * seamless). Land standing above it (hills, mesas, mountains) is lit like
- * the surface; only below it does the underground darken quickly.
- */
-export function floorRow(seed: number, x0: number, W: number) {
-  const STEP = 128,
-    k0 = Math.floor(x0 / STEP) - 1,
-    k1 = Math.floor((x0 + W - 1) / STEP) + 2,
-    pts = new Float32Array(k1 - k0 + 1),
-    out = new Float32Array(W);
-  for (let k = k0; k <= k1; k++) {
-    let low = 0;
-    for (let j = -16; j <= 16; j++) low = Math.max(low, groundAt(seed, k * STEP + j * 128));
-    pts[k - k0] = low;
-  }
-  for (let x = 0; x < W; x++) {
-    const wx = x0 + x,
-      k = Math.floor(wx / STEP),
-      f = (wx - k * STEP) / STEP,
-      u = f * f * (3 - 2 * f),
-      a = pts[k - k0],
-      b = pts[k - k0 + 1];
-    out[x] = a + (b - a) * u;
-  }
-  return out;
-}
-
 /** What moves, per cell, for a renderer that animates (the viewer). */
 export const MOTION = {
   STILL: 0,
@@ -484,8 +307,6 @@ export const MOTION = {
   FALLS: 5,
   LAVA: 6,
   WATER_TOP: 7,
-  /** Baked (the forest behind the land), with plants swaying over it as over the sky. */
-  BACKDROP: 8,
 } as const;
 
 /**
@@ -510,12 +331,7 @@ export interface MotionLayers {
  * plant together, row by row, in the wind at its base. Plants held along
  * much of their length (ivy on a cliff) or by rope (a bridge) stay still.
  */
-function swayField(
-  W: number,
-  H: number,
-  cells: Uint8Array,
-  surface: Int16Array,
-) {
+function swayField(W: number, H: number, cells: Uint8Array, surface: Int16Array) {
   const h = new Uint8Array(W * H),
     ax = new Uint8Array(W * H).fill(128),
     mark = new Uint8Array(W * H);
@@ -528,8 +344,7 @@ function swayField(
       if (SILHOUETTE[m] || (m === M.SNOW && mark[i + W])) mark[i] = 1;
     }
   const comp: number[] = [],
-    support = (j: number) =>
-      j >= 0 && j < W * H && !mark[j] && cells[j] !== M.AIR;
+    support = (j: number) => j >= 0 && j < W * H && !mark[j] && cells[j] !== M.AIR;
   for (let i0 = 0; i0 < W * H; i0++) {
     if (!mark[i0] || h[i0]) continue;
     // Gather the plant: every marked cell joined to this one.
@@ -545,15 +360,7 @@ function swayField(
         for (let dx = -1; dx <= 1; dx++) {
           const nx = x + dx,
             j = i + dy * W + dx;
-          if (
-            (dx || dy) &&
-            nx >= 0 &&
-            nx < W &&
-            j >= 0 &&
-            j < W * H &&
-            mark[j] &&
-            !h[j]
-          ) {
+          if ((dx || dy) && nx >= 0 && nx < W && j >= 0 && j < W * H && mark[j] && !h[j]) {
             h[j] = 1;
             comp.push(j);
           }
@@ -567,12 +374,7 @@ function swayField(
     for (const i of comp) {
       const x = i % W,
         y = (i - x) / W;
-      if (!(
-        support(i + W) ||
-        (x > 0 && support(i - 1)) ||
-        (x < W - 1 && support(i + 1))
-      ))
-        continue;
+      if (!(support(i + W) || (x > 0 && support(i - 1)) || (x < W - 1 && support(i + 1)))) continue;
       held++;
       if (y > baseY) {
         baseY = y;
@@ -583,8 +385,7 @@ function swayField(
         nX++;
       }
     }
-    // Trees and anything big stand still; grass, flowers and ferns sway.
-    if (rope || held === 0 || held > 0.3 * comp.length || comp.length > 260) continue; // stays still: all 1s
+    if (rope || held === 0 || held > 0.3 * comp.length) continue; // stays still: all 1s
     const baseX = Math.round(sumX / nX);
     for (const i of comp) {
       const x = i % W,
@@ -598,10 +399,15 @@ function swayField(
 
 /** Render land to RGBA, one pixel per cell. */
 export const renderTimes: Record<string, number> = {};
-export function renderLand(
-  { W, H, cells, state, surface, x0, seed = 0, flora, rows, style, tone, back, backPal }: Land,
-  layers?: MotionLayers,
-) {
+export function renderLand({
+  W,
+  H,
+  cells,
+  state,
+  surface,
+  x0,
+  seed = 0,
+}: Land, layers?: MotionLayers) {
   let tt = performance.now();
   const lap = (k: string) => {
     const n = performance.now();
@@ -619,12 +425,6 @@ export function renderLand(
 
   // Sky light enters the ground through its openings: seed the flood from sky
   // cells that touch open space below the ground line.
-  // How deep each cell lies under open ground: under the ground straight
-  // above, or the hillside beside it (light comes in from the side too, half
-  // as far), so the dark below a steep slope follows the slope.
-  const reach = Float32Array.from(surface);
-  for (let x = 1; x < W; x++) reach[x] = Math.min(reach[x], reach[x - 1] + 2);
-  for (let x = W - 2; x >= 0; x--) reach[x] = Math.min(reach[x], reach[x + 1] + 2);
   const below = (x: number, y: number) => y >= surface[x];
   const sky: number[] = [];
   for (let x = 0; x < W; x++) {
@@ -696,16 +496,11 @@ export function renderLand(
     frozen = new Uint8Array(W),
     // Clouds: two value noises, broad and fine; distant ridges: a far range
     // of peaks and nearer rolling hills, both behind the land.
-    cloudA = new RowNoise(x0, W, 150, 46, seed + 711),
-    cloudB = new RowNoise(x0, W, 42, 18, seed + 712),
-    // The same clouds a few rows up: where there is less cloud above, a
-    // cloud is lit; where there is more, it is in its own shade.
-    upA = new RowNoise(x0, W, 150, 46, seed + 711),
-    upB = new RowNoise(x0, W, 42, 18, seed + 712),
+    cloudA = new RowNoise(x0, W, 230, 30, seed + 711),
+    cloudB = new RowNoise(x0, W, 70, 12, seed + 712),
     far = new Float32Array(W),
     near = new Float32Array(W),
-    hz = horizonRow(seed, x0, W),
-    floor = floorRow(seed, x0, W);
+    hz = horizonRow(seed, x0, W);
   for (let x = 0; x < W; x++) {
     const wx = x0 + x,
       // Ridged noise at two scales: ranges of sharp peaks, not domes.
@@ -715,154 +510,24 @@ export function renderLand(
     far[x] =
       50 + 70 * r1 * r1 + 40 * r2 * r2 * r1 + 10 * fbm1(wx / 60, seed + 702, 2);
     near[x] =
-      22 +
-      28 * fbm1(wx / 520, seed + 703, 3) +
-      12 * fbm1(wx / 90, seed + 704, 2);
+      22 + 28 * fbm1(wx / 520, seed + 703, 3) + 12 * fbm1(wx / 90, seed + 704, 2);
   }
-  // The study look's depth is measured from the ground smoothed over the
-  // screen, so peaks don't cast shafts of light into the rock below them.
-  const smoothTop = new Float32Array(W);
-  if (style === "study")
-    for (let x = 0; x < W; x++) {
-      let sum = 0,
-        n = 0;
-      for (let k = Math.max(0, x - 32); k <= Math.min(W - 1, x + 32); k++) {
-        sum += reach[k];
-        n++;
-      }
-      smoothTop[x] = sum / n;
-    }
-  // The study look: four planes of hills behind the land, farther ones
-  // higher and paler, each fading into mist toward its foot.
-  const study = style === "study",
-    planes = study ? [0, 1, 2, 3].map(() => new Float32Array(W)) : [];
-  if (study)
-    for (let x = 0; x < W; x++) {
-      const wx = x0 + x,
-        r = (sx: number, o: number) => 1 - Math.abs(2 * fbm1(wx / sx, seed + o, 3) - 1);
-      planes[0][x] = 70 + 95 * r(1800, 721) ** 2.5 + 30 * r(500, 722) * r(1800, 721) ** 2;
-      planes[1][x] = 45 + 55 * r(1100, 723) ** 2 + 15 * r(300, 724) * r(1100, 723);
-      planes[2][x] = 26 + 30 * fbm1(wx / 700, seed + 725, 3) + 9 * fbm1(wx / 150, seed + 726, 2);
-      planes[3][x] = 8 + 18 * fbm1(wx / 450, seed + 727, 3) + 6 * fbm1(wx / 90, seed + 728, 2);
-    }
-  // Each column's ground: its biome, from the cover and plants the generator
-  // stamped there (gaps such as water or bare rock take their neighbours').
-  const colB = new Int16Array(W).fill(-1);
-  if (flora) {
-    for (let x = 0; x < W; x++)
-      for (let y = Math.max(0, surface[x] - 2); y < Math.min(H, surface[x] + 16); y++) {
-        const f = flora[y * W + x];
-        if (f > 0 && f <= LAND.length) {
-          colB[x] = f - 1;
-          break;
-        }
-      }
-    let last = -1;
-    for (let x = 0; x < W; x++) if (colB[x] >= 0) last = colB[x];
-      else colB[x] = last;
-    last = -1;
-    for (let x = W - 1; x >= 0; x--) if (colB[x] >= 0 && colB[x] !== -1) last = colB[x];
-      else if (colB[x] < 0) colB[x] = last;
-  }
-  // Under a crafted canopy the woods are in shade, but for flecks of sun:
-  // from a little under the canopy's top down to the forest floor.
-  const shadeTop = new Int32Array(W).fill(1 << 30);
-  if (tone)
-    for (let x = 0; x < W; x++)
-      for (let y = Math.max(0, surface[x] - 140); y < surface[x]; y++) {
-        const i = y * W + x;
-        if (cells[i] === M.LEAF && tone[i]) {
-          shadeTop[x] = y + 8;
-          break;
-        }
-      }
-  const SHADE = 0.7,
-    shadeAt = (x: number, y: number, wx: number) =>
-      y < shadeTop[x] || y > surface[x] + 3
-        ? 1
-        : grain((wx >> 1) + 777, (y >> 1) + 777) % 13 === 0
-          ? 1
-          : SHADE;
-  // The ground's colours, smoothed over about 50 columns, so biome edges
-  // (which dither column by column) blend instead of striping the rock.
-  const G = Array.from({ length: W }, () => ({
-    earth: [0, 0, 0],
-    tint: [0, 0, 0],
-    tintK: 0,
-    weather: 0,
-  }));
-  {
-    const R = 24;
-    for (let x = 0; x < W; x++) {
-      const g = G[x];
-      let n = 0;
-      for (let k = Math.max(0, x - R); k <= Math.min(W - 1, x + R); k++) {
-        if (colB[k] < 0) continue;
-        const b = GB[colB[k]];
-        for (let c = 0; c < 3; c++) {
-          g.earth[c] += b.earth[c];
-          g.tint[c] += b.tint[c];
-        }
-        g.tintK += b.tintK;
-        g.weather += b.weather;
-        n++;
-      }
-      if (!n) continue;
-      for (let c = 0; c < 3; c++) {
-        g.earth[c] /= n;
-        g.tint[c] /= n;
-      }
-      g.tintK /= n;
-      g.weather /= n;
-    }
-  }
-  const yFrom = rows ? Math.max(0, rows[0]) : 0,
-    yTo = rows ? Math.min(H, rows[1]) : H;
-  // Rows skipped above still count toward water and ice depth.
-  for (let y = 0; y < yFrom; y++)
-    for (let x = 0; x < W; x++) {
-      const m = cells[y * W + x];
-      waterAbove[x] = m === M.WATER ? waterAbove[x] + 1 : 0;
-      iceAbove[x] = m === M.ICE ? iceAbove[x] + 1 : 0;
-      frozen[x] = m === M.ICE ? 1 : m === M.WATER ? frozen[x] : 0;
-    }
-  for (let y = yFrom; y < yTo; y++) {
-    // Cut-away light: full at the ground, fading with depth below it (set per column below).
-    let cut = 0.6;
+  for (let y = 0; y < H; y++) {
+    const cut = 0.6 - 0.24 * Math.min(1, Math.max(0, (y - 400) / 900));
     fine.row(y);
     coarse.row(y);
     flow.row(y);
     fall.row(y);
     cloudA.row(y);
     cloudB.row(y);
-    upA.row(y - 4);
-    upB.row(y - 4);
     for (let x = 0; x < W; x++) {
       const i = y * W + x,
         wx = x0 + x,
         m = cells[i],
         st = state[i],
-        biome = biomeOf(st) % LOOKS,
+        biome = biomeOf(st) % ROCK.length,
         bay = BAYER[(y & 3) * 4 + (wx & 3)];
-      const skyCell = y < surface[x],
-        below = y - reach[x],
-        belowSm = study ? Math.max(0, y - smoothTop[x]) : below;
-      // In daylight the cut face is lit near the ground, dimming with depth
-      // to a low glow, never quite black.
-      // Above the valley floors the land dims only slowly with depth.
-      // (Continuous: 0.3 per row down to the floor, 1 per row below it.)
-      const top = reach[x],
-        fl = Math.max(floor[x], top),
-        dim = 0.3 * Math.max(0, Math.min(y, fl) - top) + Math.max(0, y - fl);
-      cut = study
-        ? // The land as one strong shape: lit just under the ground, then a
-          // quiet deep tone.
-          belowSm <= 3
-          ? 0.9
-          : 0.9 * (0.5 + 0.5 * Math.exp(-(belowSm - 3) / 40))
-        : dim <= 4
-          ? 0.95
-          : 0.95 * (0.3 + 0.7 * Math.exp(-(dim - 4) / 85));
+      const skyCell = y < surface[x];
       let cr: number, cg: number, cb: number;
       const wd = m === M.WATER ? waterAbove[x] : 0;
       waterAbove[x] = m === M.WATER ? wd + 1 : 0;
@@ -870,74 +535,65 @@ export function renderLand(
       iceAbove[x] = m === M.ICE ? id + 1 : 0;
       frozen[x] = m === M.ICE ? 1 : m === M.WATER ? frozen[x] : 0;
       if (m === M.AIR && skyCell) {
-        // Open sky: a day gradient, dithered into bands, measured in rows
-        // above the horizon (d): pale and hazy at it, bluer upward.
+        // Open sky: a dusk gradient, dithered into bands, measured in rows
+        // above the horizon (d): glowing at it, darkening upward.
         const d = hz[x] - y,
-          g = Math.min(1, Math.max(0, d / 700)),
-          a = g < 0.35 ? SKY[0] : SKY[1],
-          b = g < 0.35 ? SKY[1] : SKY[2],
-          u = g < 0.35 ? g / 0.35 : (g - 0.35) / 0.65;
-        cr = Math.floor((a[0] + (b[0] - a[0]) * u) * 24 + bay) / 24;
-        cg = Math.floor((a[1] + (b[1] - a[1]) * u) * 24 + bay) / 24;
-        cb = Math.floor((a[2] + (b[2] - a[2]) * u) * 24 + bay) / 24;
-        // Clouds: heaped, lit on top and shaded underneath, in a few steps.
+          t = Math.min(1, Math.max(0, 1 - d / 420)),
+          a = t < 0.55 ? SKY[0] : SKY[1],
+          b = t < 0.55 ? SKY[1] : SKY[2],
+          u = t < 0.55 ? t / 0.55 : (t - 0.55) / 0.45;
+        cr = Math.floor((a[0] + (b[0] - a[0]) * u) * 18 + bay) / 18;
+        cg = Math.floor((a[1] + (b[1] - a[1]) * u) * 18 + bay) / 18;
+        cb = Math.floor((a[2] + (b[2] - a[2]) * u) * 18 + bay) / 18;
+        // Clouds: thin bands, sunlit underneath toward the horizon, stepped.
         const env =
-            Math.min(1, Math.max(0, (d - 90) / 50)) *
-            Math.min(1, Math.max(0, (560 - d) / 90)),
-          cl = 0.65 * cloudA.at(wx) + 0.35 * cloudB.at(wx),
+            Math.min(1, Math.max(0, (d - 30) / 40)) *
+            Math.min(1, Math.max(0, (340 - d) / 60)),
           amt =
             Math.floor(
-              Math.min(1, Math.max(0, (cl - 0.6) / 0.06)) * env * 3 + bay,
+              Math.min(
+                1,
+                Math.max(
+                  0,
+                  (0.65 * cloudA.at(wx) + 0.35 * cloudB.at(wx) - 0.54) / 0.12,
+                ),
+              ) *
+                env *
+                3 +
+                bay,
             ) / 3;
         if (amt > 0) {
-          const up = 0.65 * upA.at(wx) + 0.35 * upB.at(wx),
-            lit =
-              Math.floor(Math.min(1, Math.max(0, 0.55 + (cl - up) * 9)) * 3 + bay) / 3,
-            k = 0.35 + 0.6 * amt;
-          cr += (CLOUD_SHADE[0] + (CLOUD_LIT[0] - CLOUD_SHADE[0]) * lit - cr) * k;
-          cg += (CLOUD_SHADE[1] + (CLOUD_LIT[1] - CLOUD_SHADE[1]) * lit - cg) * k;
-          cb += (CLOUD_SHADE[2] + (CLOUD_LIT[2] - CLOUD_SHADE[2]) * lit - cb) * k;
+          const lit = Math.min(1, Math.max(0, (420 - d) / 260)),
+            k = amt * 0.6;
+          cr += (CLOUD_TOP[0] + (CLOUD_LIT[0] - CLOUD_TOP[0]) * lit - cr) * k;
+          cg += (CLOUD_TOP[1] + (CLOUD_LIT[1] - CLOUD_TOP[1]) * lit - cg) * k;
+          cb += (CLOUD_TOP[2] + (CLOUD_LIT[2] - CLOUD_TOP[2]) * lit - cb) * k;
+        } else if (d > 230 && grain(wx, y) % 997 === 0) {
+          // The first stars, high up where the sky is darkest.
+          const k = 0.6 * Math.min(1, (d - 230) / 120);
+          cr += (STAR[0] - cr) * k;
+          cg += (STAR[1] - cg) * k;
+          cb += (STAR[2] - cb) * k;
         }
-        // Distant hills behind the land, in haze: flat silhouettes with
-        // crisp tops, the nearer the deeper in colour, a little darker
-        // lower down in a few dithered steps.
-        if (study) {
-          // The nearest plane this point lies in.
-          for (let k = 3; k >= 0; k--) {
-            if (d >= planes[k][x]) continue;
-            const into = planes[k][x] - d,
-              col = PLANES[k],
-              mist = 0.85 * Math.floor(Math.min(1, Math.max(0, (into - 4) / 26)) * 4 + bay) / 4;
-            cr = col[0] + (MIST[0] - col[0]) * mist;
-            cg = col[1] + (MIST[1] - col[1]) * mist;
-            cb = col[2] + (MIST[2] - col[2]) * mist;
-            break;
-          }
-        }
-        const into = study ? -1 : d < near[x] ? near[x] - d : d < far[x] ? far[x] - d : -1;
+        // Distant hills behind the land: flat silhouettes with crisp tops,
+        // always darker than the sky behind them, the nearer the darker, and
+        // a little darker again lower down in a few dithered steps.
+        const into = d < near[x] ? near[x] - d : d < far[x] ? far[x] - d : -1;
         if (into >= 0) {
           const nearer = d < near[x],
-            hz2 = nearer ? HAZE_NEAR : HAZE_FAR,
             k =
-              (nearer ? 0.85 : 0.6) +
+              (nearer ? 0.52 : 0.3) +
               (0.08 * Math.floor(Math.min(1, into / 120) * 3 + bay)) / 3;
-          cr += (hz2[0] - cr) * k;
-          cg += (hz2[1] - cg) * k;
-          cb += (hz2[2] - cb) * k;
-        }
-        // The forest standing behind the land.
-        if (back && back[i]) {
-          const bc = backColor(back[i], backPal![i]);
-          cr = bc[0];
-          cg = bc[1];
-          cb = bc[2];
+          cr += (HAZE[0] * 0.55 - cr) * k;
+          cg += (HAZE[1] * 0.55 - cg) * k;
+          cb += (HAZE[2] * 0.55 - cb) * k;
         }
         lr = lg = lb = 1;
       } else if (m === M.WATER) {
         // Water: tinted, darker with depth, a bright line where it meets the air.
         const top = wd === 0 && y > 0 && cells[i - W] === M.AIR,
-          f = Math.min(1, wd / 160),
-          rock = rockOf(st);
+          f = Math.min(1, wd / 36),
+          rock = ROCK[biome][bandOf(st) % 6];
         if (top) {
           cr = 0.75 * WATER[0] + 0.35;
           cg = 0.75 * WATER[1] + 0.35;
@@ -976,18 +632,8 @@ export function renderLand(
                 ? STREAM[1]
                 : STREAM[0];
         else {
-          // Thin streaks of light down the fall, a bright splash where it lands.
-          const landing = y + 3 < H && cells[i + 3 * W] !== M.FALLS,
-            streak = grain(wx, 3131) % 5;
-          c = landing
-            ? FALLS[2]
-            : streak === 0
-              ? FALLS[2]
-              : streak === 3
-                ? FALLS[1]
-                : fall.at(wx) < 0.42
-                  ? FALLS[1]
-                  : FALLS[0];
+          const landing = y + 3 < H && cells[i + 3 * W] !== M.FALLS;
+          c = landing ? FALLS[2] : fall.at(wx) < 0.42 ? FALLS[1] : FALLS[0];
         }
         cr = c[0];
         cg = c[1];
@@ -1022,57 +668,24 @@ export function renderLand(
       } else {
         // Rock and everything solid, or the back wall of a cave behind open space.
         const mottle = 0.6 * fine.at(wx) + 0.4 * coarse.at(wx),
-          h = grain(wx, y);
-        let rock = rockOf(st);
-        if (study) {
-          // Fewer distinct rocks: each leans halfway to the average.
-          WR2[0] = rock[0] * 0.55 + KIND_AVG[0] * 0.45;
-          WR2[1] = rock[1] * 0.55 + KIND_AVG[1] * 0.45;
-          WR2[2] = rock[2] * 0.55 + KIND_AVG[2] * 0.45;
-          rock = WR2;
-        }
-        // Near the surface, rock takes its climate's tint, and just under the
-        // soil it is weathered: grading, in dithered steps, into the earth.
-        const gb = colB[x] >= 0 ? G[x] : null;
-        if (gb && below < 170 && (m === M.ROCK || m === M.AIR || m === M.BACKWALL || m === M.GRAVEL || m === M.SAND)) {
-          const kT = gb.tintK * (1 - Math.min(1, Math.max(0, below) / 170));
-          let r0 = rock[0] + (gb.tint[0] - rock[0]) * kT,
-            g0 = rock[1] + (gb.tint[1] - rock[1]) * kT,
-            b0 = rock[2] + (gb.tint[2] - rock[2]) * kT;
-          const depth = gb.weather * 1.8;
-          if (m === M.ROCK && y >= surface[x] && below < depth) {
-            const f = Math.pow(1 - Math.max(0, below) / depth, 1.3) * 0.85,
-              k = Math.floor(f * 4 + bay) / 4;
-            r0 += (gb.earth[0] - r0) * k;
-            g0 += (gb.earth[1] - g0) * k;
-            b0 += (gb.earth[2] - b0) * k;
-          }
-          WR[0] = r0;
-          WR[1] = g0;
-          WR[2] = b0;
-          rock = WR;
-        }
-        if (study && gb) {
-          // The land in its biome's own hue: every rock leans to the earth.
-          WR[0] = rock[0] + (gb.earth[0] * 1.15 - rock[0]) * 0.4;
-          WR[1] = rock[1] + (gb.earth[1] * 1.15 - rock[1]) * 0.4;
-          WR[2] = rock[2] + (gb.earth[2] * 1.15 - rock[2]) * 0.4;
-          rock = WR;
-        }
-        const
+          rock = ROCK[biome][bandOf(st) % 6],
+          h = grain(wx, y),
           seam =
             y > 0 &&
             cells[i - W] === M.ROCK &&
             bandOf(state[i - W]) !== bandOf(st),
-          joint = false,
-          tex = study
-            ? seam
-              ? 0.93
-              : 1
-            : (1 + (0.05 * ((h & 3) - 1.5)) / 1.5 + 0.12 * (mottle - 0.5)) *
-              ((h >>> 8) % 97 === 0 ? 1.25 : 1) *
-              (seam ? 0.8 : 1) *
-              (joint ? 0.9 : 1);
+          // Basalt cools into columns: in some flows (strata), dark joints every
+          // 4 to 8 cells, spaced and offset by the flow.
+          bnd = bandOf(st),
+          joint =
+            biome === 5 &&
+            (bnd * 7) % 5 < 3 &&
+            (wx + bnd * 13) % (4 + ((bnd * 5) % 5)) === 0,
+          tex =
+            (1 + (0.05 * ((h & 3) - 1.5)) / 1.5 + 0.12 * (mottle - 0.5)) *
+            ((h >>> 8) % 97 === 0 ? 1.25 : 1) *
+            (seam ? 0.8 : 1) *
+            (joint ? 0.78 : 1);
         // Brick courses: rows three cells high, joints offset row by row.
         const mortar =
           y % 3 === 0 || (wx + (Math.floor(y / 3) % 2) * 3) % 6 === 0
@@ -1083,7 +696,7 @@ export function renderLand(
           // building's masonry. The cave's strata show only faintly on it,
           // and its ambient light dims with depth as the rock's does, so open
           // space always reads as a hole in the rock, however deep.
-          const avg = KIND_AVG,
+          const avg = ROCK_AVG[biome],
             back =
               m === M.BACKWALL
                 ? BRICK.map((v) => v * mortar * 1.1)
@@ -1101,80 +714,8 @@ export function renderLand(
           lg += amb * AMB[1];
           lb += amb * AMB[2];
         } else {
-          // A plant or ground cover in a biome takes the biome's colours.
-          const fl = flora ? flora[i] : 0,
-            pal = fl ? PAL[fl - 1] : null,
-            tinted = !pal
-              ? null
-              : m === M.LEAF
-                ? pal.leaf
-                : m === M.GRASS
-                  ? y < surface[x]
-                    ? blade(pal, cells, i, W, y, surface[x], wx)
-                    : pal.grass
-                  : m === M.MOSS
-                    ? pal.moss
-                    : m === M.WOOD
-                      ? pal.bark
-                      : m === M.FLOWER
-                        ? h % 3 === 0
-                          ? FLOWERS[h % FLOWERS.length]
-                          : pal.bloom
-                        : m === M.SOIL || (m === M.SAND && pal.salt)
-                          ? pal.earth
-                          : null;
-          // A crafted sprite's cell: its shade on its colour's ramp.
-          const toned = tone ? tone[i] : 0,
-            tonedC = !toned
-              ? null
-              : m === M.ROCK
-                ? rockRamp(bandOf(st))[toned - 1]
-                : fl
-                  ? rampFor(fl, m)[toned - 1]
-                  : null;
-          // Scree and sand are broken rock: they take the rock's colour.
-          let loose: number[] | null = null;
-          if (m === M.GRAVEL || (m === M.SAND && !(pal && pal.salt))) {
-            const base = SOLID[m],
-              k = m === M.GRAVEL ? 0.8 : 0.3,
-              lift = m === M.GRAVEL ? 1.05 : 1.15;
-            LOOSE[0] = base[0] + (rock[0] * lift - base[0]) * k;
-            LOOSE[1] = base[1] + (rock[1] * lift - base[1]) * k;
-            LOOSE[2] = base[2] + (rock[2] * lift - base[2]) * k;
-            loose = LOOSE;
-            if (m === M.GRAVEL) {
-              // Stones, three or four cells wide and three tall, in courses
-              // offset row by row, each lit on top and shaded underneath, in
-              // a few tones (some dark with desert varnish), bedded in a
-              // paler matrix of grit that shows between them.
-              const band = Math.floor(y / 3),
-                ox = wx + (grain(band, 9191) % 5),
-                cell = Math.floor(ox / 5),
-                id = grain(cell, band + 5151),
-                lx = ox - cell * 5,
-                ly = y - band * 3,
-                wide = 3 + ((id >>> 3) & 1),
-                // (Rounded: the top corners of each stone are grit.)
-                gap =
-                  lx >= wide ||
-                  (ly === 2 && ((id >>> 4) & 3) === 0) ||
-                  (ly === 0 && (lx === 0 || lx === wide - 1) && ((id >>> 9) & 1) === 0);
-              let k: number;
-              if (gap) k = 1.28;
-              else {
-                const tone = [0.62, 0.82, 0.95, 1.08][(id >>> 6) & 3];
-                k = tone * (ly === 0 ? 1.14 : ly === 2 ? 0.8 : 1) * (lx === 0 ? 0.94 : 1);
-              }
-              LOOSE[0] *= k;
-              LOOSE[1] *= k;
-              LOOSE[2] *= k;
-            }
-          }
           const c =
-            tonedC ??
-            tinted ??
-            loose ??
-            (m === M.ROCK
+            m === M.ROCK
               ? null
               : m === M.LEAF
                 ? LEAF[biome]
@@ -1188,7 +729,7 @@ export function renderLand(
                         ? FLOWERS[h % FLOWERS.length]
                         : m === M.REED
                           ? REED[y > 0 && cells[i - W] !== M.REED ? 1 : 0]
-                          : (SOLID[m] ?? rock));
+                          : (SOLID[m] ?? rock);
           cr = c ? c[0] : rock[0] * tex;
           cg = c ? c[1] : rock[1] * tex;
           cb = c ? c[2] : rock[2] * tex;
@@ -1225,22 +766,6 @@ export function renderLand(
               nW = 0,
               nE = 0,
               edge = 0;
-            if (skyCell && (SILHOUETTE[m] || m === M.GRASS || m === M.FLOWER || tonedC)) {
-              // A plant in the open: daylight from above, its own shade under
-              // its leaves, in two steps (a crafted sprite carries its own).
-              const k = tonedC
-                ? 1
-                : y > 0 && isOpen(cells[i - W])
-                  ? study
-                    ? 1
-                    : 1.04
-                  : study
-                    ? 0.7
-                    : 0.84;
-              lr = k * DAY[0];
-              lg = k * DAY[1];
-              lb = k * DAY[2];
-            } else {
             if (!skyCell || !SILHOUETTE[m]) {
               const up = y > 0 ? i - W : -1,
                 down = y < H - 1 ? i + W : -1,
@@ -1264,7 +789,7 @@ export function renderLand(
             // light the faces they touch more strongly.
             if (nS + nC + nV + nW + nE > 0)
               lightAt(
-                nS * (skyCell || y <= surface[x] + 2 ? 0.7 : 0.35),
+                nS * 0.35,
                 nC * 0.85,
                 nV * 0.85,
                 nW * 0.85,
@@ -1274,26 +799,17 @@ export function renderLand(
             else lr = lg = lb = 0;
             // Faces on open space keep a brighter rim even in the dark, so a
             // cave's outline reads at any depth.
-            // (Softer on the ground's own top, so its edge doesn't glow.)
-            const amb = cut * (1 + (y <= surface[x] + 2 ? 0.25 : 0.7) * edge);
+            const amb = cut * (1 + 0.7 * edge);
             lr += amb * AMB[0];
             lg += amb * AMB[1];
             lb += amb * AMB[2];
-            // Turf in the sun reads as a band of green, not a glowing line.
-            if ((m === M.GRASS || m === M.MOSS) && y <= surface[x] + 3) {
-              lr *= 0.8;
-              lg *= 0.8;
-              lb *= 0.8;
-            }
-            }
           }
         }
       }
-      const o = i * 4,
-        sh = shadeTop[x] < 1 << 30 ? shadeAt(x, y, wx) : 1;
-      rgba[o] = cr * lr * sh * 255;
-      rgba[o + 1] = cg * lg * sh * 255;
-      rgba[o + 2] = cb * lb * sh * 255;
+      const o = i * 4;
+      rgba[o] = cr * lr * 255;
+      rgba[o + 1] = cg * lg * 255;
+      rgba[o + 2] = cb * lb * 255;
       rgba[o + 3] = 255;
       if (layers) {
         let c: number = MOTION.STILL;
@@ -1307,21 +823,10 @@ export function renderLand(
           layers.plants[o + 3] = sway!.h[i];
           rgba[o + 3] = sway!.ax[i];
           c = MOTION.SKY;
-          // Over the forest behind, or in the shade of the canopy: that
-          // shows where the plant sways away.
-          if ((back && back[i]) || sh < 1) {
-            const bc = back && back[i] ? backColor(back[i], backPal![i]) : SKY[1];
-            rgba[o] = bc[0] * sh * 255;
-            rgba[o + 1] = bc[1] * sh * 255;
-            rgba[o + 2] = bc[2] * sh * 255;
-            c = MOTION.BACKDROP;
-          }
-        } else if (m === M.AIR && skyCell)
-          c = (back && back[i]) || sh < 1 ? MOTION.BACKDROP : MOTION.SKY;
+        } else if (m === M.AIR && skyCell) c = MOTION.SKY;
         // Water under the open sky glints and shimmers; in a cave no sunlight
         // reaches it, and under ice it is held, so there it lies still.
-        else if (m === M.WATER && skyCell && !frozen[x])
-          c = y > 0 && cells[i - W] === M.AIR ? MOTION.WATER_TOP : MOTION.WATER;
+        else if (m === M.WATER && skyCell && !frozen[x]) c = y > 0 && cells[i - W] === M.AIR ? MOTION.WATER_TOP : MOTION.WATER;
         else if (m === M.STREAM) c = MOTION.STREAM;
         else if (m === M.FALLS) c = MOTION.FALLS;
         else if (m === M.LAVA) c = MOTION.LAVA;
@@ -1329,86 +834,6 @@ export function renderLand(
       }
     }
   }
-  if (study) unify(rgba, W, yFrom, yTo, x0);
   lap("shade");
   return rgba;
-}
-
-// ---- Colour ramps for crafted sprites ------------------------------------------
-
-/**
- * Six shades of a colour for sprites, darkest first: lightness steps around
- * the colour (which sits at tone 3-4), shadows shifted cooler and toward
- * blue-violet, highlights warmer and toward yellow, chroma highest in the
- * middle of the ramp. The way pixel artists build ramps.
- */
-export function rampOf(base: number[]): number[][] {
-  const [L, a, b] = oklab(toLin(base[0]), toLin(base[1]), toLin(base[2])),
-    steps = [-0.2, -0.12, -0.05, 0.02, 0.09, 0.17],
-    out: number[][] = [];
-  for (let k = 0; k < 6; k++) {
-    const s = steps[k],
-      warm = s * 0.35,
-      chroma = k === 0 ? 0.8 : k === 5 ? 0.75 : 1.05,
-      [r, g, bb] = fromOklab(
-        Math.min(0.97, Math.max(0.08, L + s)),
-        a * chroma + warm * 0.15,
-        b * chroma + warm * 0.55,
-      );
-    out.push([r, g, bb].map((v) => toSrgb(Math.min(1, Math.max(0, v)))));
-  }
-  return out;
-}
-
-// ---- The study look's palette: graded toward the sky, then snapped ------------
-
-const toLin = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
-const toSrgb = (c: number) => (c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055);
-function oklab(r: number, g: number, b: number) {
-  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b),
-    m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b),
-    s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
-  return [
-    0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
-    1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
-    0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
-  ];
-}
-function fromOklab(L: number, a: number, b: number) {
-  const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3,
-    m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3,
-    s = (L - 0.0894841775 * a - 1.291485548 * b) ** 3;
-  return [
-    4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
-    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
-    -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s,
-  ];
-}
-/** The sky's own hue, which every colour leans toward (shadows most). */
-const TONE = oklab(toLin(0.55), toLin(0.71), toLin(0.84));
-
-/**
- * One unified palette: every colour leans toward the sky's hue (shadows
- * most, so the land's dark tones agree with the sky), loses a little
- * chroma, and is snapped to a few steps of lightness (dithered), hue and
- * chroma, so a scene holds a small set of colours that agree.
- */
-function unify(rgba: Uint8ClampedArray, W: number, y0: number, y1: number, x0: number) {
-  for (let y = y0; y < y1; y++)
-    for (let x = 0; x < W; x++) {
-      const o = (y * W + x) * 4,
-        [L, a0, b0] = oklab(toLin(rgba[o] / 255), toLin(rgba[o + 1] / 255), toLin(rgba[o + 2] / 255)),
-        w = 0.05 + 0.12 * (1 - L),
-        a = a0 * 0.95 + TONE[1] * w,
-        b = b0 * 0.95 + TONE[2] * w,
-        bay = BAYER[(y & 3) * 4 + ((x0 + x) & 3)],
-        Lq = Math.floor(L * 14 + bay) / 14,
-        C = Math.hypot(a, b),
-        Cq = Math.round(C / 0.025) * 0.025,
-        hq = Math.round(Math.atan2(b, a) / (Math.PI / 12)) * (Math.PI / 12),
-        [r, g, bb] = fromOklab(Lq, Cq * Math.cos(hq), Cq * Math.sin(hq));
-      rgba[o] = 255 * toSrgb(Math.min(1, Math.max(0, r)));
-      rgba[o + 1] = 255 * toSrgb(Math.min(1, Math.max(0, g)));
-      rgba[o + 2] = 255 * toSrgb(Math.min(1, Math.max(0, bb)));
-    }
 }

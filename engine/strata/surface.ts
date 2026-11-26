@@ -7,10 +7,16 @@
 // the order a window is filled in, so every window that covers a feature
 // builds it the same way. Features reach at most ~120 cells from where they
 // are decided, well inside a window's margin.
-import { BIOMES, type Params, groundAt, regionBiome } from "./generate";
-import { kindAt, riversIn, rockAt, waterAt, worldOf } from "./worldmap";
-import { LANDFORM, landformAt } from "./landforms";
-import { ROCK, SEA_ROW } from "./history";
+import {
+  BIOMES,
+  type Params,
+  basinOf,
+  groundAt,
+  inCourse,
+  lakeOf,
+  regionBiome,
+  riverOf,
+} from "./generate";
 import {
   M,
   REGION_W,
@@ -33,22 +39,21 @@ export interface Win {
   ground: Float64Array;
   params: Params[];
   colBiome: Uint8Array;
-  /** Each column's biome (biomes.ts), or -1 under water. */
-  bio: Int16Array;
-  /** Per cell: 1 + the biome of the plant or ground cover there, or 0. */
-  flora: Uint8Array;
 }
 
 const H = WORLD_H;
 const rng = (a: number, b: number, c: number) =>
   walkRandom(Math.floor(hash3(a, b, c) * 4294967296));
 
-/** Near water (the sea, a lake, a river's channel): keep clear. */
+/** Near a basin or on a river's course: keep clear. */
 export function reserved(seed: number, wx: number, pad = 20) {
+  const r = Math.floor(wx / REGION_W),
+    basin = basinOf(seed, r);
+  if (basin && Math.abs(wx - basin.c) < 1.4 * basin.w + pad) return true;
+  const rv = riverOf(seed, r);
   return (
-    waterAt(seed, wx) !== null ||
-    waterAt(seed, wx - pad) !== null ||
-    waterAt(seed, wx + pad) !== null
+    rv !== null &&
+    (inCourse(rv, wx) || inCourse(rv, wx - pad) || inCourse(rv, wx + pad))
   );
 }
 
@@ -62,10 +67,7 @@ function set(w: Win, x: number, y: number, m: number, onlyAir = true) {
 
 /** Set a cell and mark it with a biome (plants and built things carry one). */
 function setB(w: Win, x: number, y: number, m: number, biome: number) {
-  if (set(w, x, y, m)) {
-    w.state[y * w.WW + x] = stateOf(0, biome);
-    w.flora[y * w.WW + x] = w.bio[x] + 1;
-  }
+  if (set(w, x, y, m)) w.state[y * w.WW + x] = stateOf(0, biome);
 }
 
 const g = (w: Win, x: number) =>
@@ -208,18 +210,6 @@ function archOf(seed: number, q: number): Arch | null {
       gr = groundAt(seed, xm + span),
       floor = Math.max(gl, gr);
     if (Math.min(gl, gr) - top < 20) continue; // not a narrow enough hill
-    // Arches are carved by weather from sandstone and limestone, never on a
-    // volcano's cone or a glacier.
-    const form = landformAt(worldOf(seed), seed, xm).form,
-      kind = kindAt(rockAt(seed, xm), SEA_ROW - top - 12);
-    if (form === LANDFORM.VOLCANO || form === LANDFORM.GLACIAL) continue;
-    if (
-      kind !== ROCK.SANDSTONE &&
-      kind !== ROCK.DUNE &&
-      kind !== ROCK.LIMESTONE &&
-      kind !== ROCK.CONGLOMERATE
-    )
-      continue;
     if (
       reserved(seed, xm - span) ||
       reserved(seed, xm + span) ||
@@ -289,17 +279,7 @@ export function raiseSurface(w: Win) {
       p = w.params[f.hx],
       drop = f.foot - f.top;
     if (reserved(seed, wx, 30)) continue;
-    // (No scree where a waterfall comes down the face.)
-    let falls = false;
-    for (let k = -2; k <= 30 && !falls; k++) {
-      const x = f.lx + f.dir * k;
-      if (x <= 0 || x >= WW - 1) continue;
-      for (let d = -4; d <= 2 && !falls; d++) {
-        const m = w.cells[(f.foot + d) * WW + x];
-        if (m === M.FALLS || m === M.STREAM) falls = true;
-      }
-    }
-    if (!falls && drop >= 20 && hash3(wx, 724, seed) < 0.8 * p.scree)
+    if (drop >= 20 && hash3(wx, 724, seed) < 0.8 * p.scree)
       scree(w, f, rng(wx, 725, seed));
     if (drop >= 14 && p.ivy > 0) ivy(w, f, p.ivy, w.colBiome[f.hx]);
   }
@@ -432,7 +412,6 @@ function reeds(w: Win) {
       if (cells[i] === M.WATER || cells[i] === M.STREAM || cells[i] === M.AIR) {
         cells[i] = M.REED;
         w.state[i] = stateOf(0, w.colBiome[x]);
-        w.flora[i] = w.bio[x] + 1;
       } else break;
     }
   }
@@ -446,8 +425,7 @@ function ruin(w: Win, q: number) {
 
 function ruinSite(seed: number, q: number) {
   const b = BIOMES[regionBiome(seed, q)];
-  // Ruins are rare until the world has people of its own.
-  if (hash3(seed, q, 750) > 0.25 * b.ruins) return null;
+  if (hash3(seed, q, 750) > b.ruins) return null;
   const R = rng(seed, q, 751),
     tower = R() < 0.45,
     fw = tower ? 12 + Math.floor(R() * 8) : 26 + Math.floor(R() * 22);
@@ -535,38 +513,28 @@ function buildRuin(
         }
 }
 
-/**
- * A rope bridge across a river's canyon, rim to rim, sagging, with a few
- * planks gone: wherever a river has cut a gorge deep and narrow enough to
- * be worth bridging, now and then.
- */
+/** A rope bridge across a canyon, rim to rim, sagging, with a few planks gone. */
 function bridgeSite(seed: number, q: number) {
-  for (const rv of riversIn(
-    seed,
-    q * REGION_W + 150,
-    (q + 1) * REGION_W - 150,
-  )) {
-    if (hash3(seed, Math.round(rv.xc), 760) > 0.6) continue;
-    // The rims: the highest ground on each side within reach.
-    const rim = (dir: number) => {
-      let x = 0,
-        y = Infinity;
-      for (let d = rv.hw + 4; d <= rv.hw + 140; d += 2) {
-        const xx = Math.round(rv.xc + dir * d),
-          gy = groundAt(seed, xx);
-        if (gy < y) [x, y] = [xx, gy];
-      }
-      return { x, y: Math.round(y) };
-    };
-    const L = rim(-1),
-      Rt = rim(1),
-      span = Rt.x - L.x,
-      floor = groundAt(seed, rv.xc);
-    if (span < 40 || Math.abs(Rt.y - L.y) > span * 0.25) continue;
-    if (floor - Math.max(L.y, Rt.y) < 45) continue; // not a gorge
-    return { L, Rt, span };
-  }
-  return null;
+  const b = BIOMES[regionBiome(seed, q)];
+  if (!b.bridge || hash3(seed, q, 760) > 0.8) return null;
+  const basin = basinOf(seed, q);
+  if (!basin) return null;
+  // The rims: the highest ground on each side of the canyon.
+  const rim = (dir: number) => {
+    let x = 0,
+      y = Infinity;
+    for (let d = basin.w * 0.7; d <= basin.w * 1.6; d += 2) {
+      const xx = Math.round(basin.c + dir * d),
+        gy = groundAt(seed, xx);
+      if (gy < y) [x, y] = [xx, gy];
+    }
+    return { x, y: Math.round(y) };
+  };
+  const L = rim(-1),
+    Rt = rim(1),
+    span = Rt.x - L.x;
+  if (span < 40 || Math.abs(Rt.y - L.y) > span * 0.25) return null;
+  return { L, Rt, span };
 }
 
 function bridge(w: Win, q: number) {

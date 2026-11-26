@@ -3,7 +3,6 @@
 import { generateWindow, regionFeatures } from "../../../engine/strata/generate.ts";
 import { GLOW, M, REGION_W, WORLD_H } from "../../../engine/strata/world.ts";
 import { MOTION, horizonRow, renderLand } from "../land-render.ts";
-import { planRoute } from "../../../engine/strata/route.ts";
 
 /** Extra columns lit either side, so light crosses region edges seamlessly. */
 const PAD = 128;
@@ -16,8 +15,6 @@ export interface Emitters {
   spores: Float32Array;
   /** Lava meeting air: embers. */
   embers: Float32Array;
-  /** Lava open to the sky (a crater's lake): a plume of smoke and steam. */
-  vents: Float32Array;
   /** Where waterfalls land: spray. */
   spray: Float32Array;
   /** Leaves on trees: some fall. */
@@ -48,8 +45,6 @@ export interface Tile {
   /** The row the sky's horizon sits on, per column. */
   horizon: Float32Array;
   emit: Emitters;
-  /** The journey's route through this region (engine/strata/route.ts). */
-  route: { xs: Int32Array; ys: Int16Array; verbs: Uint8Array; plan: string; why: string };
   genMs: number;
   lightMs: number;
 }
@@ -63,7 +58,7 @@ export function buildTile(seed: number, r: number): Tile {
     t1 = performance.now(),
     full = { motion: new Uint8Array(W * H), plants: new Uint8ClampedArray(W * H * 4) },
     lit = renderLand(
-      { W, H, cells: g.cells, state: g.state, flora: g.flora, tone: g.tone, back: g.back, backPal: g.backPal, surface: g.surface, x0, seed },
+      { W, H, cells: g.cells, state: g.state, surface: g.surface, x0, seed },
       full,
     ),
     t2 = performance.now(),
@@ -91,7 +86,6 @@ export function buildTile(seed: number, r: number): Tile {
     surface: g.surface.slice(from, from + TW),
     horizon: horizonRow(seed, r * REGION_W - APRON, TW),
     emit: emitters(g.cells, g.state, g.surface, W, H, x0, seed, r),
-    route: planRoute({ cells: g.cells, W, H, x0, seed, r, left: PAD, right: PAD + REGION_W }),
     genMs: t1 - t0,
     lightMs: t2 - t1,
   };
@@ -122,7 +116,6 @@ function emitters(
   void r;
   const spores: number[] = [],
     embers: number[] = [],
-    vents: number[] = [],
     spray: number[] = [],
     leaves: number[] = [],
     meadows: number[] = [],
@@ -159,10 +152,7 @@ function emitters(
           (tip ? tips : ceilings).push(wx, y + 1, f);
         }
       }
-      else if (m === M.LAVA && cells[i - W] === M.AIR) {
-        embers.push(wx, y - 1);
-        if (y <= s) vents.push(wx, y - 1);
-      }
+      else if (m === M.LAVA && cells[i - W] === M.AIR) embers.push(wx, y - 1);
       else if (m === M.FALLS && cells[i + W] !== M.FALLS) spray.push(wx, y);
       else if (m === M.LEAF && y < s) leaves.push(wx, y);
       else if (m === M.WATER && cells[i - W] === M.AIR && cells[i - 1] !== M.WATER) {
@@ -186,7 +176,6 @@ function emitters(
   return {
     spores: thin(spores, 600),
     embers: thin(embers, 300),
-    vents: thin(vents, 40),
     spray: thin(spray, 200),
     leaves: thin(leaves, 500),
     meadows: thin(meadows, 400),

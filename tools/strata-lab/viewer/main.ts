@@ -6,10 +6,7 @@
 // are unavailable) and uploaded to the GPU as layers. Every frame the WebGL2
 // renderer draws them with the sky, water, lava and plants moving; particles
 // and creatures go on top; a 2D overlay carries the wall mask and markers.
-import { groundAt } from "../../../engine/strata/generate.ts";
-import { setupReview } from "./review.ts";
-import { DOING, Journey } from "./journey.ts";
-import { biomeNameAt } from "../../../engine/strata/worldmap.ts";
+import { BIOMES, BLEND, groundAt, regionBiome } from "../../../engine/strata/generate.ts";
 import { REGION_W, WORLD_H } from "../../../engine/strata/world.ts";
 import { Renderer, type GpuTile } from "./gl.ts";
 import { Life } from "./life.ts";
@@ -17,22 +14,16 @@ import { APRON, buildTile, type Emitters, type Tile } from "./tile.ts";
 
 declare const WORKER_SOURCE: string;
 
-const $ = <T extends HTMLElement>(id: string) =>
-  document.getElementById(id) as T;
+const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>("view"),
   overlay = $<HTMLCanvasElement>("overlay"),
   octx = overlay.getContext("2d")!,
-  gl = canvas.getContext("webgl2", {
-    antialias: false,
-    alpha: false,
-    preserveDrawingBuffer: true,
-  });
+  gl = canvas.getContext("webgl2", { antialias: false, alpha: false, preserveDrawingBuffer: true });
 
 /** The view: centre in art pixels, and screen (device) pixels per art pixel. */
 const view = {
   seed: 7,
-  // Inland, past the ocean at the world's left end.
-  x: 40 * REGION_W + 1000,
+  x: 2 * REGION_W - 150,
   y: 560,
   scale: 4,
   drift: false,
@@ -44,9 +35,7 @@ const view = {
 const DRIFT = 6; // art pixels per second
 
 let renderer: Renderer | null = null,
-  failure = gl
-    ? ""
-    : "This viewer needs WebGL2, which this browser hasn't made available.";
+  failure = gl ? "" : "This viewer needs WebGL2, which this browser hasn't made available.";
 try {
   if (gl) renderer = new Renderer(gl);
 } catch (e) {
@@ -68,19 +57,11 @@ const cache = new Map<string, Entry>(),
   pending = new Set<string>();
 let last = "";
 
-const journey = new Journey();
-
 function accept(t: Tile) {
   pending.delete(key(t.seed, t.r));
-  journey.add(t.seed, t.r, t.route);
   if (!renderer) return;
   last = `region ${t.r}: land ${(t.genMs / 1000).toFixed(1)} s, light ${(t.lightMs / 1000).toFixed(1)} s`;
-  cache.set(key(t.seed, t.r), {
-    gpu: renderer.upload(t),
-    surface: t.surface,
-    emit: t.emit,
-    used: performance.now(),
-  });
+  cache.set(key(t.seed, t.r), { gpu: renderer.upload(t), surface: t.surface, emit: t.emit, used: performance.now() });
   evict();
 }
 
@@ -99,9 +80,7 @@ let workers = 0,
   mainThread = false,
   mainBusy = false;
 try {
-  const url = URL.createObjectURL(
-      new Blob([WORKER_SOURCE], { type: "text/javascript" }),
-    ),
+  const url = URL.createObjectURL(new Blob([WORKER_SOURCE], { type: "text/javascript" })),
     n = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 1));
   for (let k = 0; k < n; k++) {
     const w = new Worker(url);
@@ -129,8 +108,6 @@ function wanted() {
     rc = view.x / REGION_W - 0.5,
     out: number[] = [];
   for (let r = r0; r <= r1; r++) out.push(r);
-  // On a journey, the regions ahead of the party too (their routes).
-  if (journey.active) for (let k = 1; k <= 2; k++) if (!out.includes(r1 + k)) out.push(r1 + k);
   return out.sort((a, b) => Math.abs(a - rc) - Math.abs(b - rc));
 }
 
@@ -202,22 +179,8 @@ function frame_(t: number, dt: number) {
     sources.push(e.emit);
   }
   if (view.motion)
-    life.update(
-      dt,
-      t,
-      { left, top, right: left + W / s, bottom: top + H / s },
-      sources,
-      ground,
-    );
-  renderer!.draw(
-    visible,
-    { left, top, scale: s, W, H },
-    t,
-    view.seed,
-    view.motion,
-    life.buf,
-    life.count,
-  );
+    life.update(dt, t, { left, top, right: left + W / s, bottom: top + H / s }, sources, ground);
+  renderer!.draw(visible, { left, top, scale: s, W, H }, t, view.seed, view.motion, life.buf, life.count);
 
   // Overlay: regions still building, region edges, the wall mask.
   octx.clearRect(0, 0, W, H);
@@ -237,15 +200,9 @@ function frame_(t: number, dt: number) {
     for (let r = r0; r <= r1 + 1; r++) {
       const x = r * REGION_W * s - ox;
       for (let y = 0; y < H; y += 12 * devicePixelRatio)
-        octx.fillRect(
-          x,
-          y,
-          Math.max(1, Math.round(devicePixelRatio)),
-          6 * devicePixelRatio,
-        );
+        octx.fillRect(x, y, Math.max(1, Math.round(devicePixelRatio)), 6 * devicePixelRatio);
     }
   }
-  journey.draw(octx, s, ox, oy, W, H);
   if (view.wall) {
     // Everything outside the four screens goes dark, as on the wall.
     const ax = Math.round(view.x - (WALL_W * MM) / 2),
@@ -273,9 +230,17 @@ function frame_(t: number, dt: number) {
 // ---- HUD -----------------------------------------------------------------
 
 const fmt = new Intl.NumberFormat("en");
-/** The world's biome here, and the one it is turning into. */
 function biomeLabel(x: number) {
-  return biomeNameAt(view.seed, x);
+  const r = Math.floor(x / REGION_W),
+    local = x - r * REGION_W,
+    here = BIOMES[regionBiome(view.seed, r)].name;
+  const nearLeft = local < BLEND,
+    nearRight = REGION_W - local < BLEND;
+  if (nearLeft || nearRight) {
+    const other = BIOMES[regionBiome(view.seed, nearLeft ? r - 1 : r + 1)].name;
+    if (other !== here) return nearLeft ? `${other} → ${here}` : `${here} → ${other}`;
+  }
+  return here;
 }
 
 let hudText = "",
@@ -287,31 +252,20 @@ function updateHud() {
     status = failure
       ? failure
       : busy
-        ? `Building ${busy} region${busy > 1 ? "s" : ""}${mainThread ? " on the page (workers unavailable)" : ""}…`
-        : last
-          ? `Ready · ${last}`
-          : "Ready",
+      ? `Building ${busy} region${busy > 1 ? "s" : ""}${mainThread ? " on the page (workers unavailable)" : ""}…`
+      : last
+        ? `Ready · ${last}`
+        : "Ready",
     gpu = renderer?.gpuMs ? ` · GPU ${renderer.gpuMs.toFixed(1)} ms` : "",
     perf = `${Math.round(fps)} fps · frame ${cpuMs.toFixed(1)} ms${gpu} · ${life.count} sprites`,
     where = `region ${region} · x ${fmt.format(Math.round(view.x))} · y ${fmt.format(Math.round(view.y))}`,
-    text = [
-      biomeLabel(view.x),
-      where,
-      view.scale,
-      status,
-      perf,
-      view.drift,
-      view.edges,
-      view.wall,
-      view.motion,
-    ].join("|");
+    text = [biomeLabel(view.x), where, view.scale, status, perf, view.drift, view.edges, view.wall, view.motion].join("|");
   if (text === hudText) return;
   hudText = text;
   $("biome").textContent = biomeLabel(view.x);
   $("where").textContent = where;
   $("scale").textContent = `${view.scale}`;
-  $("scale-note").textContent =
-    `${fmt.format(Math.round(1920 / view.scale))} art px across a 1920 px screen`;
+  $("scale-note").textContent = `${fmt.format(Math.round(1920 / view.scale))} art px across a 1920 px screen`;
   $("status").textContent = status;
   $("perf").textContent = perf;
   for (const [id, on] of [
@@ -334,11 +288,7 @@ const ro = new ResizeObserver((entries) => {
   const e = entries[0],
     box = e.devicePixelContentBoxSize?.[0];
   if (box) resize(box.inlineSize, box.blockSize);
-  else
-    resize(
-      Math.round(e.contentRect.width * devicePixelRatio),
-      Math.round(e.contentRect.height * devicePixelRatio),
-    );
+  else resize(Math.round(e.contentRect.width * devicePixelRatio), Math.round(e.contentRect.height * devicePixelRatio));
 });
 try {
   ro.observe(canvas, { box: "device-pixel-content-box" });
@@ -358,24 +308,12 @@ function setScale(s: number, ax = canvas.width / 2, ay = canvas.height / 2) {
   view.x = wx - (ax - canvas.width / 2) / s;
   view.y = wy - (ay - canvas.height / 2) / s;
 }
-/** Where the camera sits to frame the land at x: the ground, smoothed over the screen, a little below the middle. */
-function surfaceY(x: number) {
-  const half = canvas.width / view.scale / 2;
-  let sum = 0;
-  for (let k = -4; k <= 4; k++) sum += groundAt(view.seed, x + (k * half) / 4);
-  // Never above the world's top.
-  return Math.max(
-    canvas.height / view.scale / 2,
-    sum / 9 - (0.14 * canvas.height) / view.scale,
-  );
-}
 function toSurface() {
-  view.y = surfaceY(view.x);
+  view.y = groundAt(view.seed, view.x) + (0.1 * canvas.height) / view.scale;
 }
 function toEdge(dir: number) {
   const k = view.x / REGION_W;
-  view.x =
-    (dir > 0 ? Math.floor(k + 1e-6) + 1 : Math.ceil(k - 1e-6) - 1) * REGION_W;
+  view.x = (dir > 0 ? Math.floor(k + 1e-6) + 1 : Math.ceil(k - 1e-6) - 1) * REGION_W;
   toSurface();
   life.reset();
 }
@@ -415,46 +353,21 @@ $<HTMLFormElement>("seed-form").onsubmit = (e) => {
   setSeed(Number($<HTMLInputElement>("seed").value));
 };
 
-// Drag (one finger) to move, pinch (two) or wheel to zoom around the
-// fingers or pointer, double-click to centre.
-const pointers = new Map<number, { x: number; y: number }>();
-let pinch: { d: number; scale: number } | null = null;
-const spread = () => {
-  const [a, b] = [...pointers.values()];
-  return {
-    d: Math.hypot(a.x - b.x, a.y - b.y),
-    mx: (a.x + b.x) / 2,
-    my: (a.y + b.y) / 2,
-  };
-};
+// Drag to move, wheel to zoom around the pointer, double-click to centre.
+let drag: { x: number; y: number } | null = null;
 overlay.addEventListener("pointerdown", (e) => {
   overlay.setPointerCapture(e.pointerId);
-  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  if (pointers.size === 2) pinch = { d: Math.max(1, spread().d), scale: view.scale };
+  drag = { x: e.clientX, y: e.clientY };
 });
 overlay.addEventListener("pointermove", (e) => {
-  const last = pointers.get(e.pointerId);
-  if (!last) return;
-  const before = pointers.size === 2 ? spread() : null;
-  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (!drag) return;
   const d = devicePixelRatio / view.scale;
-  if (pointers.size === 1) {
-    view.x -= (e.clientX - last.x) * d;
-    view.y -= (e.clientY - last.y) * d;
-  } else if (pointers.size === 2 && pinch && before) {
-    const now = spread();
-    // Pan with the fingers' midpoint, zoom by how far apart they are.
-    view.x -= (now.mx - before.mx) * d;
-    view.y -= (now.my - before.my) * d;
-    setScale(pinch.scale * (now.d / pinch.d), now.mx * devicePixelRatio, now.my * devicePixelRatio);
-  }
+  view.x -= (e.clientX - drag.x) * d;
+  view.y -= (e.clientY - drag.y) * d;
+  drag = { x: e.clientX, y: e.clientY };
 });
-const lift = (e: PointerEvent) => {
-  pointers.delete(e.pointerId);
-  if (pointers.size < 2) pinch = null;
-};
-overlay.addEventListener("pointerup", lift);
-overlay.addEventListener("pointercancel", lift);
+overlay.addEventListener("pointerup", () => (drag = null));
+overlay.addEventListener("pointercancel", () => (drag = null));
 let wheel = 0;
 overlay.addEventListener(
   "wheel",
@@ -462,11 +375,7 @@ overlay.addEventListener(
     e.preventDefault();
     wheel += e.deltaY;
     if (Math.abs(wheel) < 60) return;
-    setScale(
-      view.scale + (wheel < 0 ? 1 : -1),
-      e.offsetX * devicePixelRatio,
-      e.offsetY * devicePixelRatio,
-    );
+    setScale(view.scale + (wheel < 0 ? 1 : -1), e.offsetX * devicePixelRatio, e.offsetY * devicePixelRatio);
     wheel = 0;
   },
   { passive: false },
@@ -478,8 +387,7 @@ overlay.addEventListener("dblclick", (e) => {
 
 const held = new Set<string>();
 addEventListener("keydown", (e) => {
-  const tag = (e.target as HTMLElement).tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA") return;
+  if ((e.target as HTMLElement).tagName === "INPUT") return;
   const k = e.key;
   if (k.startsWith("Arrow")) {
     held.add(k);
@@ -491,8 +399,7 @@ addEventListener("keydown", (e) => {
   else if (k === "]") toEdge(1);
   else if (k === "Home") toSurface();
   else if (k === "PageDown") $("deeper").click();
-  else if (k === "PageUp")
-    view.y = Math.max(0, view.y - (0.5 * canvas.height) / view.scale);
+  else if (k === "PageUp") view.y = Math.max(0, view.y - (0.5 * canvas.height) / view.scale);
   else if (k === " ") {
     e.preventDefault();
     toggle("drift");
@@ -521,26 +428,7 @@ function frame(now: number) {
     if (held.has("ArrowUp")) view.y -= v;
     if (held.has("ArrowDown")) view.y += v;
   }
-  if (journey.active) {
-    journey.update(dt);
-    // The camera follows the party: room ahead of them, the ground a little
-    // below the middle. It eases (faster when time runs faster), keeps the
-    // party well inside the frame, and holds while they rest.
-    const halfW = canvas.width / view.scale / 2,
-      halfH = canvas.height / view.scale / 2,
-      tx = journey.x + journey.dir * halfW * 0.3,
-      ty = journey.y - halfH * 0.2,
-      k = Math.min(1, dt * 1.2 * Math.sqrt(journey.speed));
-    view.x += (tx - view.x) * k;
-    view.y += (ty - view.y) * k;
-    view.x = Math.max(journey.x - halfW * 0.6, Math.min(journey.x + halfW * 0.6, view.x));
-    view.y = Math.max(journey.y - halfH * 0.5, Math.min(journey.y + halfH * 0.5, view.y));
-    $("journey-state").textContent = `${journey.plan} route · ${DOING[journey.verb] ?? ""} · ${journey.speed}×`;
-  } else if (view.drift) {
-    // Drifting, the camera rises and falls with the land, gently.
-    view.x += DRIFT * dt;
-    view.y += (surfaceY(view.x) - view.y) * Math.min(1, 0.6 * dt);
-  }
+  if (view.drift) view.x += DRIFT * dt;
   if (view.motion) clock += dt;
   schedule();
   const t0 = performance.now();
@@ -560,62 +448,9 @@ Object.assign(window, {
   },
 });
 $<HTMLInputElement>("seed").value = String(view.seed);
-
-// Review tools: Go to (places and your notes) and Note here.
-setupReview({
-  here: () => ({
-    seed: view.seed,
-    x: view.x,
-    y: view.y,
-    scale: view.scale,
-    place: biomeNameAt(view.seed, view.x),
-  }),
-  go(seed, x, y, scale) {
-    if (scale !== undefined && scale !== view.scale) setScale(scale);
-    view.x = x;
-    if (seed !== view.seed) setSeed(seed);
-    if (y !== undefined) view.y = y;
-    else toSurface();
-    life.reset();
-  },
-  build: $("hud").querySelector(".tag")?.textContent ?? "",
-});
-$("workers").textContent = mainThread
-  ? "on the page"
-  : `${workers} worker${workers === 1 ? "" : "s"}`;
-// The journey: a party walks the regions' routes; the camera follows.
-$("journey").onclick = () => {
-  if (journey.active) journey.active = false;
-  else journey.start(view.seed, Math.floor(view.x / REGION_W));
-  $("journey").setAttribute("aria-pressed", String(journey.active));
-  $("journey-speed").hidden = !journey.active;
-  $("journey-state").hidden = !journey.active;
-};
-$("journey-speed").onclick = () => {
-  journey.speed = journey.speed === 1 ? 10 : journey.speed === 10 ? 50 : 1;
-  $("journey-speed").textContent = `${journey.speed}×`;
-};
-$("route").onclick = () => {
-  journey.showRoute = !journey.showRoute;
-  $("route").setAttribute("aria-pressed", String(journey.showRoute));
-};
-Object.assign(window, { strataJourney: journey });
-// Hide or show the panels (for screens without a keyboard).
-$("hud-toggle").onclick = () => {
-  toggle("hud");
-  $("hud-toggle").setAttribute("aria-pressed", String(!view.hud));
-};
-// On a narrow screen, the rest of the controls fold behind More.
-$("more").onclick = () => {
-  const bar = $("bar"),
-    open = bar.classList.toggle("open");
-  $("more").setAttribute("aria-expanded", String(open));
-};
+$("workers").textContent = mainThread ? "on the page" : `${workers} worker${workers === 1 ? "" : "s"}`;
 requestAnimationFrame((t) => {
   prev = t;
-  // A phone or small tablet starts zoomed to show about 360 art px across.
-  if (innerWidth < 700)
-    view.scale = Math.max(1, Math.min(6, Math.round((innerWidth * devicePixelRatio) / 360)));
   toSurface();
   frame(t);
 });

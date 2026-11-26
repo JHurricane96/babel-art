@@ -155,7 +155,7 @@ export interface Look {
   /** Grass along the skyline: tufts per column (chance) and their tallest, in cells. */
   tufts: number;
   tall: number;
-  /** Which species grow here (plants.ts), with weights: trees, shrubs and cacti. */
+  /** Which species grow here, with weights: trees, shrubs and cacti. */
   trees: string;
   bushes: string;
   cactusKinds: string;

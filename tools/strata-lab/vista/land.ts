@@ -16,7 +16,7 @@
 // Vista's axes: x east, z north (the world map's rows run south, so they are turned over).
 import { BIOMES as BIOME_DEFS, ZONE } from "../../../engine/strata/biomes";
 import { WATER, type World2D } from "../../../engine/strata/world2d";
-import { KIND, TREE_KINDS, fbm, hash2, smooth, vnoise } from "./valley";
+import { KIND, TREE_KINDS, fbm, hash2, smooth, vnoise } from "./common";
 
 export interface Place {
   name: string;
@@ -376,7 +376,6 @@ export function biomeAt(x: number, z: number) {
       }
   return 0;
 }
-export const zoneOfBiome = (b: number) => BIOME_DEFS[b].zone;
 
 /** How wooded a biome is (trees per 2 m cell in its woods), and the woods' kind. */
 export function woodsOf(b: number) {

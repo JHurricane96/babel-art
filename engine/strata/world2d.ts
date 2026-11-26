@@ -1,4 +1,4 @@
-// A world as a map: Strata's history (history.ts) redone in two dimensions, for Vista.
+// A world as a map: Strata's world history in two dimensions, for Vista and the Atlas.
 //
 // A square of land (512 cells of 200 m: about 100 km a side) is stepped through sixty eras:
 //
@@ -29,17 +29,50 @@
 //
 // Then every place gets its climate zone, its habitat (ridge, slope, cliff, flat, valley floor,
 // riverside, wetland, shore) and its soil (from the rock under it), and from those one of the 65
-// biomes of biomes.ts, the same table the strip worlds use.
+// biomes of biomes.ts.
 //
 // Everything follows from the seed.
 import { BIOMES as BIOME_DEFS, HABITAT, SOIL, ZONE, ZONES, classify, swatchOf, zoneOf } from "./biomes";
-import { ROCK, ROCKS as HISTORY_ROCKS } from "./history";
 
-export { HABITAT, ROCK, SOIL, ZONE, ZONES };
+export { HABITAT, SOIL, ZONE, ZONES };
+/** The kinds of rock (beds laid down, and what lies under them or comes up through them). */
+export const ROCK = {
+  BASEMENT: 0,
+  GRANITE: 1,
+  BASALT: 2,
+  ASH: 3,
+  LIMESTONE: 4,
+  SHALE: 5,
+  SANDSTONE: 6,
+  MUDSTONE: 7,
+  REDBED: 8,
+  DUNE: 9,
+  COAL: 10,
+  CONGLOMERATE: 11,
+  TILL: 12,
+  SALT: 13,
+} as const;
+/** Name, how easily it erodes (1 = ordinary), and a colour for maps. */
+const ROCK_KINDS: { name: string; k: number; color: string }[] = [
+  { name: "Basement gneiss", k: 0.12, color: "#3d3a4a" },
+  { name: "Granite", k: 0.1, color: "#b48c8c" },
+  { name: "Basalt", k: 0.22, color: "#2e2b33" },
+  { name: "Volcanic ash", k: 1.3, color: "#c9c1b0" },
+  { name: "Limestone", k: 0.32, color: "#cfc8a8" },
+  { name: "Shale", k: 1.4, color: "#5e6270" },
+  { name: "Sandstone", k: 0.55, color: "#d8a868" },
+  { name: "Mudstone", k: 1.5, color: "#8a7a6a" },
+  { name: "Red beds", k: 1.2, color: "#b55a3a" },
+  { name: "Dune sandstone", k: 0.75, color: "#e8c088" },
+  { name: "Coal", k: 1.8, color: "#1e1c1c" },
+  { name: "Conglomerate", k: 0.45, color: "#9a8a78" },
+  { name: "Glacial till", k: 1.6, color: "#a0a4a8" },
+  { name: "Salt", k: 2.2, color: "#f0ece8" },
+];
 /** Loose sediment on top (river gravel, lake silt, scree, moraine): not a rock of the layers. */
-export const SEDIMENT = HISTORY_ROCKS.length;
-/** The rocks: the strip history's, and loose sediment. */
-export const ROCKS = [...HISTORY_ROCKS, { name: "Gravel and silt", k: 1.6, color: "#b9a77f" }];
+export const SEDIMENT = ROCK_KINDS.length;
+/** The rocks, and loose sediment. */
+export const ROCKS = [...ROCK_KINDS, { name: "Gravel and silt", k: 1.6, color: "#b9a77f" }];
 /** The land biomes (biomes.ts), with a colour for maps (woods in autumn colours shown green, so a
  * map does not read them as desert). Water cells have biome WATER. */
 export const BIOMES = BIOME_DEFS.map((b) => {

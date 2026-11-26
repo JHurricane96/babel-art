@@ -1,8 +1,8 @@
-// Vista renderer (WebGL2): the valley at the wall's art resolution (980 x 637,
+// Vista renderer (WebGL2): the land at the wall's art resolution (980 x 637,
 // four screen pixels per art pixel), upscaled without smoothing.
 //
-// - The camera stays level, so verticals stay vertical; the horizon sits on a
-//   fixed row.
+// - The camera stays level, so verticals stay vertical; the horizon's row shifts
+//   (a lens shift) only to keep the party in frame on steep ground.
 // - Terrain: square patches from a quadtree, finer near the camera, heights
 //   read from the grids in the vertex shader; skirts hide the cracks between
 //   patches of different detail.
@@ -11,10 +11,10 @@
 //   from a six-shade ramp: pixel art that does not shimmer as the camera moves.
 //   Steep faces show the rock's beds.
 // - Haze comes in eight bands of distance, so the land reads as layers.
-// - Sprites are drawn pixel for pixel at their exact height, on whole pixels: small ones from
-//   images made for each height, bigger ones by whole rows and columns of one drawing, trees
-//   near the camera in parts (pack.ts).
-import { GRIDS, type Building, type GridSpec, KIND_COUNT } from "./valley";
+// - Sprites are drawn pixel for pixel at their exact height, on whole pixels: the tiniest (and
+//   grass, flowers and ferns) from images made for each height, the rest by whole rows and
+//   columns of one drawing, trees and shrubs near the camera in parts (pack.ts).
+import { GRIDS, type GridSpec, KIND_COUNT } from "./common";
 
 export const ART_W = 980,
   ART_H = 637,
@@ -218,7 +218,7 @@ void main() {
     float rip = dot(Q, vec2(0.8, 0.6)) / 2.6 + 0.5 * vnoise(Q / 13.0, 50u);
     pat = 0.5 * bn(Q, 7.0, s, 19u) + 0.3 * bn(Q, 1.1, s, 20u) + (fract(rip) < 0.3 ? -0.55 : 0.0) * clamp(2.6 / s * 0.5 - 0.8, 0.0, 1.0);
     if (vnoise(Q / 55.0, 49u) + 0.9 * (hollow - 0.5) > 0.7) {
-      ramp = 32;
+      ramp = 16;
       pat = 0.6 * bn(Q, 4.0, s, 51u) + 0.4 * bn(Q, 0.8, s, 52u);
     }
     light = 0.3 + 0.8 * lam;
@@ -232,94 +232,17 @@ void main() {
   } else if (k == 9) { // the road
     ramp = 14;
     pat = 0.6 * bn(Q, 0.7, s, 23u) + 0.7 * (hashf(ti, 24u) - 0.5) * clamp(0.2 / s - 0.5, 0.0, 1.0);
-  } else if (k >= 10 && k <= 12) { // fields: furrows
-    ramp = 5 + k;
-    float fu = dot(Q, vec2(0.83, 0.56));
-    pat = (fract(fu / 0.9) < 0.5 ? 0.6 : -0.6) * clamp(0.9 / s * 0.5 - 0.8, 0.0, 1.0) + 0.5 * bn(Q, 6.0, s, 25u) + 0.4 * bn(Q, 0.3, s, 26u);
-  } else if (k == 13) { // hedges
-    ramp = 18;
-    pat = 0.9 * bn(Q, 1.3, s, 27u) - 0.3;
-  } else if (k == 14) { // yards and lanes in the town
-    ramp = 19;
-    pat = 0.7 * bn(Q, 0.5, s, 28u) + 0.5 * bn(Q, 5.0, s, 29u) + 0.5 * (hashf(ti, 30u) - 0.5) * clamp(0.25 / s - 0.5, 0.0, 1.0);
-  } else if (k == 16) { // sand: ripples on the flat, the biome's own colour
-    ramp = bg >= 0 ? bg + 2 : 20;
+  } else if (k == 11) { // sand: ripples on the flat, the biome's own colour
+    ramp = bg >= 0 ? bg + 2 : 15;
     float ru = dot(Q, vec2(0.6, 0.8));
     pat = (fract(ru / 1.7 + 0.3 * vnoise(Q / 9.0, 46u)) < 0.35 ? 0.55 : 0.0) * clamp(1.7 / s * 0.5 - 0.8, 0.0, 1.0) + 0.6 * bn(Q, 11.0, s, 47u) + 0.3 * bn(Q, 0.4, s, 48u);
     light = 0.3 + 0.85 * lam;
   } else { // shores: gravel
-    ramp = 20;
+    ramp = 15;
     pat = 1.0 * (hashf(ti, 31u) - 0.5) * clamp(0.3 / s - 0.5, 0.0, 1.0) + 0.5 * bn(Q, 2.0, s, 32u);
   }
   float tone = light * 5.0 + 0.3 + pat + dith * 0.9;
   vec3 c = pal(ramp, tone);
-  oColor = vec4(mix(c, uHaze, hazeT(d)), 1.0);
-}`;
-
-const BUILD_VS = /* glsl */ `${COMMON}
-in vec3 aPos;
-in vec3 aNrm;
-in vec2 aUV;
-in vec2 aMat;
-out vec3 vN;
-out vec2 vUV;
-out float vZ;
-flat out ivec2 vMat;
-void main() {
-  float vz;
-  gl_Position = project(aPos, vz);
-  vZ = vz;
-  vN = aNrm;
-  vUV = aUV;
-  vMat = ivec2(aMat + 0.5);
-}`;
-const BUILD_FS = /* glsl */ `${COMMON}
-in vec3 vN;
-in vec2 vUV;
-in float vZ;
-flat in ivec2 vMat;
-uniform sampler2D uPal;
-out vec4 oColor;
-vec3 pal(int ramp, float tone) { return texelFetch(uPal, ivec2(clamp(int(floor(tone)), 0, 5), ramp), 0).rgb; }
-void main() {
-  float d = max(vZ, 1.0), s = exp2(ceil(log2(max(d / uF, 1.0 / 64.0))));
-  vec2 q = floor(vUV / s), P = (q + 0.5) * s;
-  ivec2 ti = ivec2(q);
-  float lam = max(0.0, dot(normalize(vN), uSun)), light = 0.22 + 0.8 * lam, pat = 0.0, dith = bayer(ti) - 0.5;
-  int m = vMat.x, ramp;
-  float lt = clamp(0.4 / s - 0.6, 0.0, 1.0);
-  if (m < 10) { // walls
-    ramp = 21 + m;
-    if (m == 2 || m == 4) { // stone courses
-      float row = floor(P.y / 0.45), off = mod(row, 2.0) * 0.35;
-      bool mortar = fract(P.y / 0.45) < 0.16 || fract((P.x + off) / 0.7) < 0.12;
-      pat = (mortar ? -1.2 : 0.4 * (hashf(ivec2(int(floor((P.x + off) / 0.7)), int(row)), 41u) - 0.5) * 2.0) * lt;
-    }
-    if (m == 3) { // timber framing
-      bool beam = fract(P.x / 1.4) < 0.14 || P.y < 0.25 || abs(P.y - 2.6) < 0.12 || fract(P.y / 2.6) > 0.95;
-      if (beam && s < 0.3) { ramp = 25; pat = 0.0; }
-    }
-    pat += 0.5 * bn(P, 1.7, s, 42u);
-    // Windows: a row on each floor; a door on the front.
-    float wx = fract((P.x - 0.6) / 2.6), floor1 = P.y - 1.05, floor2 = P.y - 3.4;
-    bool win = (wx > 0.32 && wx < 0.68) && ((floor1 > 0.0 && floor1 < 1.15) || (vMat.y >= 2 && floor2 > 0.0 && floor2 < 1.0));
-    bool sill = (wx > 0.28 && wx < 0.72) && (abs(floor1 + 0.06) < 0.1 || (vMat.y >= 2 && abs(floor2 + 0.06) < 0.1));
-    if (s < 0.9 && win) { ramp = 26; pat = (fract(P.y) > 0.75 ? 0.8 : 0.0); light = 0.35; }
-    else if (s < 0.5 && sill) pat += 1.0;
-    if ((vMat.y & 1) == 1 && s < 0.9 && abs(P.x - 0.0) < 0.6 && P.y < 2.1 && P.y > 0.0) { ramp = 25; pat = -0.5; }
-    if (P.y < 0.3) pat -= 0.8; // splash at the foot
-  } else { // roofs
-    ramp = 17 + m;
-    float course = m == 13 ? 0.6 : m == 12 ? 0.28 : 0.34;
-    float row = floor(P.y / course), off = mod(row, 2.0) * 0.5;
-    bool edge = fract(P.y / course) < 0.22;
-    pat = (edge ? -0.9 : 0.25) * lt;
-    if (m != 13) pat += (fract(P.x / 0.32 + off) < 0.12 ? -0.6 : 0.0) * lt;
-    else pat += 0.8 * bn(vec2(P.x * 3.0, P.y * 0.5), 0.8, s, 43u);
-    pat += 0.4 * bn(P, 2.0, s, 44u);
-    light = 0.12 + 0.95 * lam;
-  }
-  vec3 c = pal(ramp, light * 5.0 + 0.3 + pat + dith * 0.9);
   oColor = vec4(mix(c, uHaze, hazeT(d)), 1.0);
 }`;
 
@@ -543,7 +466,7 @@ void main() {
 
 // ---- Palette: six-shade ramps --------------------------------------------------------------
 import { hex, rampOf } from "./color";
-/** Base colours of the ground's ramps, by row (TERRAIN_FS and BUILD_FS index these). */
+/** Base colours of the ground's ramps, by row (TERRAIN_FS indexes these). */
 const RAMP_COLOURS: [string, number][] = [
   ["#6e9a3e", 1], // 0 meadow
   ["#97994e", 1], // 1 alpine meadow
@@ -560,24 +483,8 @@ const RAMP_COLOURS: [string, number][] = [
   ["#5a8aa4", 0.9], // 12 river
   ["#4f7e9e", 0.9], // 13 lake
   ["#b49a70", 0.9], // 14 road
-  ["#cdb05a", 1], // 15 wheat
-  ["#7aa040", 1], // 16 green field
-  ["#8e7656", 1], // 17 fallow
-  ["#3e6030", 1], // 18 hedge
-  ["#8c9064", 0.9], // 19 yard: worn grass and earth
-  ["#a49a88", 1], // 20 shore gravel
-  ["#e2dac6", 0.8], // 21 plaster
-  ["#dcbf88", 0.8], // 22 ochre plaster
-  ["#a8a08e", 1], // 23 stone wall
-  ["#e0d6be", 0.8], // 24 timber house infill
-  ["#5a4232", 1], // 25 dark timber, doors
-  ["#3a3a40", 0.6], // 26 window glass
-  ["#a84a32", 1], // 27 red tile
-  ["#8a5236", 1], // 28 brown tile
-  ["#5a5e6c", 1], // 29 slate
-  ["#a88e56", 1], // 30 thatch
-  ["#9a948a", 1], // 31 bridge stone
-  ["#9cc2d8", 0.9], // 32 blue ice
+  ["#a49a88", 1], // 15 shore gravel
+  ["#9cc2d8", 0.9], // 16 blue ice
 ];
 
 // ---- The renderer ------------------------------------------------------------------------------
@@ -617,8 +524,6 @@ export class Renderer {
   patchVao!: WebGLVertexArrayObject;
   patchBuf!: WebGLBuffer;
   patchIdx = 0;
-  buildVao: WebGLVertexArrayObject | null = null;
-  buildCount = 0;
   quadBuf: WebGLBuffer;
   skyVao: WebGLVertexArrayObject;
   partsVao: WebGLVertexArrayObject;
@@ -638,7 +543,6 @@ export class Renderer {
     this.gl = gl;
     for (const [name, vs, fs] of [
       ["terrain", TERRAIN_VS, TERRAIN_FS],
-      ["build", BUILD_VS, BUILD_FS],
       ["sprite", SPRITE_VS, SPRITE_FS],
       ["parts", PARTS_VS, PARTS_FS],
       ["sky", SKY_VS, SKY_FS],
@@ -791,101 +695,6 @@ export class Renderer {
     gl.enableVertexAttribArray(li);
     gl.vertexAttribPointer(li, 4, gl.FLOAT, false, 0, 0);
     gl.vertexAttribDivisor(li, 1);
-    gl.bindVertexArray(null);
-  }
-
-  /** Buildings: walls and roofs as real geometry, so they turn correctly with the camera. */
-  setBuildings(list: Building[], bridge: { ax: number; az: number; bx: number; bz: number; deck: number; bed: (x: number, z: number) => number }) {
-    const gl = this.gl,
-      v: number[] = [];
-    const push = (p: number[], n: number[], uv: number[], mat: number[]) => v.push(...p, ...n, ...uv, ...mat);
-    const quad = (a: number[], b: number[], c: number[], d: number[], n: number[], ua: number[], ub: number[], uc: number[], ud: number[], mat: number[]) => {
-      push(a, n, ua, mat); push(b, n, ub, mat); push(c, n, uc, mat);
-      push(a, n, ua, mat); push(c, n, uc, mat); push(d, n, ud, mat);
-    };
-    const tri = (a: number[], b: number[], c: number[], n: number[], ua: number[], ub: number[], uc: number[], mat: number[]) => {
-      push(a, n, ua, mat); push(b, n, ub, mat); push(c, n, uc, mat);
-    };
-    const norm = (x: number, y: number, z: number) => { const l = Math.hypot(x, y, z); return [x / l, y / l, z / l]; };
-    for (const b of list) {
-      const c = Math.cos(b.angle), s = Math.sin(b.angle),
-        P = (u: number, w: number, y: number) => [b.x + u * c - w * s, y, b.z + u * s + w * c],
-        hw = b.w / 2, hd = b.d / 2, y0 = b.y - 1.2, yw = b.y + b.wallH, yr = yw + b.roofH,
-        floors = b.wallH > 5.2 ? 2 : 0;
-      // Walls: front (w = -hd), back, and the two ends.
-      const walls: [number[], number[], number, number][] = [
-        [[-hw, -hd], [hw, -hd], b.w, 1 | floors],
-        [[hw, hd], [-hw, hd], b.w, floors],
-        [[hw, -hd], [hw, hd], b.d, floors],
-        [[-hw, hd], [-hw, -hd], b.d, floors],
-      ];
-      for (const [[u0, w0], [u1, w1], len, flag] of walls) {
-        const n = norm((w1 - w0) * c + (u1 - u0) * s * 0, 0, 0);
-        const ex = (u1 - u0) * c - (w1 - w0) * s, ez = (u1 - u0) * s + (w1 - w0) * c, nn = norm(ez, 0, -ex);
-        void n;
-        quad(P(u0, w0, y0), P(u1, w1, y0), P(u1, w1, yw), P(u0, w0, yw), nn,
-          [-len / 2, y0 - b.y], [len / 2, y0 - b.y], [len / 2, b.wallH], [-len / 2, b.wallH], [b.type === 1 ? 2 : b.wall, flag]);
-      }
-      if (b.type === 1) {
-        // The tower's pyramid roof.
-        const o = 0.4, apex = [b.x, yr, b.z],
-          cs = [P(-hw - o, -hd - o, yw), P(hw + o, -hd - o, yw), P(hw + o, hd + o, yw), P(-hw - o, hd + o, yw)];
-        for (let k = 0; k < 4; k++) {
-          const a = cs[k], bb = cs[(k + 1) % 4], mx = (a[0] + bb[0]) / 2 - b.x, mz = (a[2] + bb[2]) / 2 - b.z, n = norm(mx, Math.hypot(mx, mz) * 0.8, mz),
-            L = Math.hypot(bb[0] - a[0], bb[2] - a[2]), sl = Math.hypot(Math.hypot(mx, mz), b.roofH);
-          tri(a, bb, apex, n, [-L / 2, 0], [L / 2, 0], [0, sl], [10 + b.roof, 0]);
-        }
-        continue;
-      }
-      // Gable ends up to the ridge, and the two roof slopes, with eaves.
-      for (const sd of [1, -1]) {
-        const u = sd * hw, n = norm(sd * c, 0, sd * s);
-        tri(P(u, -hd * sd, yw), P(u, hd * sd, yw), P(u, 0, yr), n, [-hd, b.wallH], [hd, b.wallH], [0, b.wallH + b.roofH], [b.wall, 0]);
-      }
-      const o = 0.45, eo = 0.5, slopeLen = Math.hypot(hd + eo, b.roofH);
-      for (const sd of [-1, 1]) {
-        const n = norm(sd * -s * b.roofH, hd, sd * c * b.roofH),
-          ye = yw - (eo * b.roofH) / hd;
-        quad(P(-hw - o, sd * (hd + eo), ye), P(hw + o, sd * (hd + eo), ye), P(hw + o, 0, yr), P(-hw - o, 0, yr), n,
-          [-hw - o, 0], [hw + o, 0], [hw + o, slopeLen], [-hw - o, slopeLen], [10 + b.roof, 0]);
-      }
-    }
-    // The bridge: a deck with parapets on piers, all stone.
-    const L = Math.hypot(bridge.bx - bridge.ax, bridge.bz - bridge.az), ux = (bridge.bx - bridge.ax) / L, uz = (bridge.bz - bridge.az) / L;
-    const box = (u0: number, u1: number, w0: number, w1: number, y0: number, y1: number) => {
-      const Q = (u: number, w: number, y: number) => [bridge.ax + ux * u - uz * w, y, bridge.az + uz * u + ux * w];
-      const faces: [number[][], number[]][] = [
-        [[Q(u0, w0, y0), Q(u1, w0, y0), Q(u1, w0, y1), Q(u0, w0, y1)], [uz, 0, -ux]],
-        [[Q(u1, w1, y0), Q(u0, w1, y0), Q(u0, w1, y1), Q(u1, w1, y1)], [-uz, 0, ux]],
-        [[Q(u0, w1, y0), Q(u0, w0, y0), Q(u0, w0, y1), Q(u0, w1, y1)], [-ux, 0, -uz]],
-        [[Q(u1, w0, y0), Q(u1, w1, y0), Q(u1, w1, y1), Q(u1, w0, y1)], [ux, 0, uz]],
-        [[Q(u0, w0, y1), Q(u1, w0, y1), Q(u1, w1, y1), Q(u0, w1, y1)], [0, 1, 0]],
-      ];
-      for (const [[a, b2, c2, d2], n] of faces)
-        quad(a, b2, c2, d2, n, [0, y0 - bridge.deck], [u1 - u0 + Math.abs(w1 - w0) * 0, y0 - bridge.deck], [u1 - u0, y1 - bridge.deck], [0, y1 - bridge.deck], [4, 0]);
-    };
-    const dk = bridge.deck;
-    box(-2, L + 2, -2.2, 2.2, dk - 1.1, dk - 0.05);
-    box(-2, L + 2, -2.2, -1.8, dk - 0.05, dk + 0.95);
-    box(-2, L + 2, 1.8, 2.2, dk - 0.05, dk + 0.95);
-    for (let u = 8; u < L - 4; u += 15) {
-      const bed = bridge.bed(bridge.ax + ux * u, bridge.az + uz * u) - 2;
-      box(u - 1.1, u + 1.1, -2.3, 2.3, bed, dk - 1.1);
-    }
-    const data = new Float32Array(v);
-    this.buildCount = data.length / 10;
-    const p = this.progs.build;
-    this.buildVao = gl.createVertexArray()!;
-    gl.bindVertexArray(this.buildVao);
-    const buf = gl.createBuffer()!;
-    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
-    for (const [name, size, off] of [["aPos", 3, 0], ["aNrm", 3, 12], ["aUV", 2, 24], ["aMat", 2, 32]] as [string, number, number][]) {
-      const l = gl.getAttribLocation(p, name);
-      if (l < 0) continue;
-      gl.enableVertexAttribArray(l);
-      gl.vertexAttribPointer(l, size, gl.FLOAT, false, 40, off);
-    }
     gl.bindVertexArray(null);
   }
 
@@ -1088,16 +897,6 @@ export class Renderer {
     gl.drawElementsInstanced(gl.TRIANGLES, this.patchIdx, gl.UNSIGNED_SHORT, 0, patches.length / 4);
     this.stats.patches = patches.length / 4;
     this.stats.tris = (this.stats.patches * this.patchIdx) / 3;
-    }
-    // Buildings.
-    if (this.buildVao && !opt.spritesOnly) {
-      p = this.progs.build;
-      this.common(p, cam, opt);
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, this.pal);
-      gl.uniform1i(this.u(p, "uPal"), 0);
-      gl.bindVertexArray(this.buildVao);
-      gl.drawArrays(gl.TRIANGLES, 0, this.buildCount);
     }
     // Sprites.
     if (this.spr) {

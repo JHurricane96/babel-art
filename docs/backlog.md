@@ -88,7 +88,7 @@ designed under the final light instead of tuning it twice.
 
 Agreed for later (2026-11): over days and weeks, the world on the wall should
 change slowly: villages grow, forests burn and regrow, a mine runs dry. Today a
-world's history is fixed when it is made (`engine/strata/history.ts`); this
+world's history is fixed when it is made (`engine/strata/world2d.ts`); this
 would carry it on in real time after the last era. Worlds are finite and the
 next one is made in the background near the end; one idea for the handover is
 that each world ends at the sea and the crossing to the next world is a voyage.

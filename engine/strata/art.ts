@@ -1,15 +1,13 @@
-// Strata art: crafted sprites for the land, drawn in shades.
+// Strata art: crafted shapes for sprites, drawn in shades.
 //
 // Every cell a sprite draws carries a tone, 1 (darkest) to 6 (brightest), on
 // its material's colour ramp (the renderer builds ramps from each biome's or
 // species' colours, shadows cooler and highlights warmer), so sprites carry
-// their own light: lit from the upper left, shaded beneath, with highlight
-// speckles and dark rims where forms turn away.
+// their own light: lit from the upper left, shaded beneath.
 //
-// Small things are drawn by hand (the stamps below: leaf and needle texture,
-// grass tufts, flowers); bigger things (crowns, trunks, ferns, boulders,
-// logs) are built from hand-made rules: a crown is a heap of leaf clumps, each shaded as a little
-// sphere, textured with the leaf stamp, lit more toward the crown's top left.
+// Vista's sprites (tools/strata-lab/vista/sprites.ts) draw their trees, shrubs and
+// ground cover with these: trunks and branches, the kinds of broadleaf tree, a
+// faceted boulder, a fern.
 import { M } from "./world";
 
 /** Draws into a sprite: x, y in sprite or world cells, a material, a tone 1..6. */
@@ -18,78 +16,11 @@ export interface Canvas {
   R: () => number;
 }
 
-const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map((v) => (v + 0.5) / 16);
-const bay = (x: number, y: number) => BAYER[(y & 3) * 4 + (x & 3)];
 const clampT = (t: number) => (t < 1 ? 1 : t > 6 ? 6 : t);
-
-// ---- Hand-drawn stamps ---------------------------------------------------------
-// Characters: '.' empty; '1'-'6' the stamp's main material at that tone;
-// 'a'-'f' leaf tones 1-6; 'A'-'E' wood tones 1-5; 'p'-'u' bloom tones 1-6;
-// 'g'-'l' grass tones 1-6.
-
-/** Leaf texture: offsets laid over a clump's shading so it reads as leaves, not a ball. */
-const LEAF_TEX = [
-  "0+0-00+0+00-",
-  "++0--0++00--",
-  "+0-00+0+-0+0",
-  "0-00++0-0+++",
-  "-0+0+--00+0-",
-  "0++0-00+0-00",
-  "+00--0+++0-0",
-  "0-0+0++0-00+",
-].map((r) => [...r].map((c) => (c === "+" ? 1 : c === "-" ? -1 : 0)));
-
-/** Needle texture for conifers: short dark strokes hanging down. */
-const NEEDLE_TEX = [
-  "0+00-0+00-",
-  "0+0--0+0-0",
-  "+0-00+00-0",
-  "0-00+0-0+0",
-  "-00+0-0+00",
-].map((r) => [...r].map((c) => (c === "+" ? 1 : c === "-" ? -1 : 0)));
-
-export const TUFTS = [
-  ["...l...", "..k.l..", ".k..k.l", "k..jk.k", ".j.jk.j", "j.ijki.", ".iijji.", "hiijjih"],
-  ["..l..l.", ".k.lk..", "k.k.k.k", ".jk.jk.", "j.jjk.j", ".ijjji.", "hhiiihh"],
-  ["l...", ".k.l", "k.k.", ".jk.", "jjk.", "iij.", "hii."],
-  ["....l", "...k.", ".lk..", "k.jk.", ".jjk.", "ijj..", "hii.."],
-];
-
-/** Flowers: a stem (grass tones) under a head (bloom tones). */
-export const BLOOMS = [
-  // A bell hanging from an arched stem (bluebell).
-  [".jk..", "j..k.", "j..q.", "i.rsr", "i.qrq", "h...."],
-  // A daisy head on a straight stem.
-  [".rsr.", "rtutr", ".rsr.", "..j..", "..j..", "..i..", "..h.."],
-  // A spike of small flowers (foxglove).
-  ["..t..", ".s.s.", "..r..", ".r.s.", "..q..", ".q.r.", "..j..", "..i..", "..h.."],
-];
-
-/** Stamp a hand-drawn sprite with its bottom-left at (x, y) (y the row just above the ground). */
-export function stamp(c: Canvas, rows: string[], x: number, y: number, flip = false) {
-  const h = rows.length,
-    w = rows[0].length;
-  for (let r = 0; r < h; r++)
-    for (let k = 0; k < w; k++) {
-      const ch = rows[r][flip ? w - 1 - k : k];
-      if (ch === ".") continue;
-      const code = ch.charCodeAt(0);
-      let m: number = M.LEAF,
-        t = 0;
-      if (ch >= "a" && ch <= "f") t = code - 96;
-      else if (ch >= "A" && ch <= "E") {
-        m = M.WOOD;
-        t = code - 64;
-      } else if (ch >= "p" && ch <= "u") {
-        m = M.FLOWER;
-        t = code - 111;
-      } else if (ch >= "g" && ch <= "l") {
-        m = M.GRASS;
-        t = code - 102;
-      } else if (ch >= "1" && ch <= "6") t = code - 48;
-      c.set(x + k, y - (h - 1 - r), m, t);
-    }
-}
+/** The light, from the upper left and a little toward the viewer. */
+const LX = -0.55,
+  LY = -0.7,
+  LZ = 0.45;
 
 // ---- Crowns ----------------------------------------------------------------------
 
@@ -104,98 +35,6 @@ export interface CrownStyle {
   needles?: boolean;
   /** How ragged each clump's outline is (1 = usual; beech smoother, maple rougher). */
   rag?: number;
-}
-
-/**
- * A crown: leaf clumps heaped inside an ellipse centred at (cx, cy), each a
- * shaded little sphere, nearer ones (drawn later) over farther. Lit from the
- * upper left; the crown's own underside and right side in shadow.
- */
-export function crown(c: Canvas, cx: number, cy: number, rx: number, ry: number, st: CrownStyle) {
-  const R = c.R,
-    n = Math.max(3, Math.round((Math.PI * rx * ry * st.density) / (st.r0 * st.r1))),
-    clumps: { x: number; y: number; r: number; z: number }[] = [];
-  for (let k = 0; k < n; k++) {
-    // Uniform in the ellipse, the outer ones a little smaller.
-    const a = R() * Math.PI * 2,
-      d = Math.sqrt(R()),
-      x = cx + Math.cos(a) * d * (rx - st.r0 * 0.6),
-      y = cy + Math.sin(a) * d * (ry - st.r0 * 0.6),
-      r = st.r0 + (st.r1 - st.r0) * R() * (1 - 0.4 * d);
-    // Nearer to the viewer toward the crown's front-bottom-left (a guess at depth).
-    clumps.push({ x, y, r, z: R() + 0.3 * (y - cy) / ry });
-  }
-  clumps.sort((p, q) => p.z - q.z);
-  for (const q of clumps) {
-    // The crown's own light: brighter toward its top left.
-    const pos = 0.5 - 0.5 * ((q.x - cx) / rx) * 0.45 - 0.5 * ((q.y - cy) / ry) * 0.9;
-    clump(c, q.x, q.y, q.r, pos, st);
-  }
-}
-
-/** Light direction (toward the light): from the upper left, toward the viewer. */
-const LX = -0.55,
-  LY = -0.7,
-  LZ = 0.45;
-
-/** A cheap hash of a cell and a salt, 0..1. */
-const hashCell = (x: number, y: number, s: number) => {
-  let h = Math.imul(x | 0, 0x27d4eb2d) ^ Math.imul(y | 0, 0x165667b1) ^ Math.imul(s | 0, 0x9e3779b1);
-  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
-  h ^= h >>> 13;
-  return (h >>> 0) / 4294967296;
-};
-const EDGE = new Float32Array(32);
-
-/** One leaf clump: a ragged disc shaded as a sphere, textured, speckled, rimmed. */
-function clump(c: Canvas, cx: number, cy: number, r: number, pos: number, st: CrownStyle) {
-  const R = c.R,
-    ox = Math.floor(R() * 12),
-    oy = Math.floor(R() * 8),
-    salt = Math.floor(R() * 1e9),
-    tex = st.needles ? NEEDLE_TEX : LEAF_TEX,
-    // A ragged outline: the radius wobbles around the clump (a table by angle).
-    lobes = 5 + Math.floor(R() * 4),
-    phase = R() * 6.28,
-    rag = (0.12 + 0.08 * R()) * (st.rag ?? 1);
-  for (let k = 0; k < 32; k++) {
-    const a = (k / 32) * Math.PI * 2 - Math.PI;
-    EDGE[k] = r * (1 + rag * Math.sin(lobes * a + phase) + rag * 0.5 * Math.sin(2.3 * lobes * a));
-  }
-  const x0 = Math.floor(cx - r - 1),
-    x1 = Math.ceil(cx + r + 1),
-    y0 = Math.floor(cy - r - 1),
-    y1 = Math.ceil(cy + r + 1),
-    holes = st.holes * 0.02,
-    speck = st.speckle * 0.25,
-    tw = tex[0].length,
-    th = tex.length;
-  for (let y = y0; y <= y1; y++)
-    for (let x = x0; x <= x1; x++) {
-      const dx = x + 0.5 - cx,
-        dy = y + 0.5 - cy,
-        rr = dx * dx + dy * dy;
-      if (rr > r * r * 1.45) continue;
-      const bin = ((Math.atan2(dy, dx) + Math.PI) * (32 / (Math.PI * 2))) | 0,
-        edge = EDGE[bin > 31 ? 31 : bin],
-        d = Math.sqrt(rr) / edge;
-      if (d > 1) continue;
-      const hc = hashCell(x, y, salt);
-      if (holes && d < 0.8 && hc < holes) continue;
-      const nz = Math.sqrt(Math.max(0, 1 - d * d)),
-        nx = dx / edge,
-        ny = dy / edge,
-        lam = Math.max(0, nx * LX + ny * LY + nz * LZ),
-        // Shade: the clump's sphere and the crown's position, in five steps.
-        v = 0.55 * lam + 0.45 * pos,
-        tx = tex[(((y + oy) % th) + th) % th][(((x + ox) % tw) + tw) % tw];
-      let t = 1 + Math.floor(v * 5 + bay(x, y) - 0.25) + tx;
-      // A dark rim where the clump turns away, under and to the right.
-      if (d > 0.82 && nx * LX + ny * LY < 0) t -= 1 + (d > 0.93 ? 1 : 0);
-      // Highlight speckles where it is lit.
-      if (t >= 4 && hc > 1 - speck) t = 6;
-      c.set(x, y, M.LEAF, clampT(Math.min(t, 6)));
-    }
 }
 
 // ---- Trunks and branches -----------------------------------------------------------
@@ -300,120 +139,6 @@ export const TREES: Record<string, TreeKind> = {
     bark: { cracks: 0 },
   },
 };
-
-/** A limb: a crooked bough in two segments, thick at its root, lit on top. Returns its end. */
-function limb(c: Canvas, x0: number, y0: number, ang: number, len: number, w: number) {
-  const R = c.R,
-    kink = (R() - 0.5) * 0.7,
-    mx = x0 + Math.sin(ang) * len * 0.5,
-    my = y0 - Math.cos(ang) * len * 0.5,
-    ex = mx + Math.sin(ang + kink) * len * 0.5,
-    ey = my - Math.cos(ang + kink) * len * 0.5;
-  branch(c, x0, y0, mx, my, w);
-  branch(c, mx, my, ex, ey, Math.max(1, w - 1));
-  return { x: ex, y: ey };
-}
-
-/** Hanging fringes under a birch's crown: thin strands of leaves. */
-function fringe(c: Canvas, cx: number, cy: number, rx: number, ry: number) {
-  const R = c.R,
-    n = Math.round(rx * 1.4);
-  for (let k = 0; k < n; k++) {
-    const u = (k / Math.max(1, n - 1)) * 2 - 1,
-      x = Math.round(cx + u * rx * 0.95),
-      y0 = Math.round(cy + ry * Math.sqrt(Math.max(0, 1 - u * u)) * 0.8),
-      len = 3 + Math.floor(R() * (5 + 5 * (1 - Math.abs(u))));
-    for (let d = 0; d < len; d++) if (R() < 0.85) c.set(x + (d > len * 0.6 ? Math.sign(u) : 0), y0 + d, M.LEAF, d === len - 1 ? 2 : 3 + (d % 2));
-  }
-}
-
-/** A tree standing on the ground at (x, ground) (the ground row), grown in its kind's form. */
-export function tree(c: Canvas, kind: TreeKind, x: number, ground: number, scale = 1) {
-  const R = c.R,
-    h = Math.round((kind.h0 + (kind.h1 - kind.h0) * R()) * scale),
-    w0 = kind.w0 * scale,
-    w1 = kind.w1 * scale,
-    st = kind.style;
-  switch (kind.form) {
-    case "oak": {
-      // A short, stout, crooked trunk splitting into gnarled limbs, each
-      // carrying its own mass of leaves: a wide, broken crown.
-      const th = Math.round(h * (0.3 + 0.1 * R())),
-        top = trunk(c, x, ground - 1, th, w0, w1 + 1, (R() - 0.5) * 4, kind.bark),
-        n = 4 + Math.floor(R() * 2),
-        lobes: { x: number; y: number; r: number }[] = [];
-      for (let k = 0; k < n; k++) {
-        const side = n === 1 ? 0 : (k / (n - 1)) * 2 - 1,
-          ang = side * (0.95 + 0.3 * R()) + (R() - 0.5) * 0.2,
-          end = limb(c, top.x, top.y, ang, h * (0.4 + 0.16 * R()) * (1 - 0.2 * Math.abs(side)), Math.max(2, Math.round(w1))),
-          r = h * (0.15 + 0.05 * R());
-        lobes.push({ x: end.x, y: end.y - r * 0.2, r });
-      }
-      lobes.push({ x: top.x + (R() - 0.5) * 6, y: top.y - h * 0.5, r: h * 0.16 });
-      // Higher lobes are farther back: draw them first.
-      lobes.sort((a, b) => a.y - b.y);
-      for (const l of lobes) crown(c, l.x, l.y, l.r * 1.15, l.r * 0.72, st);
-      break;
-    }
-    case "beech": {
-      // A tall smooth grey column into a tall, smooth dome.
-      const th = Math.round(h * 0.62),
-        top = trunk(c, x, ground - 1, th, w0, w1, (R() - 0.5) * 2, kind.bark),
-        rx = h * (0.24 + 0.04 * R()),
-        ry = h * (0.33 + 0.04 * R()),
-        cy = ground - h + ry;
-      for (const s of [-1, 1]) limb(c, top.x, top.y + 6, s * 0.5, h * 0.25, Math.max(1, Math.round(w1 - 1)));
-      crown(c, top.x, cy, rx, ry, st);
-      crown(c, top.x + (R() - 0.5) * rx * 0.6, cy - ry * 0.55, rx * 0.55, ry * 0.4, st);
-      break;
-    }
-    case "maple": {
-      // A round, ragged crown, with lower lobes either side.
-      const th = Math.round(h * 0.42),
-        top = trunk(c, x, ground - 1, th, w0, w1, (R() - 0.5) * 3, kind.bark),
-        r = h * (0.27 + 0.04 * R()),
-        cy = ground - h + r;
-      for (const s of [-1, 1]) {
-        const e = limb(c, top.x, top.y, s * (0.7 + 0.2 * R()), h * 0.28, Math.max(1, Math.round(w1)));
-        crown(c, e.x, e.y + r * 0.1, r * 0.62, r * 0.5, st);
-      }
-      crown(c, top.x, cy, r * 1.05, r * 0.92, st);
-      break;
-    }
-    case "birch": {
-      // One to three slender stems, a narrow airy crown with hanging fringes.
-      const stems = R() < 0.45 ? 1 + Math.floor(R() * 3) : 1;
-      for (let k = 0; k < stems; k++) {
-        const hh = Math.round(h * (1 - 0.13 * k)),
-          dx = k === 0 ? 0 : (k % 2 ? -1 : 1) * (2 + Math.floor(R() * 2)),
-          lean = dx * 2.2 + (R() - 0.5) * 3,
-          top = trunk(c, x + dx, ground - 1, Math.round(hh * 0.8), w0, w1, lean, kind.bark),
-          rx = hh * (0.11 + 0.03 * R()),
-          ry = hh * (0.3 + 0.04 * R()),
-          cy = ground - hh + ry;
-        crown(c, top.x, cy, rx, ry, st);
-        fringe(c, top.x, cy, rx, ry);
-      }
-      break;
-    }
-    case "hazel": {
-      // A vase of thin stems from one stool, leafy toward their tips.
-      const n = 4 + Math.floor(R() * 3);
-      for (let k = 0; k < n; k++) {
-        const ang = ((k / (n - 1)) * 2 - 1) * 0.55,
-          e = limb(c, x, ground - 1, ang, h * (0.75 + 0.3 * R()), 1);
-        crown(c, e.x, e.y + 2, 4 + R() * 2, 3 + R() * 1.5, st);
-      }
-      break;
-    }
-  }
-  return h;
-}
-
-/** A shrub: a low heap of clumps from the ground. */
-export function shrub(c: Canvas, x: number, ground: number, w: number, h: number) {
-  crown(c, x, ground - h / 2, w / 2, h / 2, { r0: 3, r1: 5, density: 1.8, speckle: 0.35, holes: 0 });
-}
 
 // ---- Boulders ---------------------------------------------------------------------
 
@@ -523,15 +248,4 @@ export function fern(c: Canvas, x: number, ground: number, size: number) {
     }
   }
   c.set(x, ground - 1, M.LEAF, 1);
-}
-
-/** A fallen log lying along the ground, lit on top, its cut end showing rings. */
-export function log(c: Canvas, x: number, ground: number, len: number, thick: number, dir: number) {
-  for (let k = 0; k < len; k++)
-    for (let d = 0; d < thick; d++) {
-      const tone = d === 0 ? 4 : d === thick - 1 ? 1 : d === 1 ? 3 : 2;
-      c.set(x + k * dir, ground - 1 - (thick - 1 - d), M.WOOD, tone);
-    }
-  // The cut end: pale wood in rings.
-  for (let d = 0; d < thick; d++) c.set(x + (len - 1) * dir, ground - 1 - (thick - 1 - d), M.WOOD, d % 2 ? 5 : 4);
 }

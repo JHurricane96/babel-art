@@ -1,10 +1,10 @@
-// Strata Vista: the page. Builds the valley in workers, packs the sprites,
-// walks the party along the route, directs the camera, and draws.
+// Strata Vista: the page. Makes today's world and its land in workers, packs the sprites,
+// walks the party along the route at a place, directs the camera, and draws.
 import { ART_H, ART_W, F, FOV, HORIZON, Renderer, type Camera, type PartsFrame, type Sprites, type SpriteData } from "./render";
 import { BIOMES as BIOME_DEFS, ZONE } from "../../../engine/strata/biomes";
 import { BIOMES as BIOME_MAP, type World2D } from "../../../engine/strata/world2d";
 import { G, type LandData, type Place, biomeAt, ground, groundKind, land, landFromWorld, setLand, worldSize } from "./land";
-import { FAR, FINE, GRIDS, KIND, MID, ROUTE, along, cumulative, hash2, mulberry, placeGrids } from "./valley";
+import { FAR, FINE, GRIDS, KIND, MID, ROUTE, along, cumulative, hash2, mulberry, placeGrids } from "./common";
 import { M } from "../../../engine/strata/world";
 import { hex, rampOf, shiftColor } from "./color";
 import { HMAX, type Plan, type SlotPack } from "./pack";
@@ -202,7 +202,6 @@ function planRoute(p: Place): [number, number][] {
   out.push(pts[pts.length - 1]);
   return out;
 }
-const chapterAt = (_v: number) => 0;
 
 // ---- The camera director ----------------------------------------------------------------------
 const angleTo = (a: number, b: number, k: number) => {
@@ -899,10 +898,9 @@ function coverAround(x: number, z: number, yaw: number) {
   return coverBuf.subarray(0, n);
 }
 
-/** The party (and its marker), and the others on the road (the carter, the ox and the cart), this frame. */
+/** The party (and its marker), this frame. */
 function actors(c: Camera) {
   const out: number[] = [],
-    others: number[] = [],
     fx = Math.sin(c.yaw),
     fz = Math.cos(c.yaw),
     rx = Math.cos(c.yaw),
@@ -924,7 +922,7 @@ function actors(c: Camera) {
     const p = routeAt(s);
     out.push(p.x, partyY(s) + 2.4, p.z, 1, SLOTS.get("marker")!, 4);
   }
-  return { party: Float32Array.from(out), others: Float32Array.from(others) };
+  return Float32Array.from(out);
 }
 
 // ---- Clouds: a band of pixel-art cumulus all round the sky --------------------------------------
@@ -1279,8 +1277,7 @@ let treeParts: Float32Array[] = [],
   ready = false,
   treesList: Sprites | null = null,
   coverList: Sprites | null = null,
-  partyList: Sprites | null = null,
-  actorList: Sprites | null = null;
+  partyList: Sprites | null = null;
 const t0 = performance.now();
 let buildMs = 0,
   started = false;
@@ -1395,7 +1392,6 @@ function maybeStart() {
   renderer.setClouds(cl.W, cl.H, cl.data);
   treesList = renderer.sprites(new Float32Array(0));
   coverList = renderer.sprites(new Float32Array(0));
-  actorList = renderer.sprites(new Float32Array(0));
   partyList = renderer.sprites(new Float32Array(0));
   $("loading").hidden = true;
   layout();
@@ -1637,17 +1633,12 @@ function frame(now: number, forced = -1) {
     renderer.sprites(cover, coverList);
     coverVis = nearSubset(coverNear, rc.x, rc.z, 90);
   }
-  if (actorList && partyList) {
-    const a = actors(rc);
-    renderer.sprites(a.party, partyList);
-    renderer.sprites(a.others, actorList);
-  }
+  if (partyList) renderer.sprites(actors(rc), partyList);
   renderer.draw(
     rc,
     [
       { sprites: treesList!, near: 10, far: 6000 },
       { sprites: coverList!, near: 3, far: COVER_FAR },
-      { sprites: actorList!, near: 1.5, far: 20000 },
       { sprites: partyList!, near: 1.5, far: 20000, ghost: opt.ghost },
     ],
     { bands: opt.bands, wall: opt.wall, path: opt.path, time: simTime },

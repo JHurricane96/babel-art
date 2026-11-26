@@ -1,6 +1,6 @@
 // Loop 1 lab: render generated Strata regions to images, fast, without the app.
 //
-//   node --import tsx tools/strata-lab/regions.ts OUT_DIR [seed] [first region] [--quick]
+//   node --import tsx tools/strata-lab/regions.ts OUT_DIR [seed] [--quick]
 //
 // Writes, for the seed (default 7):
 //   panorama.png       four neighbouring regions at 1 cell per pixel (8192 x 1600)
@@ -14,8 +14,11 @@
 // approximation for judging the land; the real renderer comes later.
 import { deflateSync } from "node:zlib";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { generateRegion } from "../../engine/strata/generate.ts";
-import { biomeNameAt } from "../../engine/strata/worldmap.ts";
+import {
+  BIOMES,
+  generateRegion,
+  regionBiome,
+} from "../../engine/strata/generate.ts";
 import { REGION_W, WORLD_H } from "../../engine/strata/world.ts";
 import { renderLand } from "./land-render.ts";
 
@@ -24,7 +27,6 @@ function stitch(seed: number, r0: number, n: number) {
   const W = REGION_W * n,
     cells = new Uint8Array(W * WORLD_H),
     state = new Uint8Array(W * WORLD_H),
-    flora = new Uint8Array(W * WORLD_H),
     surface = new Int16Array(W),
     ms: number[] = [];
   for (let k = 0; k < n; k++) {
@@ -39,24 +41,10 @@ function stitch(seed: number, r0: number, n: number) {
         g.state.subarray(y * REGION_W, (y + 1) * REGION_W),
         y * W + k * REGION_W,
       );
-      flora.set(
-        g.flora.subarray(y * REGION_W, (y + 1) * REGION_W),
-        y * W + k * REGION_W,
-      );
     }
     surface.set(g.surface, k * REGION_W);
   }
-  return {
-    W,
-    H: WORLD_H,
-    cells,
-    state,
-    flora,
-    surface,
-    ms,
-    x0: r0 * REGION_W,
-    seed,
-  };
+  return { W, H: WORLD_H, cells, state, surface, ms, x0: r0 * REGION_W, seed };
 }
 
 function render(world: ReturnType<typeof stitch>) {
@@ -154,21 +142,13 @@ function crop(
 const out = process.argv[2];
 const seed = Number(process.argv[3] ?? 7);
 mkdirSync(out, { recursive: true });
-// Regions from the world's interior (its ends are ocean); a fifth argument picks the first.
-const first = Number(
-  process.argv.slice(4).find((a) => !a.startsWith("--")) ?? 40,
-);
-const pano = stitch(seed, first, 4);
+const pano = stitch(seed, -1, 4);
 const img = render(pano);
 png(`${out}/panorama.png`, img.W, img.H, img.rgb);
 const half = shrink(img, 2);
 png(`${out}/panorama-half.png`, half.W, half.H, half.rgb);
-const names = [0, 1, 2, 3].map((k) =>
-  biomeNameAt(seed, (first + k) * REGION_W + REGION_W / 2),
-);
-console.log(
-  `seed ${seed}: regions ${first}..${first + 3} = ${names.join(" | ")}`,
-);
+const names = [-1, 0, 1, 2].map((r) => BIOMES[regionBiome(seed, r)].name);
+console.log(`seed ${seed}: regions -1..2 = ${names.join(" | ")}`);
 for (const [k, edge] of [REGION_W, 2 * REGION_W, 3 * REGION_W].entries()) {
   const s = pano.surface[edge],
     c = crop(img, edge - 495, Math.max(0, s - 260), 991, 648, 2);
@@ -179,7 +159,7 @@ const ms = [...pano.ms];
 const tiles: { W: number; H: number; rgb: Uint8Array }[] = [];
 const quick = process.argv.includes("--quick");
 for (let sd = 1; sd <= (quick ? 0 : 12); sd++) {
-  const w = stitch(sd, 60, 2);
+  const w = stitch(sd, 0, 2);
   ms.push(...w.ms);
   tiles.push(shrink(render(w), 4));
 }

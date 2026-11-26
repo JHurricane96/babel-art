@@ -4,7 +4,7 @@
 // ground is (KIND) and its biome. The fine grid also says where its trees stand and how far the
 // nearest road is.
 import { G, biomeAt, ground, groundKind, pickTree, woodsOf } from "./land";
-import { type GridSpec, KIND, TREE_KINDS, hash2, nearest } from "./valley";
+import { type GridSpec, KIND, TREE_KINDS, hash2, nearest } from "./common";
 
 export interface Band {
   gi: number;

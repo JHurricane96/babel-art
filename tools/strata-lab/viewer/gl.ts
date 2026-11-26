@@ -49,7 +49,6 @@ uniform sampler2D uSurf;
 uniform ivec2 uCamDev;
 uniform float uScale;
 uniform float uViewH;
-uniform float uViewW;
 uniform float uTime;
 uniform int uTileX0;
 uniform int uTileW;
@@ -59,44 +58,38 @@ out vec4 o;
 ${NOISE}
 const float BAYER[16] = float[16](0.03125, 0.53125, 0.15625, 0.65625, 0.78125, 0.28125, 0.90625, 0.40625,
   0.21875, 0.71875, 0.09375, 0.59375, 0.96875, 0.46875, 0.84375, 0.34375);
-// The day sky (as land-render.ts): pale at the horizon, blue overhead.
-const vec3 SKY0 = vec3(0.863, 0.910, 0.937), SKY1 = vec3(0.549, 0.733, 0.890), SKY2 = vec3(0.290, 0.498, 0.761);
-const vec3 CLOUD_SHADE = vec3(0.714, 0.776, 0.839), CLOUD_LIT = vec3(0.984, 0.988, 0.992);
-const vec3 HAZE_NEAR = vec3(0.490, 0.596, 0.671), HAZE_FAR = vec3(0.663, 0.753, 0.824);
-const vec3 SUN = vec3(1.0, 0.973, 0.886);
+const vec3 SKY0 = vec3(0.098, 0.110, 0.235), SKY1 = vec3(0.353, 0.247, 0.471), SKY2 = vec3(0.941, 0.627, 0.376);
+const vec3 CLOUD_TOP = vec3(0.478, 0.361, 0.584), CLOUD_LIT = vec3(0.957, 0.706, 0.565);
+const vec3 HAZE = vec3(0.227, 0.173, 0.353), STAR = vec3(1.0, 0.957, 0.878);
 
-float clouds(float x, float y, float t) {
-  return 0.65 * vnoise(vec2((x - t * 2.5) / 150.0, y / 46.0)) + 0.35 * vnoise(vec2((x - t * 4.0) / 42.0, y / 18.0));
-}
-
-// d: rows above the horizon, as in land-render.ts; dev: the pixel on screen.
-vec3 sky(ivec2 a, float d, float t, vec2 dev) {
-  float x = float(a.x), y = float(a.y), bay = BAYER[(a.y & 3) * 4 + (a.x & 3)];
-  float g = clamp(d / 700.0, 0.0, 1.0);
-  vec3 c = g < 0.35 ? mix(SKY0, SKY1, g / 0.35) : mix(SKY1, SKY2, (g - 0.35) / 0.65);
-  c = floor(c * 24.0 + bay) / 24.0;
-  // The sun, far off: fixed on the screen, a small disc in a soft halo.
-  vec2 sp = vec2(0.78 * uViewW, 0.16 * uViewH);
-  float r = length(dev - sp) / uScale;
-  c = mix(c, SUN, floor(clamp(1.0 - (r - 9.0) / 70.0, 0.0, 1.0) * 0.35 * 4.0 + bay) / 4.0);
-  if (r < 9.0) c = SUN;
-  // Clouds drifting: heaped, lit on top and shaded underneath, in a few steps.
-  float env = clamp((d - 90.0) / 50.0, 0.0, 1.0) * clamp((560.0 - d) / 90.0, 0.0, 1.0);
-  float cl = clouds(x, y, t);
-  float amt = floor(clamp((cl - 0.6) / 0.06, 0.0, 1.0) * env * 3.0 + bay) / 3.0;
-  if (amt > 0.0) {
-    float lit = floor(clamp(0.55 + (cl - clouds(x, y - 4.0, t)) * 9.0, 0.0, 1.0) * 3.0 + bay) / 3.0;
-    c = mix(c, mix(CLOUD_SHADE, CLOUD_LIT, lit), 0.35 + 0.6 * amt);
+// d: rows above the horizon, as in land-render.ts.
+vec3 sky(ivec2 a, float d, float t) {
+  float x = float(a.x), bay = BAYER[(a.y & 3) * 4 + (a.x & 3)];
+  float g = clamp(1.0 - d / 420.0, 0.0, 1.0);
+  vec3 c = g < 0.55 ? mix(SKY0, SKY1, g / 0.55) : mix(SKY1, SKY2, (g - 0.55) / 0.45);
+  c = floor(c * 18.0 + bay) / 18.0;
+  // Clouds drifting, thin bands lit from below toward the horizon.
+  float env = clamp((d - 30.0) / 40.0, 0.0, 1.0) * clamp((340.0 - d) / 60.0, 0.0, 1.0);
+  float cl = 0.65 * vnoise(vec2((x - t * 2.5) / 230.0, float(a.y) / 30.0)) + 0.35 * vnoise(vec2((x - t * 4.0) / 70.0, float(a.y) / 12.0));
+  float amt = floor(clamp((cl - 0.54) / 0.12, 0.0, 1.0) * env * 3.0 + bay) / 3.0;
+  if (amt > 0.0) c = mix(c, mix(CLOUD_TOP, CLOUD_LIT, clamp((420.0 - d) / 260.0, 0.0, 1.0)), amt * 0.6);
+  else if (d > 230.0) {
+    // Each star twinkles at its own pace and phase (hashed apart from the
+    // hash that places it, so they never fall into step).
+    if (hashi(a + ivec2(17, 91)) > 0.9988) {
+      float rate = 0.6 + 2.2 * hashi(a + ivec2(71, 2)), phase = 6.2832 * hashi(a + ivec2(5, 33));
+      c = mix(c, STAR, 0.6 * min(1.0, (d - 230.0) / 120.0) * (0.6 + 0.4 * sin(t * rate + phase)));
+    }
   }
-  // Distant hills in haze: flat silhouettes with crisp tops, far peaks and nearer hills.
+  // Distant hills: flat silhouettes with crisp tops, far peaks and nearer hills.
   float r1 = 1.0 - abs(2.0 * fbm(vec2(x / 1100.0, 0.5)) - 1.0), r2 = 1.0 - abs(2.0 * fbm(vec2(x / 300.0, 7.5)) - 1.0);
   float far = 50.0 + 70.0 * r1 * r1 + 40.0 * r2 * r2 * r1 + 10.0 * fbm(vec2(x / 60.0, 3.5));
   float near = 22.0 + 28.0 * fbm(vec2(x / 520.0, 11.5)) + 12.0 * fbm(vec2(x / 90.0, 13.5));
   if (d < far) {
     bool nearer = d < near;
     float into = nearer ? near - d : far - d;
-    float k = (nearer ? 0.85 : 0.6) + 0.08 * floor(min(1.0, into / 120.0) * 3.0 + bay) / 3.0;
-    c = mix(c, nearer ? HAZE_NEAR : HAZE_FAR, k);
+    float k = (nearer ? 0.52 : 0.3) + 0.08 * floor(min(1.0, into / 120.0) * 3.0 + bay) / 3.0;
+    c = mix(c, HAZE * 0.55, k);
   }
   return c;
 }
@@ -109,8 +102,7 @@ void main() {
   float t = uTime * uMotionOn, x = float(a.x), y = float(a.y);
   uint m = texelFetch(uMotion, l, 0).r;
   vec3 c;
-  if (m == 1u) c = sky(a, texelFetch(uSurf, ivec2(l.x, 1), 0).r - y, t, dev);
-  else if (m == 8u) c = texelFetch(uBg, l, 0).rgb;
+  if (m == 1u) c = sky(a, texelFetch(uSurf, ivec2(l.x, 1), 0).r - y, t);
   else {
     c = texelFetch(uBg, l, 0).rgb;
     if (m == 7u) {
@@ -132,7 +124,7 @@ void main() {
   // base (height in the plant layer's alpha, the base's x in the colour
   // layer's). Gather: look along the row for a plant cell whose own sway
   // lands it here.
-  if (m == 1u || m == 8u) {
+  if (m == 1u) {
     for (int k = 0; k < 7; k++) {
       int d = (k + 1) / 2 * ((k & 1) == 1 ? -1 : 1), sx = l.x - d;
       if (sx < 0 || sx >= uTileW) continue;
@@ -209,7 +201,7 @@ export class Renderer {
   constructor(public gl: WebGL2RenderingContext) {
     this.land = compile(gl, LAND_VS, LAND_FS);
     this.points = compile(gl, POINT_VS, POINT_FS);
-    for (const n of ["uRect", "uViewport", "uBg", "uPlant", "uMotion", "uSurf", "uCamDev", "uScale", "uViewH", "uViewW", "uTime", "uTileX0", "uTileW", "uSeed", "uMotionOn"])
+    for (const n of ["uRect", "uViewport", "uBg", "uPlant", "uMotion", "uSurf", "uCamDev", "uScale", "uViewH", "uTime", "uTileX0", "uTileW", "uSeed", "uMotionOn"])
       this.u[n] = gl.getUniformLocation(this.land, n);
     for (const n of ["uCamDev", "uScale", "uViewport"]) this.pu[n] = gl.getUniformLocation(this.points, n);
     this.quad = gl.createVertexArray()!;
@@ -311,7 +303,6 @@ export class Renderer {
     gl.uniform2i(u.uCamDev, camX, camY);
     gl.uniform1f(u.uScale, s);
     gl.uniform1f(u.uViewH, view.H);
-    gl.uniform1f(u.uViewW, view.W);
     gl.uniform1f(u.uTime, time);
     gl.uniform1i(u.uSeed, seed);
     gl.uniform1f(u.uMotionOn, motionOn ? 1 : 0);

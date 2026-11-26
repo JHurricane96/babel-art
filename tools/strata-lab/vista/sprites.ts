@@ -1,16 +1,14 @@
-// Vista sprites: every sprite drawn natively at every size it is shown at,
-// so a tree 6 px tall far off is a crafted 6 px tree, not a 200 px tree
-// shrunk to mush. Sizes come in classes a quarter-octave apart, 3 px to
-// about 230 px tall; the renderer picks the class nearest the size the
-// thing would be on screen and draws it pixel for pixel.
+// Vista sprites: the drawings. Every kind of thing Vista shows (seven kinds of tree, each in a few
+// variants; shrubs, grass, flowers, ferns, boulders and stones; the party; the party's marker) as a
+// drawing at any height in pixels. pack.ts turns these into what the GPU draws at each size.
 //
-// Big broadleaf trees come from the forest slice's drawing code (art.ts:
-// crowns heaped from shaded leaf clumps); small ones, conifers, people,
-// ground cover, the ox and the cart are drawn here.
+// Trees are heaps of leaf clumps, each clump with its own fixed values, so a tree drawn a pixel
+// bigger moves its clumps a little instead of reshuffling them; trunks, branches, boulders and
+// ferns come from engine/strata/art.ts.
 import { M } from "../../../engine/strata/world";
 import { TREES, type Canvas, type CrownStyle, boulder, branch, fern, trunk } from "../../../engine/strata/art";
 import { hex, rampOf } from "./color";
-import { mulberry } from "./valley";
+import { mulberry } from "./common";
 
 /** Pixel heights of the size classes. */
 export const NC = 26;
@@ -60,10 +58,8 @@ let REC: number[] | null = null,
   REC_CANVAS: MatCanvas | null = null,
   REC_RAMPS: Record<number, number[][]> | null = null,
   PART = 0,
-  /** "clump": every leaf clump its own part; "mass": the clumps heaped into one leaf mass together;
-   * "cluster": a leaf mass's clumps grouped by the cell of a grid (CLUSTER_PX, fixed to the foot)
+  /** A crown's leaf clumps are parts in groups: by the cell of a grid (CLUSTER_PX, fixed to the foot)
    * their centres fall in, each group drawn together, the groups in order of their depth. */
-  PART_LEVEL: "clump" | "mass" | "cluster" = "clump",
   CLUSTER_PX = 32,
   /** Images made in materials and shades (red: material * 8 + shade; alpha 255), not colours. */
   INDEX = false,
@@ -169,7 +165,6 @@ const LX = -0.55,
   LZ = 0.45;
 const EDGE_V = new Float32Array(32);
 function crownV(c: MatCanvas, cx: number, cy: number, rx: number, ry: number, st: CrownStyle, seed: number) {
-  if (PART_LEVEL === "mass") newPart();
   const n = Math.max(3, Math.round((Math.PI * rx * ry * st.density) / (st.r0 * st.r1))),
     clumps: { x: number; y: number; r: number; z: number; s: number }[] = [];
   for (let k = 0; k < n; k++) {
@@ -183,7 +178,7 @@ function crownV(c: MatCanvas, cx: number, cy: number, rx: number, ry: number, st
   }
   clumps.sort((p, q) => p.z - q.z);
   const draw = (q: (typeof clumps)[0]) => clumpV(c, q.x, q.y, q.r, 0.5 - 0.5 * ((q.x - cx) / rx) * 0.45 - 0.5 * ((q.y - cy) / ry) * 0.9, st, q.s);
-  if (PART_LEVEL === "cluster" && REC) {
+  if (REC) {
     const groups = new Map<number, typeof clumps>();
     for (const q of clumps) {
       const k = Math.floor(q.x / CLUSTER_PX) * 4096 + Math.floor(q.y / CLUSTER_PX);
@@ -199,7 +194,6 @@ function crownV(c: MatCanvas, cx: number, cy: number, rx: number, ry: number, st
   } else for (const q of clumps) draw(q);
 }
 function clumpV(c: MatCanvas, cx: number, cy: number, r: number, pos: number, st: CrownStyle, seed: number) {
-  if (PART_LEVEL === "clump") newPart();
   const R = mulberry(seed),
     ox = Math.floor(R() * 12),
     oy = Math.floor(R() * 8),
@@ -549,8 +543,7 @@ function treeDraw(name: string) {
  * image anchored at the tree's foot like the whole, in drawing order; painted in order they make
  * the whole drawing again.
  */
-export function drawParts(def: SlotDef, H: number, seed: number, level: "clump" | "mass" | "cluster" = "clump"): Part[] {
-  PART_LEVEL = level;
+export function drawParts(def: SlotDef, H: number, seed: number): Part[] {
   CLUSTER_PX = H / 12;
   REC = [];
   PART = 0;
@@ -563,7 +556,6 @@ export function drawParts(def: SlotDef, H: number, seed: number, level: "clump" 
   REC = null;
   REC_CANVAS = null;
   REC_RAMPS = null;
-  PART_LEVEL = "clump";
   if (!cv || !ramps) return [];
   // Each part is drawn whole before the next begins, so its pixels are one run of the record;
   // a pixel set twice within a part keeps the later value, as on the canvas.
@@ -738,7 +730,7 @@ function rockDraw(H: number, seed: number, wide: number, moss: number): Img {
   return c.toImg({ [M.ROCK]: ROCK_R, [M.LEAF]: MOSS_R, [M.MOSS]: rampOf(hex("#b8b070")) }, 0, 0);
 }
 
-// ---- People, the ox and the cart: drawn in colours directly ---------------------------------
+// ---- People: drawn in colours directly -------------------------------------------------------
 type RGB = [number, number, number];
 class Px {
   data: Uint8ClampedArray;
@@ -801,7 +793,6 @@ export const PARTY: Look[] = [
   { tunic: [200, 160, 64], hair: [140, 70, 40], legs: [84, 66, 50], pack: true },
   { tunic: [90, 122, 58], hair: [170, 168, 160], legs: [66, 60, 50], pack: true, hat: [74, 90, 60] },
 ];
-export const CARTER: Look = { tunic: [128, 116, 98], hair: [80, 60, 44], legs: [70, 60, 50], hat: [150, 130, 90] };
 const SKIN: RGB = [226, 178, 136],
   INK: RGB = [36, 30, 28],
   PACK: RGB = [138, 104, 66],
@@ -917,90 +908,8 @@ export function person(H: number, facing: number, frame: number, look: Look): Im
   return p.toImg(0, 0);
 }
 
-/** An ox in profile, facing right: a deep barrel body, a hump over the shoulders, the head carried low, legs in step. */
-function ox(H: number, frame: number): Img {
-  const L = Math.round(H * 1.6),
-    p = new Px(L + 14, H + 8, Math.floor((L + 14) / 2), H + 4),
-    C: RGB = [150, 104, 66],
-    hide = (u: number, v: number): RGB => shade(C, 1.18 - 0.42 * v + (u < -0.1 ? -0.04 : 0.02));
-  if (H < 6) {
-    p.rect(-2, -H + 1, 4, H - 2, C);
-    p.set(2, -H + 2, shade(C, 0.8));
-    p.set(-2, -1, shade(C, 0.6)); p.set(1, -1, shade(C, 0.6));
-    return p.toImg(0, 0);
-  }
-  const legH = Math.round(H * 0.36),
-    top = -H,
-    belly = -legH,
-    x0 = -Math.round(L * 0.42),
-    x1 = Math.round(L * 0.24);
-  // The barrel: rounder at the rump, a hump at the withers.
-  for (let x = x0; x <= x1; x++) {
-    const u = (x - x0) / (x1 - x0),
-      hump = Math.exp(-((u - 0.78) ** 2) / 0.02) * H * 0.08,
-      rump = Math.sin(Math.min(1, u * 3.2) * Math.PI * 0.5),
-      yt = Math.round(top + H * 0.12 - hump + (1 - rump) * H * 0.12),
-      yb = Math.round(belly - (1 - rump) * H * 0.06 + Math.sin(u * Math.PI) * H * 0.05);
-    for (let y = yt; y <= yb; y++) p.set(x, y, hide(u - 0.5, (y - yt) / Math.max(1, yb - yt)));
-  }
-  // Neck and head, carried low and forward; horns; a dark muzzle.
-  const hx = x1 + 1,
-    hy = top + Math.round(H * 0.3),
-    hw = Math.max(2, Math.round(H * 0.26)),
-    hh = Math.max(2, Math.round(H * 0.24));
-  for (let k = 0; k < hw; k++) for (let y = 0; y < hh - (k > hw * 0.6 ? 1 : 0); y++) p.set(hx + k, hy + y + Math.round(k * 0.35), shade(C, 1.05 - y * 0.06));
-  p.set(hx + hw - 1, hy + hh - 1 + Math.round(hw * 0.35), [70, 52, 40]);
-  const horn: RGB = [226, 214, 186];
-  p.set(hx, hy - 1, horn);
-  if (H >= 12) { p.set(hx - 1, hy - 2, horn); p.set(hx + 1, hy - 1, horn); }
-  if (H >= 10) p.set(hx + Math.round(hw * 0.4), hy + 1, [40, 32, 28]);
-  // Legs: hocks behind, knees in front, hooves dark.
-  const lw = H >= 14 ? 2 : 1,
-    legs = [x0 + 1, x0 + Math.round(L * 0.1), x1 - Math.round(L * 0.12), x1 - 1];
-  legs.forEach((x, k) => {
-    const sw = ((frame + (k % 2 ? 2 : 0) + (k > 1 ? 1 : 0)) % 4) - 1.5;
-    for (let y = belly - 1; y < 0; y++) {
-      const t = (y - belly) / legH,
-        dx = Math.round(sw * 0.5 * t * (H / 12));
-      for (let d = 0; d < lw; d++) p.set(x + dx + d, y, y >= -1 ? [56, 42, 34] : k === 1 || k === 2 ? shade(C, 0.62) : shade(C, 0.82));
-    }
-  });
-  // The tail.
-  for (let y = top + Math.round(H * 0.25); y < belly; y++) p.set(x0 - 1, y, shade(C, 0.7));
-  p.set(x0 - 1, belly, [60, 44, 34]);
-  if (H >= 10) p.outline(INK);
-  return p.toImg(0, 0);
-}
-/** A covered cart in profile: a box on two wheels under a canvas hood. */
-function cart(H: number): Img {
-  const L = Math.round(H * 1.15),
-    p = new Px(L + 12, H + 8, Math.floor((L + 12) / 2), H + 4),
-    hood: RGB = [222, 212, 186],
-    box: RGB = [132, 98, 62],
-    wheelR = Math.max(1, Math.round(H * 0.18));
-  const boxTop = -Math.round(H * 0.52),
-    boxBot = -wheelR;
-  for (let y = boxTop; y < boxBot; y++) for (let x = -Math.round(L / 2); x < Math.round(L / 2); x++) p.set(x, y, y === boxTop ? shade(box, 1.2) : box);
-  const hr = Math.round(L / 2);
-  for (let y = -H; y < boxTop; y++)
-    for (let x = -hr; x < hr; x++) {
-      const u = x / hr,
-        v = (boxTop - y) / (boxTop + H);
-      if (u * u * 0.6 + v * v > 1) continue;
-      p.set(x, y, u < -0.2 ? shade(hood, 1.04) : u > 0.5 ? shade(hood, 0.82) : hood);
-    }
-  for (const cx of [-Math.round(L * 0.2)])
-    for (let y = -2 * wheelR; y <= 0; y++)
-      for (let x = -wheelR; x <= wheelR; x++) {
-        const d = Math.hypot(x, y + wheelR);
-        if (d <= wheelR + 0.3) p.set(cx + x, y - 0, d > wheelR - 1 ? [52, 40, 32] : [96, 72, 50]);
-      }
-  if (H >= 10) p.outline(INK);
-  return p.toImg(0, 0);
-}
 
 // ---- The slots ----------------------------------------------------------------------------
-export const TREE_SLOT0 = 0;
 export const TREE_VARIANTS = 3;
 export const TREE_NAMES = ["oak", "beech", "maple", "birch", "spruce", "fir", "pine"];
 export const COVER = ["grass", "grass2", "dry grass", "flowers white", "flowers yellow", "flowers purple", "flowers red", "fern", "fern2", "shrub", "shrub2", "boulder", "boulder2", "stone", "stone2"];
@@ -1022,12 +931,9 @@ export function slotDefs(): SlotDef[] {
     };
     out.push({ name, worldH: COVER_H[k], maxClass: 18, sunFlip: true, draw });
   });
-  const looks = [...PARTY, CARTER];
-  looks.forEach((look, m) => {
+  PARTY.forEach((look, m) => {
     for (let f = 0; f < 3; f++) for (let fr = 0; fr < 4; fr++) out.push({ name: `person ${m} ${f} ${fr}`, worldH: 1.75, maxClass: 15, sunFlip: false, draw: (H) => person(H, f, fr, look) });
   });
-  for (let fr = 0; fr < 4; fr++) out.push({ name: `ox ${fr}`, worldH: 1.6, maxClass: 15, sunFlip: false, draw: (H) => ox(H, fr) });
-  out.push({ name: "cart", worldH: 2.6, maxClass: 16, sunFlip: false, draw: (H) => cart(H) });
   // The party marker: a small caret, the same at every size.
   out.push({
     name: "marker", worldH: 1, maxClass: 0, sunFlip: false,

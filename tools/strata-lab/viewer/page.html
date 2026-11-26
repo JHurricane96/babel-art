@@ -61,58 +61,9 @@
   button:hover { border-color: var(--dusk); }
   button:focus-visible, .seed input:focus-visible { outline: 2px solid var(--glow); outline-offset: 1px; }
   button[aria-pressed="true"] { background: rgba(240, 160, 96, 0.18); border-color: var(--dusk); color: var(--dusk); }
-  .side {
-    top: calc(12px + env(safe-area-inset-top, 0px)); right: calc(12px + env(safe-area-inset-right, 0px));
-    width: min(380px, calc(100vw - 24px)); max-height: calc(100vh - 140px); overflow: auto;
-    padding: 12px 14px; display: grid; gap: 10px;
-  }
-  .side h2 { margin: 0; font: 600 13px/1.2 var(--display); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
-  .side .head { display: flex; justify-content: space-between; align-items: center; }
-  .side .list { display: grid; gap: 4px; }
-  .place { text-align: left; display: grid; gap: 2px; padding: 7px 9px; font: 500 13px/1.3 var(--display); width: 100%; }
-  .place small { font: 400 11px/1.3 var(--data); color: var(--muted); letter-spacing: 0; }
-  .note-row { display: flex; gap: 4px; align-items: stretch; }
-  .note-row .place { flex: 1; font: 400 13px/1.35 var(--data); }
-  .del { padding: 0 9px; }
-  .hint { margin: 0; color: var(--muted); font-size: 12px; }
-  .hint:empty { display: none; }
-  .jump { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-  .jump label { color: var(--muted); font-size: 12px; }
-  .jump input, #note-text {
-    background: transparent; color: var(--ink); font: 500 13px var(--data);
-    border: 1px solid var(--rule); border-radius: 4px; padding: 4px 6px;
-  }
-  .jump input { width: 7ch; font-variant-numeric: tabular-nums; }
-  #note-text { width: 100%; min-height: 90px; resize: vertical; box-sizing: border-box; font-weight: 400; line-height: 1.45; }
-  .jump input:focus-visible, #note-text:focus-visible { outline: 2px solid var(--glow); outline-offset: 1px; }
-  .actions { display: flex; gap: 8px; justify-content: flex-end; }
-  .err { margin: 0; color: #f0907a; font-size: 12px; }
-  .err:empty { display: none; }
-  [hidden] { display: none !important; }
-  #hud-toggle {
-    position: fixed; z-index: 5; right: calc(12px + env(safe-area-inset-right, 0px));
-    bottom: calc(12px + env(safe-area-inset-bottom, 0px)); display: none;
-    background: var(--glass); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
-  }
-  #more { display: none; }
-  @media (max-width: 640px), (pointer: coarse) {
+  @media (max-width: 640px) {
     .keys, .note { display: none; }
-    #hud-toggle { display: inline-block; min-height: 40px; min-width: 40px; }
-    #hud[hidden] ~ #hud-toggle, #hud-toggle { display: inline-block; }
-    .top { padding: 8px 10px; gap: 4px; max-width: calc(100vw - 24px); }
-    .name { font-size: 16px; }
-    .tag { display: none; }
-    .biome { font-size: 14px; }
-    .seed input, .jump input, #note-text { font-size: 16px; }
-    button { min-height: 40px; min-width: 40px; padding: 8px 12px; }
-    .bar { gap: 6px 8px; padding: 8px; right: calc(64px + env(safe-area-inset-right, 0px)); }
-    #more { display: inline-block; }
-    .bar:not(.open) .more { display: none; }
-    .scale { font-size: 12px; }
-    .side {
-      top: auto; left: calc(8px + env(safe-area-inset-left, 0px)); right: calc(8px + env(safe-area-inset-right, 0px));
-      bottom: calc(8px + env(safe-area-inset-bottom, 0px)); width: auto; max-height: 62vh; z-index: 6;
-    }
+    .bar { gap: 6px 10px; }
   }
 </style>
 
@@ -120,7 +71,7 @@
 <canvas id="overlay" aria-hidden="true"></canvas>
 <div id="hud">
   <header class="card top">
-    <div class="brand"><span class="name">Strata</span><span class="tag">world · journey prototype</span></div>
+    <div class="brand"><span class="name">Strata</span><span class="tag">land · loop 4 · motion</span></div>
     <form id="seed-form" class="seed">
       <label for="seed">Seed</label>
       <input id="seed" type="number" min="0" step="1" inputmode="numeric">
@@ -128,64 +79,30 @@
     </form>
     <p id="biome" class="biome">…</p>
     <p id="where" class="where">region 1</p>
-    <p id="journey-state" class="where" hidden></p>
   </header>
-  <nav class="card bar" id="bar" aria-label="View controls">
+  <nav class="card bar" aria-label="View controls">
     <div class="group" role="group" aria-label="Zoom">
       <button id="zoom-out" type="button" aria-label="Fewer screen pixels per art pixel">−</button>
       <span class="scale"><b id="scale">4</b> screen px per art px</span>
       <button id="zoom-in" type="button" aria-label="More screen pixels per art pixel">+</button>
     </div>
     <span id="scale-note" class="note">480 art px across a 1920 px screen</span>
-    <div class="group" role="group" aria-label="Review">
-      <button id="goto" type="button" aria-pressed="false">Go to</button>
-      <button id="note-here" type="button">Note here</button>
-      <button id="surface" type="button">Surface</button>
-      <button id="journey" type="button" aria-pressed="false">Journey</button>
-      <button id="journey-speed" type="button" hidden>1×</button>
-      <button id="more" type="button" aria-expanded="false" aria-controls="bar">More</button>
-    </div>
-    <div class="group more" role="group" aria-label="Go to">
+    <div class="group" role="group" aria-label="Go to">
       <button id="prev-edge" type="button">◀ Edge</button>
       <button id="next-edge" type="button">Edge ▶</button>
+      <button id="surface" type="button">Surface</button>
       <button id="deeper" type="button">Deeper</button>
     </div>
     <div class="group" role="group" aria-label="Show">
+      <button id="motion" type="button" aria-pressed="true">Motion</button>
       <button id="drift" type="button" aria-pressed="false">Drift</button>
-      <button id="route" type="button" aria-pressed="false" class="more">Route</button>
-      <button id="motion" type="button" aria-pressed="true" class="more">Motion</button>
-      <button id="edges" type="button" aria-pressed="false" class="more">Region edges</button>
-      <button id="wall" type="button" aria-pressed="false" class="more">Wall frame</button>
-      <button id="full" type="button" class="more">Fullscreen</button>
+      <button id="edges" type="button" aria-pressed="false">Region edges</button>
+      <button id="wall" type="button" aria-pressed="false">Wall frame</button>
+      <button id="full" type="button">Fullscreen</button>
     </div>
-    <p class="status more"><span id="status">Starting…</span> · <span id="workers"></span></p>
-    <p class="status more" title="Frame is the page's own work per frame (CPU); the mini PC runs about 1.3× slower. The GPU figure is measured where the browser allows it."><span id="perf">…</span></p>
-    <p class="keys">Drag to move · scroll to zoom · arrows pan · [ and ] jump between region edges · space drifts · J go to · C note here · M motion · W wall frame · H hides this panel</p>
+    <p class="status"><span id="status">Starting…</span> · <span id="workers"></span></p>
+    <p class="status" title="Frame is the page's own work per frame (CPU); the mini PC runs about 1.3× slower. The GPU figure is measured where the browser allows it."><span id="perf">…</span></p>
+    <p class="keys">Drag to move · scroll to zoom · arrows pan · [ and ] jump between biome edges · space drifts · M motion · W wall frame · H hides this panel</p>
   </nav>
-  <aside id="review" class="card side" aria-label="Go to" hidden>
-    <div class="head"><h2>Places to look</h2><button id="review-close" type="button" aria-label="Close">×</button></div>
-    <div id="places" class="list"></div>
-    <p id="places-state" class="hint"></p>
-    <h2>Jump to</h2>
-    <form id="jump" class="jump">
-      <label for="jump-seed">Seed</label><input id="jump-seed" type="number" min="0" step="1" inputmode="numeric">
-      <label for="jump-region">Region</label><input id="jump-region" type="number" min="0" step="1" inputmode="numeric">
-      <button type="submit">Go</button>
-    </form>
-    <h2>Your notes</h2>
-    <div id="notes" class="list"></div>
-    <p id="notes-state" class="hint"></p>
-  </aside>
-  <aside id="note-card" class="card side" aria-label="Note here" hidden>
-    <h2>Note here</h2>
-    <p id="note-where" class="hint"></p>
-    <form id="note-form" style="display:grid; gap:8px">
-      <label for="note-text" class="hint">What do you see? (Saved with this exact place.)</label>
-      <textarea id="note-text" maxlength="4000"></textarea>
-      <p id="note-error" class="err" role="alert"></p>
-      <div class="actions"><button id="note-cancel" type="button">Cancel</button><button id="note-save" type="submit">Save note</button></div>
-    </form>
-  </aside>
 </div>
-<button id="hud-toggle" type="button" aria-pressed="false" aria-label="Hide or show the panels">☰</button>
 <!-- SCRIPT -->
