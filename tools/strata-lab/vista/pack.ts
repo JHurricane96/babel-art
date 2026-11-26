@@ -40,8 +40,14 @@ export interface Plan {
 }
 export function planOf(def: SlotDef): Plan {
   const kind = def.name.split(" ")[0];
-  if (TREE_NAMES.includes(kind)) return { E: 23, T: 128, K: 384, N: 128, direct: false };
-  if (kind.startsWith("shrub")) return { E: 23, T: 64, K: 256, N: 64, direct: false };
+  // Trees, shrubs and rocks grow from one drawing by whole rows and columns from 6 px up (each
+  // height the one below and a row or column more), so they never change their look as they grow;
+  // only the tiniest are drawn at their own size. Grass, flowers and ferns are strokes, redrawn at
+  // every size (a stroke drawn a pixel bigger just moves its ends; shrunk by rows and columns, thin
+  // fronds break into dots).
+  if (TREE_NAMES.includes(kind)) return { E: 5, T: 128, K: 384, N: 128, direct: false };
+  if (kind.startsWith("shrub")) return { E: 5, T: 64, K: 256, N: 64, direct: false };
+  if (kind.startsWith("boulder") || kind.startsWith("stone")) return { E: 5, T: 0, K: 192, N: 192, direct: false };
   if (kind === "marker") return { E: 1, T: 0, K: 1, N: 1, direct: true };
   if (kind === "person" || kind === "ox" || kind === "cart") return { E: 48, T: 0, K: 96, N: 96, direct: true };
   return { E: 64, T: 0, K: 192, N: 192, direct: false };
@@ -101,7 +107,9 @@ function toPic(im: Img, cells?: number): Pic {
 }
 /** A drawing shrunk to stand for H px when it was drawn standing for N px (its own rows may differ a little). */
 function shrink(src: Img, order: ReturnType<typeof orderOf>, H: number, N: number) {
-  const r = Math.min(src.h, Math.max(1, src.h - (N - H))),
+  // Rows in proportion: the drawing stands for N px, whatever its own height (a boulder drawn for
+  // 192 px is 162 rows; taking away N - H rows would leave it far too small).
+  const r = Math.min(src.h, Math.max(1, Math.round((src.h * H) / N))),
     { rows, cols } = kept(src, order, r, colsFor(src, r));
   return { rows, cols };
 }

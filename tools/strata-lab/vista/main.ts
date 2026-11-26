@@ -3,7 +3,7 @@
 import { ART_H, ART_W, F, FOV, HORIZON, Renderer, type Camera, type PartsFrame, type Sprites, type SpriteData } from "./render";
 import { BIOMES as BIOME_DEFS, ZONE } from "../../../engine/strata/biomes";
 import { BIOMES as BIOME_MAP, type World2D } from "../../../engine/strata/world2d";
-import { G, type LandData, type Place, biomeAt, ground, land, landFromWorld, setLand, worldSize } from "./land";
+import { G, type LandData, type Place, biomeAt, ground, groundKind, land, landFromWorld, setLand, worldSize } from "./land";
 import { FAR, FINE, GRIDS, KIND, MID, ROUTE, along, cumulative, hash2, mulberry, placeGrids } from "./valley";
 import { M } from "../../../engine/strata/world";
 import { hex, rampOf, shiftColor } from "./color";
@@ -625,6 +625,7 @@ function nearSubset(d: Float32Array, cx: number, cz: number, margin: number) {
 }
 /** Trees and shrubs near enough this frame to be drawn in parts: grouped by slot, for one draw each. */
 let partTrees = new Float32Array(4096 * 8);
+let growthList: Sprites | null = null;
 function partsFrame(c: Camera, lists: { data: Float32Array; near: number; far: number }[]): PartsFrame {
   const fx = Math.sin(c.yaw),
     fz = Math.cos(c.yaw),
@@ -698,7 +699,7 @@ function coverFor(b: number, kind: number): [string, number][] {
   return list;
 }
 const COVER_PATH: [string, number][] = [["stone2", 0.01]];
-const COVER_FAR = 520;
+const COVER_FAR = 1400;
 /** Where the party walks with no path drawn: what grows there, but nothing that would hide them. */
 const lowLists = new Map<[string, number][], [string, number][]>();
 const lowCover = (list: [string, number][]) => {
@@ -707,30 +708,77 @@ const lowCover = (list: [string, number][]) => {
   return low;
 };
 const TILE = 32;
-function coverTile(tx: number, tz: number): Float32Array {
+/** Beyond this, a tile holds only what stands at least FAR_COVER_H tall: anything smaller is under
+ * a pixel there anyway. */
+const NEAR_COVER = 560,
+  FAR_COVER_H = 0.6;
+/** What the ground is on an 8 m lattice over a tile outside the fine grid (from the land itself):
+ * kind and biome (255 for water) per lattice point. */
+function latticeKinds(tx: number, tz: number) {
+  const out = new Uint8Array(32);
+  for (let j = 0; j < 4; j++)
+    for (let i = 0; i < 4; i++) {
+      const x = tx * TILE + (i + 0.5) * 8,
+        z = tz * TILE + (j + 0.5) * 8,
+        h = ground(x, z),
+        o = (j * 4 + i) * 2;
+      if (G.level > h) {
+        out[o + 1] = 255;
+        continue;
+      }
+      const g = inside(1, x, z) ? 1 : 2,
+        slope = Math.hypot(heightIn(g, x + 8, z) - heightIn(g, x - 8, z), heightIn(g, x, z + 8) - heightIn(g, x, z - 8)) / 16,
+        b = biomeAt(x, z);
+      out[o] = groundKind(x, z, h, slope, b)[0];
+      out[o + 1] = b;
+    }
+  return out;
+}
+/** Ground cover for one 32 m tile: what grows depends on the biome (its look: grass, flowers,
+ * shrubs, boulders, scree) and on the ground (woods, rock, scree, shore, the walked line). A far
+ * tile is the same tile with only its taller things, so a tile coming nearer only adds what was too
+ * small to see. */
+function coverTile(tx: number, tz: number, far: boolean): Float32Array {
   const out: number[] = [],
     R = mulberry(tx * 92821 + tz * 68917 + 7),
     n = Math.round(TILE * TILE * 0.65);
+  let lat: Uint8Array | null = null;
   for (let k = 0; k < n; k++) {
     const x = tx * TILE + R() * TILE,
       z = tz * TILE + R() * TILE;
-    if (!inside(0, x, z)) continue;
-    const ri = Math.round((z - FINE.z0) / FINE.cell) * FINE.n + Math.round((x - FINE.x0) / FINE.cell),
+    let b: number,
+      kd: number,
+      rd = 99,
+      y: number;
+    if (inside(0, x, z)) {
+      const ri = Math.round((z - FINE.z0) / FINE.cell) * FINE.n + Math.round((x - FINE.x0) / FINE.cell);
       rd = FINE_R[ri] / 20;
-    if (FINE_B[ri] === 255) continue;
-    const here = coverFor(FINE_B[ri], FINE_K[ri]),
+      b = FINE_B[ri];
+      kd = FINE_K[ri];
+      y = heightIn(0, x, z);
+    } else {
+      lat ??= latticeKinds(tx, tz);
+      const li = Math.min(3, Math.floor((z - tz * TILE) / 8)) * 4 + Math.min(3, Math.floor((x - tx * TILE) / 8));
+      kd = lat[li * 2];
+      b = lat[li * 2 + 1];
+      y = surfaceAt(x, z);
+    }
+    if (b === 255) continue;
+    const here = coverFor(b, kd),
       list = rd < 2.1 ? (opt.path ? COVER_PATH : lowCover(here)) : here;
     let r = R() * 0.65;
     for (const [name, d] of list) {
       if ((r -= d) < 0) {
-        const slot = SLOTS.get(name)!;
-        out.push(x, heightIn(0, x, z) - 0.05, z, DEFS[slot].worldH * (0.75 + 0.5 * R()), slot, 2);
+        const slot = SLOTS.get(name)!,
+          hgt = DEFS[slot].worldH * (0.75 + 0.5 * R());
+        if (!far || DEFS[slot].worldH >= FAR_COVER_H) out.push(x, y - 0.05, z, hgt, slot, 2);
         break;
       }
     }
   }
   return Float32Array.from(out);
 }
+/** Tiles made, near and far kinds (kept a while after they leave the view, so turning back is free). */
 const coverCache = new Map<number, Float32Array>();
 let coverKey = "";
 /** Is a disc (centre x, z, radius r) at all in view of a camera at (cx, cz) facing yaw, within far? */
@@ -781,41 +829,74 @@ function cullTrees(c: Camera) {
     }
   return treeOut.subarray(0, n);
 }
+/** The tiles the view needs (once the camera crosses into another tile, or turns), made a few at a
+ * time (3 ms a frame): until they are all made the cover drawn stays as it was, which differs only
+ * at its far edge, where everything is a pixel or so. The first time at a place, all at once. */
+let coverNeed: { tx: number; tz: number; far: boolean; k: number; d: number }[] | null = null,
+  coverHave = false,
+  coverBuf = new Float32Array(0);
+/** The cover near enough (150 m) to hold anything drawn in parts, from the last list made. */
+let coverNear = new Float32Array(0);
 function coverAround(x: number, z: number, yaw: number) {
-  // Out to where a shrub is down to two or three pixels and has faded by its size, so nothing pops in.
-  const RAD = 330,
-    fx = Math.sin(yaw),
-    fz = Math.cos(yaw),
-    cx = x + fx * RAD * 0.6,
-    cz = z + fz * RAD * 0.6,
-    t0x = Math.floor((cx - RAD) / TILE),
-    t1x = Math.floor((cx + RAD) / TILE),
-    t0z = Math.floor((cz - RAD) / TILE),
-    t1z = Math.floor((cz + RAD) / TILE),
-    key = `${t0x},${t0z},${Math.round(yaw * 8)}`;
-  if (key === coverKey) return null;
-  coverKey = key;
-  const parts: Float32Array[] = [],
-    keep = new Set<number>();
-  for (let tz = t0z; tz <= t1z; tz++)
-    for (let tx = t0x; tx <= t1x; tx++) {
-      const k = tz * 100000 + tx;
-      if (!inView(tx * TILE + TILE / 2, tz * TILE + TILE / 2, TILE, x, z, yaw, RAD * 1.6)) continue;
-      keep.add(k);
-      let t = coverCache.get(k);
-      if (!t) coverCache.set(k, (t = coverTile(tx, tz)));
-      parts.push(t);
-    }
-  for (const k of coverCache.keys()) if (!keep.has(k)) coverCache.delete(k);
-  let n = 0;
-  for (const p of parts) n += p.length;
-  const all = new Float32Array(n);
-  n = 0;
-  for (const p of parts) {
-    all.set(p, n);
-    n += p.length;
+  // Out to where even a shrub is down to a pixel or so and has faded by its size, so nothing pops in.
+  const key = `${Math.floor(x / TILE)},${Math.floor(z / TILE)},${Math.round(yaw * 8)}`;
+  if (key !== coverKey) {
+    coverKey = key;
+    const RAD = (COVER_FAR + 2 * TILE) / 1.6,
+      cx = x + Math.sin(yaw) * RAD * 0.6,
+      cz = z + Math.cos(yaw) * RAD * 0.6,
+      t0x = Math.floor((cx - RAD) / TILE),
+      t1x = Math.floor((cx + RAD) / TILE),
+      t0z = Math.floor((cz - RAD) / TILE),
+      t1z = Math.floor((cz + RAD) / TILE);
+    coverNeed = [];
+    for (let tz = t0z; tz <= t1z; tz++)
+      for (let tx = t0x; tx <= t1x; tx++) {
+        const mx = tx * TILE + TILE / 2,
+          mz = tz * TILE + TILE / 2;
+        if (!inView(mx, mz, TILE, x, z, yaw, COVER_FAR + TILE)) continue;
+        // Near or far by the tile's nearest point (and a tile's width to spare as the camera moves on).
+        const far = Math.hypot(mx - x, mz - z) - TILE > NEAR_COVER;
+        coverNeed.push({ tx, tz, far, k: (tz * 100000 + tx) * 2 + (far ? 1 : 0), d: Math.hypot(mx - x, mz - z) });
+      }
   }
-  return all;
+  if (!coverNeed) return null;
+  const t0 = performance.now();
+  for (const t of coverNeed)
+    if (!coverCache.has(t.k)) {
+      if (coverHave && performance.now() - t0 > 2) return null;
+      coverCache.set(t.k, coverTile(t.tx, t.tz, t.far));
+    }
+  let n = 0,
+    nn = 0;
+  for (const t of coverNeed) {
+    const p = coverCache.get(t.k)!;
+    // (Kept as the most recently used.)
+    coverCache.delete(t.k);
+    coverCache.set(t.k, p);
+    n += p.length;
+    if (t.d < 150) nn += p.length;
+  }
+  // One buffer, reused (grown when it must be): the list is a view of its start.
+  if (coverBuf.length < n) coverBuf = new Float32Array(Math.ceil((n * 1.25) / 6) * 6);
+  const near = new Float32Array(nn);
+  n = 0;
+  nn = 0;
+  for (const t of coverNeed) {
+    const p = coverCache.get(t.k)!;
+    coverBuf.set(p, n);
+    n += p.length;
+    if (t.d < 150) {
+      near.set(p, nn);
+      nn += p.length;
+    }
+  }
+  coverNeed = null;
+  coverHave = true;
+  coverNear = near;
+  // Forget the longest unused beyond a few thousand tiles.
+  if (coverCache.size > 6000) for (const k of coverCache.keys()) if (coverCache.size > 4500) coverCache.delete(k); else break;
+  return coverBuf.subarray(0, n);
 }
 
 /** The party (and its marker), and the others on the road (the carter, the ox and the cart), this frame. */
@@ -1091,6 +1172,7 @@ document.querySelectorAll<HTMLButtonElement>("[data-toggle]").forEach(
       if (k === "path") {
         coverCache.clear();
         coverKey = "";
+        coverHave = false;
       }
     }),
 );
@@ -1299,6 +1381,7 @@ function placeReady() {
   lastCull = { x: 1e9, z: 0, yaw: 0 };
   coverCache.clear();
   coverKey = "";
+  coverHave = false;
   snap = true;
   maybeStart();
   if (started) $("loading").hidden = true;
@@ -1552,7 +1635,7 @@ function frame(now: number, forced = -1) {
   const cover = coverAround(rc.x, rc.z, rc.yaw);
   if (cover && coverList) {
     renderer.sprites(cover, coverList);
-    coverVis = nearSubset(cover, rc.x, rc.z, 90);
+    coverVis = nearSubset(coverNear, rc.x, rc.z, 90);
   }
   if (actorList && partyList) {
     const a = actors(rc);
@@ -1626,6 +1709,74 @@ Object.assign(window, {
       return { s, mode, current, cam: { ...cam }, stats: { ...renderer.stats }, gpuMs: renderer.timer.ms, cpuMs, fps, total: TOTAL };
     },
     readArt: () => renderer.readArt(),
+    /** How a sprite grows: drawn alone against the sky at each size it should be (px tall), what it
+     * draws: its height (from its base to its topmost pixel) and width on screen. */
+    spriteGrowth(name: string, wants: number[], crops = false) {
+      const slot = SLOTS.get(name);
+      if (slot === undefined) return null;
+      const H = DEFS[slot].worldH,
+        c: Camera = { x: 0, y: 20000, z: 0, yaw: 0, hz: HORIZON },
+        draw = (data: Float32Array) => {
+          growthList = renderer.sprites(data, growthList ?? undefined);
+          renderer.draw(c, [{ sprites: growthList, near: 0.5, far: 1e7 }], { bands: false, wall: false, time: 0, spritesOnly: true }, partsFrame(c, [{ data, near: 0.5, far: 1e7 }]));
+          return renderer.readArt();
+        },
+        bg = draw(new Float32Array(0)),
+        out: number[][] = [];
+      for (const want of wants) {
+        const d = (H * F) / want,
+          base = Math.round(want) + 20,
+          img = draw(Float32Array.of(0, c.y - ((base - HORIZON) * d) / F, d, H, slot, 0));
+        let top = 1e9,
+          x0 = 1e9,
+          x1 = -1;
+        for (let y = 0; y < ART_H; y++)
+          for (let x = 0; x < ART_W; x++) {
+            const o = (y * ART_W + x) * 4;
+            if (Math.abs(img[o] - bg[o]) + Math.abs(img[o + 1] - bg[o + 1]) + Math.abs(img[o + 2] - bg[o + 2]) < 6) continue;
+            const row = ART_H - 1 - y;
+            if (row < top) top = row;
+            if (x < x0) x0 = x;
+            if (x > x1) x1 = x;
+          }
+        if (crops && x1 >= 0) {
+          // The pixels it drew (others clear), from its top to its base.
+          const w = x1 - x0 + 1,
+            h = base - top + 1,
+            px: number[] = [];
+          for (let r = top; r <= base; r++)
+            for (let x = x0; x <= x1; x++) {
+              const o = ((ART_H - 1 - r) * ART_W + x) * 4,
+                on = Math.abs(img[o] - bg[o]) + Math.abs(img[o + 1] - bg[o + 1]) + Math.abs(img[o + 2] - bg[o + 2]) >= 6;
+              px.push(on ? img[o] : 0, on ? img[o + 1] : 0, on ? img[o + 2] : 0, on ? 255 : 0);
+            }
+          out.push([want, h, w, ...px]);
+          continue;
+        }
+        out.push(x1 < 0 ? [want, 0, 0] : [want, base - top, x1 - x0 + 1]);
+      }
+      return out;
+    },
+    slotNames: () => DEFS.map((d) => d.name),
+    /** The cover's cost as the camera moves on a tile at a time: the time each call takes (ms) until
+     * the new list is ready, and how many sprites it holds. */
+    coverCost(steps = 6) {
+      const out: { calls: number[]; n: number }[] = [],
+        c = renderCamera();
+      for (let k = 1; k <= steps; k++) {
+        const x = c.x + Math.sin(c.yaw) * TILE * k,
+          z = c.z + Math.cos(c.yaw) * TILE * k,
+          calls: number[] = [];
+        let r: Float32Array | null = null;
+        while (!r && calls.length < 200) {
+          const t0 = performance.now();
+          r = coverAround(x, z, c.yaw);
+          calls.push(Math.round((performance.now() - t0) * 10) / 10);
+        }
+        out.push({ calls, n: r ? r.length / 6 : -1 });
+      }
+      return out;
+    },
     /** What the fine grid holds: its place, and how many cells of each kind and biome. */
     probe() {
       const kinds: Record<number, number> = {},

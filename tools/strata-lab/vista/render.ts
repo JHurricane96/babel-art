@@ -350,7 +350,8 @@ vec4 spriteColour(int atlas, ivec2 src, int slot, uint seed) {
       if (float(hashu(uvec2(v.g, seed)) & 1023u) / 1024.0 < a) ramp = uAutumn0 + int((seed >> 24) % 3u);
     }
   }
-  return vec4(texelFetch(uSPal, ivec2(int(t) - 1, ramp), 0).rgb, 1.0);
+  // (Shade 0 is the darkest shade too: some big drawings shade a pixel right down.)
+  return vec4(texelFetch(uSPal, ivec2(max(int(t) - 1, 0), ramp), 0).rgb, 1.0);
 }
 uint treeSeed(vec3 p) { return hashu(uvec2(ivec2(floor(p.xz * 4.0)) + ivec2(1 << 20))); }
 `;
@@ -1035,7 +1036,7 @@ export class Renderer {
     return unit;
   }
 
-  draw(cam: Camera, lists: { sprites: Sprites; near: number; far: number; ghost?: boolean }[], opt: { bands: boolean; wall: boolean; path?: boolean; time: number }, parts?: PartsFrame) {
+  draw(cam: Camera, lists: { sprites: Sprites; near: number; far: number; ghost?: boolean }[], opt: { bands: boolean; wall: boolean; path?: boolean; time: number; spritesOnly?: boolean }, parts?: PartsFrame) {
     const gl = this.gl,
       t = this.timer;
     if (t.ext && !t.q) {
@@ -1068,6 +1069,7 @@ export class Renderer {
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
     gl.frontFace(gl.CW);
+    if (!opt.spritesOnly) {
     p = this.progs.terrain;
     this.common(p, cam, opt);
     let unit = this.bindGrids(p, 0, ["h", "n", "k"]);
@@ -1086,8 +1088,9 @@ export class Renderer {
     gl.drawElementsInstanced(gl.TRIANGLES, this.patchIdx, gl.UNSIGNED_SHORT, 0, patches.length / 4);
     this.stats.patches = patches.length / 4;
     this.stats.tris = (this.stats.patches * this.patchIdx) / 3;
+    }
     // Buildings.
-    if (this.buildVao) {
+    if (this.buildVao && !opt.spritesOnly) {
       p = this.progs.build;
       this.common(p, cam, opt);
       gl.activeTexture(gl.TEXTURE0);

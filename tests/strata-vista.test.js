@@ -67,17 +67,22 @@ test("vista packs: every height has an image, spans grow by whole rows, parts st
       assert.equal(p.span.h1, pl.T - 1, `${name}: the span runs up to where parts take over`);
       assert.ok(p.parts.length > 10 && p.parts.length < 400, `${name}: ${p.parts.length} parts`);
     } else if (pl.K > pl.E) assert.deepEqual([p.span.h0, p.span.h1], [pl.E + 1, pl.K], `${name}: the span runs to K`);
-    // A span: each height keeps one row more than the one below, and every row it kept before.
+    // A span: each height keeps every row it kept below, and rows in proportion to its height (the
+    // drawing stands for N px whatever its own height): a pixel more of sprite puts back about as
+    // many rows as the drawing has per pixel (one, for a drawing as tall as it stands for).
     if (p.span) {
       const sp = p.span,
+        k = sp.pic.h / (pl.T || pl.N),
         rowsAt = (H) => {
           const o = (H - sp.h0) * 6;
           return new Set(sp.rows.subarray(sp.per[o], sp.per[o] + sp.per[o + 2]));
         };
       for (let H = sp.h0; H < sp.h1; H++) {
         const a = rowsAt(H),
-          b = rowsAt(H + 1);
-        assert.equal(b.size, a.size + 1, `${name}: one row more at ${H + 1} px`);
+          b = rowsAt(H + 1),
+          more = b.size - a.size;
+        assert.ok(more >= (k >= 1 ? 1 : 0) && more <= Math.ceil(k), `${name}: ${more} rows more at ${H + 1} px (${k.toFixed(2)} a pixel)`);
+        assert.ok(Math.abs(b.size - k * (H + 1)) <= 1, `${name}: ${b.size} rows at ${H + 1} px`);
         for (const r of a) assert.ok(b.has(r), `${name}: row ${r} kept from ${H} to ${H + 1} px`);
       }
     }
