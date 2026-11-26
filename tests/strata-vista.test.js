@@ -109,7 +109,7 @@ import { assemble, packSlot, partAt, partH } from "../tools/strata-lab/vista/pac
 
 test("vista packs: every height has an image, spans grow by whole rows, parts step a pixel at a time", () => {
   const defs = slotDefs();
-  for (const name of ["oak 0", "spruce 1", "pine 2", "shrub", "grass", "boulder 0", "outcrop 2", "rubble 1", "heather 0", "sage 1", "rosette 2", "person 0 0 0"]) {
+  for (const name of ["oak 0", "spruce 1", "pine 2", "shrub", "grass", "boulder 0", "outcrop 2", "rubble 1", "heather 0", "sage 1", "rosette 2", "tallgrass 0", "reed 1", "moss 1", "daisy 0", "cushion 1", "person 0 0 0"]) {
     const slot = defs.findIndex((d) => d.name === name),
       p = packSlot(slot, defs[slot]),
       pl = p.plan;
