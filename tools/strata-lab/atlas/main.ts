@@ -1,6 +1,11 @@
 // Strata Atlas: worlds as maps (engine/strata/world2d.ts), made in workers. Pick a world, look at
 // its land, height, rain, warmth or rock, point at it, and cut sections through it.
-import { BIOMES, ROCKS, type World2D, rockAt } from "../../../engine/strata/world2d";
+import { BIOMES, HABITAT, ROCKS, SOIL, WATER, type World2D, ZONES, rockAt } from "../../../engine/strata/world2d";
+
+const HABITAT_NAMES = ["Ridge", "Slope", "Cliff", "Flat", "Valley floor", "Riverside", "Wetland", "Shore"],
+  SOIL_NAMES = ["thin alkaline soil", "sandy soil", "clay soil", "stony soil", "rich soil", "salty ground", "peat"];
+void HABITAT;
+void SOIL;
 
 declare const WORKER_SOURCE: string;
 const $ = (id: string) => document.getElementById(id)!;
@@ -47,6 +52,7 @@ function make(seed: number, n: number, first = false, progress?: (f: number) => 
 // ---- Colour ---------------------------------------------------------------------------------------
 const hex = (h: string) => [1, 3, 5].map((k) => parseInt(h.slice(k, k + 2), 16));
 const BIOME_RGB = BIOMES.map((b) => hex(b.color)),
+  ZONE_RGB = ZONES.map((z) => hex(z.color)),
   ROCK_RGB = ROCKS.map((r) => hex(r.color));
 function ramp(stops: [number, string][]) {
   const s = stops.map(([v, c]) => [v, hex(c)] as [number, number[]]);
@@ -64,9 +70,10 @@ const HEIGHT = ramp([[0, "#6f9a5a"], [250, "#93ad62"], [800, "#c8b979"], [1600, 
   DEPTH = ramp([[-2500, "#1e3a5c"], [-600, "#2c5880"], [0, "#4c84ad"]]),
   RAIN = ramp([[300, "#c9a86b"], [650, "#a9b86a"], [1000, "#5f9e64"], [1600, "#2f7d84"], [2400, "#2a4f8e"]]),
   WARM = ramp([[-14, "#3d5ea6"], [-6, "#86a7d6"], [0, "#eef0f2"], [7, "#e9c779"], [15, "#cf6a3c"]]);
-type View = "land" | "height" | "rain" | "warmth" | "rock";
+type View = "land" | "climate" | "height" | "rain" | "warmth" | "rock";
 const LEGENDS: Record<View, [string, string][]> = {
-  land: BIOMES.map((b) => [b.name, b.color] as [string, string]),
+  land: [],
+  climate: [],
   height: [["sea", "#2c5880"], ["0 m", "#6f9a5a"], ["800 m", "#c8b979"], ["1,600 m", "#a98b64"], ["2,500 m", "#8e8278"], ["3,300 m+", "#e8e8ea"]],
   rain: [["300 mm a year", "#c9a86b"], ["650", "#a9b86a"], ["1,000", "#5f9e64"], ["1,600", "#2f7d84"], ["2,400", "#2a4f8e"]],
   warmth: [["−14 °C", "#3d5ea6"], ["−6", "#86a7d6"], ["0", "#eef0f2"], ["7", "#e9c779"], ["15 °C", "#cf6a3c"]],
@@ -103,8 +110,9 @@ function paint(w: World2D, view: View) {
     let c: number[];
     const water = w.sea[i] || w.lake[i] > 0;
     if (w.sea[i]) c = DEPTH(w.h[i]);
-    else if (w.lake[i] > 0) c = DEPTH(-w.lake[i] * 4);
-    else if (view === "land") c = BIOME_RGB[w.biome[i]];
+    else if (w.lake[i] > 0) c = w.salt[i] ? hex("#8fc0bc") : DEPTH(-w.lake[i] * 4);
+    else if (view === "land") c = w.biome[i] === WATER ? DEPTH(0) : BIOME_RGB[w.biome[i]];
+    else if (view === "climate") c = ZONE_RGB[w.zone[i]];
     else if (view === "height") c = HEIGHT(w.h[i]);
     else if (view === "rain") c = RAIN(w.rain[i]);
     else if (view === "warmth") c = WARM(w.temp[i]);
@@ -190,28 +198,31 @@ function showWorld(w: World2D) {
     topI = 0,
     lakes = 0,
     sea = 0,
-    wood = 0,
-    snow = 0;
+    salty = 0;
+  const zones = new Map<number, number>(),
+    biomes = new Set<number>();
   for (let i = 0; i < n * n; i++) {
     if (w.h[i] > top) (top = w.h[i]), (topI = i);
-    if (w.lake[i] > 0) lakes++;
+    if (w.lake[i] > 0) w.salt[i] ? salty++ : lakes++;
     if (w.sea[i]) sea++;
-    if (w.biome[i] === 6 || w.biome[i] === 7) wood++;
-    if (w.biome[i] === 11) snow++;
+    if (w.biome[i] !== WATER) {
+      biomes.add(w.biome[i]);
+      if (!w.sea[i] && !(w.lake[i] > 0)) zones.set(w.zone[i], (zones.get(w.zone[i]) ?? 0) + 1);
+    }
   }
-  const pct = (v: number) => `${Math.round((100 * v) / (n * n))}%`,
+  const pct = (v: number) => `${Math.max(v > 0 ? 1 : 0, Math.round((100 * v) / (n * n)))}%`,
     story = w.plan.story,
     first = story[0][0].toUpperCase() + story[0].slice(1);
   $("story").innerHTML = "";
   const b = document.createElement("b");
   b.textContent = w.seed === todaySeed ? `Today's world (${w.seed})` : `World ${w.seed}`;
-  $("story").append(b, document.createTextNode(`${first}${story.length > 1 ? ", " + story.slice(1).join(", ") : ""}.`));
+  $("story").append(b, document.createTextNode(`${first}${story.length > 1 ? "; " + story.slice(1).join("; ") : ""}.`));
   const facts: [string, string][] = [
     ["Size", `${((n * w.cell) / 1000).toFixed(0)} km a side, ${w.cell} m cells`],
     ["Highest", `${Math.round(top).toLocaleString()} m, ${((topI % n) * w.cell / 1000).toFixed(0)} km E, ${(Math.floor(topI / n) * w.cell / 1000).toFixed(0)} km S`],
-    ["Woods", pct(wood)],
-    ["Water", `${pct(lakes)} lakes${sea ? `, ${pct(sea)} sea` : ""}`],
-    ["Snow and ice", pct(snow)],
+    ["Climates", [...zones].sort((a, b) => b[1] - a[1]).filter(([, c]) => c > n * n * 0.01).map(([z]) => ZONES[z].name.toLowerCase()).join(", ")],
+    ["Biomes", `${biomes.size} of ${BIOMES.length}`],
+    ["Water", `${pct(lakes)} lakes${salty ? `, ${pct(salty)} salt lake` : ""}${sea ? `, ${pct(sea)} sea` : ""}`],
   ];
   $("facts").innerHTML = "";
   for (const [k, v] of facts) {
@@ -232,9 +243,15 @@ function legend() {
     for (let i = 0; i < world.rock.length; i++) if (!world.sea[i] && !(world.lake[i] > 0)) seen.add(world.rock[i]);
     items = [...seen].sort((a, b) => a - b).map((r) => [ROCKS[r].name, ROCKS[r].color]);
   }
-  if (view === "land" && world) {
-    const seen = new Set(world.biome);
-    items = items.filter((_, k) => seen.has(k));
+  if ((view === "land" || view === "climate") && world) {
+    const count = new Map<number, number>(),
+      arr = view === "land" ? world.biome : world.zone;
+    for (let i = 0; i < arr.length; i++) if (arr[i] !== WATER && !world.sea[i] && !(world.lake[i] > 0)) count.set(arr[i], (count.get(arr[i]) ?? 0) + 1);
+    const total = arr.length,
+      list = [...count].sort((a, b) => b[1] - a[1]),
+      shown = view === "land" ? list.slice(0, 18) : list;
+    items = shown.map(([k, c]) => [`${(view === "land" ? BIOMES : ZONES)[k].name} ${Math.max(1, Math.round((100 * c) / total))}%`, (view === "land" ? BIOMES : ZONES)[k].color] as [string, string]);
+    if (view === "land" && list.length > shown.length) items.push([`and ${list.length - shown.length} more`, "transparent"]);
   }
   for (const [name, color] of items) {
     const i = document.createElement("i"),
@@ -244,24 +261,16 @@ function legend() {
     el.append(i);
   }
 }
-/** At rest: a section straight across the first range, through its middle. */
+/** At rest: a section across the most active range, through its highest ground. */
 function defaultSection(w: World2D) {
-  const p = w.plan.ranges[0].p,
-    t = 0.5,
-    u = 1 - t,
-    cx = u * u * p[0][0] + 2 * u * t * p[1][0] + t * t * p[2][0],
-    cy = u * u * p[0][1] + 2 * u * t * p[1][1] + t * t * p[2][1],
-    tx = 2 * u * (p[1][0] - p[0][0]) + 2 * t * (p[2][0] - p[1][0]),
-    ty = 2 * u * (p[1][1] - p[0][1]) + 2 * t * (p[2][1] - p[1][1]),
-    l = Math.hypot(tx, ty) || 1,
-    nx = -ty / l,
-    ny = tx / l,
-    half = w.n * 0.36,
-    clamp = (v: number) => Math.min(w.n - 2, Math.max(1, v)),
-    mx = clamp(cx),
-    my = clamp(cy);
-  A = [clamp(mx - nx * half), clamp(my - ny * half)];
-  B = [clamp(mx + nx * half), clamp(my + ny * half)];
+  const c = w.plan.cross;
+  if (c) {
+    A = [c[0][0], c[0][1]];
+    B = [c[1][0], c[1][1]];
+  } else {
+    A = [w.n * 0.15, w.n / 2];
+    B = [w.n * 0.85, w.n / 2];
+  }
 }
 
 // ---- The section --------------------------------------------------------------------------------
@@ -387,10 +396,14 @@ function readout(p: [number, number]) {
     km = (v: number) => ((v * w.cell) / 1000).toFixed(1),
     lines = [`${km(p[0])} km east, ${km(p[1])} km south`];
   if (w.sea[i]) lines.push(`Sea, ${Math.round(-w.h[i])} m deep`);
-  else if (w.lake[i] > 0) lines.push(`Lake, ${Math.round(w.lake[i])} m deep, its surface at ${Math.round(w.h[i] + w.lake[i])} m`);
-  else lines.push(`${Math.round(w.h[i]).toLocaleString()} m · ${BIOMES[w.biome[i]].name}`);
+  else if (w.lake[i] > 0) lines.push(`${w.salt[i] ? "Salt lake" : "Lake"}, ${Math.round(w.lake[i])} m deep, its surface at ${Math.round(w.h[i] + w.lake[i])} m`);
+  else {
+    lines.push(`${Math.round(w.h[i]).toLocaleString()} m · ${w.biome[i] === WATER ? "water" : BIOMES[w.biome[i]].name}`);
+    lines.push(`${ZONES[w.zone[i]].name} climate; ${HABITAT_NAMES[w.habitat[i]].toLowerCase()}, ${SOIL_NAMES[w.soil[i]]}`);
+  }
   if (!w.sea[i]) lines.push(`${ROCKS[w.rock[i]].name} at the surface`);
-  lines.push(`Rain ${Math.round(w.rain[i] / 10) * 10} mm a year · ${w.temp[i].toFixed(1)} °C`);
+  const sz = w.season[i];
+  lines.push(`Rain ${Math.round(w.rain[i] / 10) * 10} mm a year${Math.abs(sz) > 0.35 ? (sz > 0 ? ", dry summers" : ", dry winters") : ""} · ${w.temp[i].toFixed(1)} °C`);
   if (!w.sea[i] && w.flow[i] > 6e7) lines.push(`A river, about ${Math.max(1, Math.round((w.flow[i] * 0.8) / 3.15e7))} m³ a second`);
   $("readout").textContent = lines.join("\n");
 }

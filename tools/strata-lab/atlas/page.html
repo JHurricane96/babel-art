@@ -78,7 +78,7 @@ input[type="text"] { font: 500 13px var(--mono); color: var(--fg); background: v
 <div class="app">
   <header>
     <h1>Strata Atlas</h1>
-    <p>Worlds made the way Strata makes them, as maps: about 100 km of land lived through three and a half million years. Ranges rise, rivers wear them down and branch out on their own, hollows fill as lakes, the wind brings rain to one side of the mountains and leaves the other dry. Every day has its own world. Drag across the map to cut a section through it.</p>
+    <p>Worlds made the way Strata makes them, as maps: about 100 km of land lived through three and a half million years. Plates push up ranges and pull open rifts, rivers wear the land down and branch out on their own, ice ages gouge valleys that fill as lakes, dry basins end in salt. The climate runs across the map, so one world holds several, and every place gets one of Strata's 65 biomes. Every day has its own world. Drag across the map to cut a section through it.</p>
   </header>
   <div class="main">
     <div class="mapwrap">
@@ -102,7 +102,8 @@ input[type="text"] { font: 500 13px var(--mono); color: var(--fg); background: v
       <div style="display:flex;flex-direction:column;gap:8px">
         <h2>Show</h2>
         <div class="row" role="group" aria-label="Map view">
-          <button id="v-land" data-view="land" aria-pressed="true">Land</button>
+          <button id="v-land" data-view="land" aria-pressed="true">Biomes</button>
+          <button id="v-climate" data-view="climate" aria-pressed="false">Climate</button>
           <button id="v-height" data-view="height" aria-pressed="false">Height</button>
           <button id="v-rain" data-view="rain" aria-pressed="false">Rain</button>
           <button id="v-warmth" data-view="warmth" aria-pressed="false">Warmth</button>
