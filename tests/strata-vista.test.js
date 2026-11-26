@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { CLASS_H, NC, drawSlots, slotDefs } from "../tools/strata-lab/vista/sprites.ts";
 import { buildBand } from "../tools/strata-lab/vista/grids.ts";
 import { FAR, FINE, KIND_COUNT, placeGrids } from "../tools/strata-lab/vista/common.ts";
-import { landFromWorld, setLand } from "../tools/strata-lab/vista/land.ts";
+import { G, ground, landFromWorld, setLand } from "../tools/strata-lab/vista/land.ts";
 import { BIOMES, generateWorld } from "../engine/strata/world2d.ts";
 
 test("vista sprites draw at every size class, growing with the class", () => {
@@ -50,6 +50,59 @@ test("vista land from a generated world: heights, water, kinds and biomes, no tr
   // The far grid covers the whole world.
   assert.equal(FAR.x0, 0);
   assert.ok(Math.abs(FAR.cell * FAR.n - L.n * L.cell) < 1);
+});
+
+import { append, cumulativeOf, planJourney, refine } from "../tools/strata-lab/vista/journey.ts";
+
+test("vista journey: a tour through the places round the water, walked out in stretches", () => {
+  const w = generateWorld(20261126, { n: 128 }),
+    L = landFromWorld(w);
+  setLand(L);
+  const j = planJourney(L);
+  assert.ok(j.stops.length >= 4, `${j.stops.length} stops`);
+  for (let i = 1; i < j.stops.length; i++) assert.ok(j.stops[i].at > j.stops[i - 1].at, "stops in order along the route");
+  const total = j.coarseAt[j.coarseAt.length - 1];
+  assert.ok(total > 20000, `${(total / 1000).toFixed(1)} km`);
+  // The first 10 km walked out: round lakes and the sea, continuous.
+  const walk = [];
+  let cursor = 0;
+  while (cursor < Math.min(total, 10000)) {
+    const end = walk.length ? walk[walk.length - 1] : j.coarse[0],
+      to = Math.min(total, cursor + 2500),
+      more = refine(j, end[0], end[1], to);
+    cursor = to;
+    if (more) append(walk, more);
+  }
+  const cum = cumulativeOf(walk);
+  assert.ok(cum[cum.length - 1] > 8000, `${cum[cum.length - 1]} m walked out`);
+  let wet = 0;
+  for (let i = 1; i < walk.length; i++) {
+    assert.ok(cum[i] - cum[i - 1] < 40, `a gap of ${(cum[i] - cum[i - 1]).toFixed(0)} m in the walk`);
+    const h = ground(walk[i][0], walk[i][1]);
+    if (G.level > h && (G.lake || G.sea)) wet++;
+  }
+  assert.ok(wet === 0, `${wet} points of the walk in a lake or the sea`);
+});
+
+test("vista grids: trees hang on the world's cells, so a grid laid elsewhere grows the same ones", () => {
+  const w = generateWorld(20261126, { n: 128 }),
+    L = landFromWorld(w);
+  setLand(L);
+  const p = L.places[1],
+    a = { x0: Math.round(p.x - 2000), z0: Math.round(p.z - 200), cell: 2, n: 2048 },
+    b = { ...a, x0: a.x0 + 2 * 37 },
+    key = (t, i) => `${t[i].toFixed(2)},${t[i + 2].toFixed(2)},${t[i + 3].toFixed(2)}`,
+    ta = buildBand(0, 40, 80, a, []).trees,
+    tb = buildBand(0, 40, 80, b, []).trees,
+    inB = new Set();
+  for (let i = 0; i < tb.length; i += 6) inB.add(key(tb, i));
+  let shared = 0;
+  for (let i = 0; i < ta.length; i += 6)
+    if (ta[i] > b.x0 + 4 && ta[i] < a.x0 + a.cell * a.n - 4) {
+      assert.ok(inB.has(key(ta, i)), `the tree at ${ta[i].toFixed(0)}, ${ta[i + 2].toFixed(0)} is not in the other placement`);
+      shared++;
+    }
+  assert.ok(shared > 0 || ta.length === 0, "trees to compare");
 });
 
 import { assemble, packSlot, partAt, partH } from "../tools/strata-lab/vista/pack.ts";

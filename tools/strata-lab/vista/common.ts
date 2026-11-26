@@ -140,8 +140,15 @@ export function along(pts: [number, number][], cum: number[], s: number) {
   const total = cum[cum.length - 1];
   if (s < 0) s = 0;
   if (s > total) s = total;
-  let i = 0;
-  while (i < cum.length - 2 && cum[i + 1] < s) i++;
+  // (Binary search: a day's walk has thousands of points.)
+  let i = 0,
+    hi = cum.length - 1;
+  while (hi - i > 1) {
+    const m = (i + hi) >> 1;
+    if (cum[m] < s) i = m;
+    else hi = m;
+  }
+  i = Math.min(i, Math.max(0, cum.length - 2));
   const L = cum[i + 1] - cum[i],
     t = L > 0 ? (s - cum[i]) / L : 0,
     a = pts[i],
