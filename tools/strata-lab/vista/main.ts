@@ -248,15 +248,18 @@ function swapIn(gi: number, b: Build) {
     bucketTrees(trees);
     lastCull = { x: 1e9, z: 0, yaw: 0 };
     // Cover tiles that now lie in the fine grid but were made without it (from the land's coarse
-    // kinds, not knowing the walked line) are made again, a few a frame; the rest stand.
-    for (const k of [...coverCache.keys()]) {
+    // kinds, not knowing the walked line) are made again, a few a frame, nearest first, each drawn
+    // as it was until it is; the rest stand.
+    for (const k of coverCache.keys()) {
       if (coverFine.has(k)) continue;
       const base = Math.floor(k / 2),
         tz = Math.floor(base / 100000),
         tx = base - tz * 100000;
-      if (inside(0, tx * TILE + TILE / 2, tz * TILE + TILE / 2)) coverCache.delete(k);
+      if (inside(0, tx * TILE + TILE / 2, tz * TILE + TILE / 2)) coverStale.add(k);
     }
     coverKey = "";
+    // Arrived somewhere new (Go to, a long seek): all the cover at once, behind the loading note.
+    if (b.blocking) coverHave = false;
   }
   building[gi] = null;
   built[gi] = true;
@@ -1045,12 +1048,16 @@ function cullTrees(c: Camera) {
     }
   return treeOut.subarray(0, n);
 }
-/** The tiles the view needs (once the camera crosses into another tile, or turns), made a few at a
- * time (3 ms a frame): until they are all made the cover drawn stays as it was, which differs only
- * at its far edge, where everything is a pixel or so. The first time at a place, all at once. */
+/** The tiles the view needs (once the camera crosses into another tile, or turns), made nearest
+ * first, a few at a time (2 ms a frame). The list drawn is made again once every tile within
+ * NEAR_COVER is ready (a far tile not made yet left out until it is: everything there is a pixel or
+ * so), and again once they all are. A tile to be made again (coverStale) is drawn as it was until it
+ * is. The first time, and after travelling somewhere new, all at once. */
 let coverNeed: { tx: number; tz: number; far: boolean; k: number; d: number }[] | null = null,
+  coverNearDone = false,
   coverHave = false,
   coverBuf = new Float32Array(0);
+const coverStale = new Set<number>();
 /** The cover near enough (150 m) to hold anything drawn in parts, from the last list made. */
 let coverNear = new Float32Array(0);
 function coverAround(x: number, z: number, yaw: number) {
@@ -1075,20 +1082,31 @@ function coverAround(x: number, z: number, yaw: number) {
         const far = Math.hypot(mx - x, mz - z) - TILE > NEAR_COVER;
         coverNeed.push({ tx, tz, far, k: (tz * 100000 + tx) * 2 + (far ? 1 : 0), d: Math.hypot(mx - x, mz - z) });
       }
+    coverNeed.sort((a, b) => a.d - b.d);
+    coverNearDone = false;
   }
   if (!coverNeed) return null;
   const t0 = performance.now();
+  let waiting: (typeof coverNeed)[0] | null = null;
   for (const t of coverNeed)
-    if (!coverCache.has(t.k)) {
-      if (coverHave && performance.now() - t0 > 2) return null;
+    if (!coverCache.has(t.k) || coverStale.has(t.k)) {
+      if (coverHave && performance.now() - t0 > 2) {
+        waiting = t;
+        break;
+      }
       coverCache.set(t.k, coverTile(t.tx, t.tz, t.far));
+      coverStale.delete(t.k);
       if (inside(0, t.tx * TILE + TILE / 2, t.tz * TILE + TILE / 2)) coverFine.add(t.k);
       else coverFine.delete(t.k);
     }
+  // Not all made: draw what there is once everything near is (and not again until all is).
+  if (waiting && (coverNearDone || waiting.d - TILE < NEAR_COVER)) return null;
+  if (waiting) coverNearDone = true;
   let n = 0,
     nn = 0;
   for (const t of coverNeed) {
-    const p = coverCache.get(t.k)!;
+    const p = coverCache.get(t.k);
+    if (!p) continue;
     // (Kept as the most recently used.)
     coverCache.delete(t.k);
     coverCache.set(t.k, p);
@@ -1101,7 +1119,8 @@ function coverAround(x: number, z: number, yaw: number) {
   n = 0;
   nn = 0;
   for (const t of coverNeed) {
-    const p = coverCache.get(t.k)!;
+    const p = coverCache.get(t.k);
+    if (!p) continue;
     coverBuf.set(p, n);
     n += p.length;
     if (t.d < 150) {
@@ -1109,11 +1128,14 @@ function coverAround(x: number, z: number, yaw: number) {
       nn += p.length;
     }
   }
-  coverNeed = null;
+  if (!waiting) coverNeed = null;
   coverHave = true;
   coverNear = near;
   // Forget the longest unused beyond a few thousand tiles.
-  if (coverCache.size > 6000) for (const k of coverCache.keys()) if (coverCache.size > 4500) coverCache.delete(k); else break;
+  if (coverCache.size > 6000)
+    for (const k of coverCache.keys())
+      if (coverCache.size > 4500) coverCache.delete(k), coverStale.delete(k);
+      else break;
   return coverBuf.subarray(0, n);
 }
 
@@ -1393,6 +1415,7 @@ document.querySelectorAll<HTMLButtonElement>("[data-toggle]").forEach(
       if (k === "path") {
         coverCache.clear();
         coverFine.clear();
+        coverStale.clear();
         coverKey = "";
         coverHave = false;
       }
