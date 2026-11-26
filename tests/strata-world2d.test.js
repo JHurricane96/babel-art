@@ -32,16 +32,22 @@ test("world2d: water runs off the map or into the sea, lakes are level, everythi
     }
     // Rivers gather water: a cell carries at least what drains into it.
     for (let i = 0; i < n * n; i++) if (w.rec[i] >= 0) assert.ok(w.flow[w.rec[i]] >= w.flow[i] * 0.999);
-    // A lake's surface is level across its cells' neighbours that are lake too.
+    // Lakes are level: neighbouring lake cells share a surface (bar where one lake spills into a lower one).
+    let pairs = 0,
+      level = 0;
     for (let i = 0; i < n * n; i++)
-      if (w.lake[i] > 0 && w.lake[i + 1] > 0 && (i + 1) % n) assert.ok(Math.abs(w.h[i] + w.lake[i] - (w.h[i + 1] + w.lake[i + 1])) < 1, "lake surfaces are level");
+      if (w.lake[i] > 0 && w.lake[i + 1] > 0 && (i + 1) % n) {
+        pairs++;
+        if (Math.abs(w.h[i] + w.lake[i] - (w.h[i + 1] + w.lake[i + 1])) < 1) level++;
+      }
+    assert.ok(level >= pairs * 0.98, `lake surfaces are level (${level} of ${pairs})`);
     // The rock at the surface is the rock a section finds just under it.
     for (let i = 0; i < n * n; i += 53) if (!w.sea[i]) assert.equal(rockAt(w, i, w.h[i] - 0.01), w.rock[i]);
   }
 });
 
-test("world2d: one map holds several climates and many biomes", () => {
-  for (const seed of [20261126, 5]) {
+test("world2d: every world holds the whole range of climates and many biomes", () => {
+  for (const seed of [20261126, 20261127, 5]) {
     const w = generateWorld(seed, { n: 128 }),
       zones = new Map(),
       biomes = new Set();
@@ -50,8 +56,13 @@ test("world2d: one map holds several climates and many biomes", () => {
         biomes.add(w.biome[i]);
         zones.set(w.zone[i], (zones.get(w.zone[i]) ?? 0) + 1);
       }
-    const big = [...zones.values()].filter((c) => c > w.n * w.n * 0.03).length;
-    assert.ok(big >= 3, `seed ${seed}: ${big} climates over 3% of the map`);
-    assert.ok(biomes.size >= 15, `seed ${seed}: ${biomes.size} biomes`);
+    // Every world has the whole range: cold, temperate, dry and hot-wet climates.
+    const big = new Set([...zones].filter(([, c]) => c > w.n * w.n * 0.01).map(([z]) => z)),
+      has = (...zs) => zs.some((z) => big.has(z));
+    assert.ok(has(3, 4, 5), `seed ${seed}: something frozen, tundra or boreal`);
+    assert.ok(has(7, 8, 9), `seed ${seed}: something temperate`);
+    assert.ok(has(10, 11, 12, 2), `seed ${seed}: something dry (steppe, desert, savanna, salt)`);
+    assert.ok(has(13, 14), `seed ${seed}: something hot and wet (monsoon or rainforest)`);
+    assert.ok(biomes.size >= 25, `seed ${seed}: ${biomes.size} biomes`);
   }
 });

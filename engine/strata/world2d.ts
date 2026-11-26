@@ -19,10 +19,13 @@
 //   4. Ice ages. Two or three times the world grows cold, and glaciers creep down from the high
 //      ground, gouging their valleys deeper than the rivers ever could and piling moraine where
 //      they end, so when the ice goes, long lakes lie in the valleys and tarns under the peaks.
-//   5. Climate, made for a world to walk through rather than copied from Earth: warmth changes
-//      across the map as well as with height (one side can be snowy, the other tropical), the
-//      rain comes on one wind and dries out across the land and over the mountains, and some
-//      worlds have dry summers or dry winters. So one map holds several climates.
+//   5. Climate, made for a world to walk through in a day rather than copied from Earth: every
+//      world has the whole range, laid out in regions over the map, a frozen one, a cold wet one,
+//      a mild one, a hot dry one and a hot wet one (and a random one or two), blended smoothly
+//      into each other through wandering borders. On top, the rain comes on one wind and is wrung
+//      out over the mountains, and warmth falls with height. So ice, pine forest, temperate woods,
+//      steppe, desert and jungle all lie within a day's walk; what differs from day to day is
+//      where they lie, and the rarer things: volcanoes, salt basins, granite domes.
 //
 // Then every place gets its climate zone, its habitat (ridge, slope, cliff, flat, valley floor,
 // riverside, wetland, shore) and its soil (from the rock under it), and from those one of the 65
@@ -122,7 +125,7 @@ export interface WorldPlan {
   glacials: { from: number; to: number; cool: number }[];
   /** Climate: warmth at sea level in the middle of the map, how much it changes across the map and which way it rises;
    * where the rain comes from, how fast the air dries over land, the seasons. */
-  climate: { t0: number; dT: number; warmDir: number; wind: number; dry: number; season: number };
+  climate: { wind: number; dry: number; regions: { x: number; y: number; t: number; wet: number; season: number; kind: string }[] };
   layers: { rock: number; t: number }[];
   story: string[];
   /** A section worth seeing: across the youngest, highest range. */
@@ -165,8 +168,9 @@ export interface World2D {
   granite: Float32Array;
 }
 
-const DIRS = ["west", "south-west", "south", "south-east", "east", "north-east", "north", "north-west"];
-const dirName = (a: number) => DIRS[((Math.round((a / (Math.PI * 2)) * 8) % 8) + 8) % 8];
+/** The compass point a direction on the map faces (angle 0 east, a quarter turn south: y runs down). */
+const COMPASS = ["east", "south-east", "south", "south-west", "west", "north-west", "north", "north-east"];
+const compass = (a: number) => COMPASS[((Math.round(a / (Math.PI / 4)) % 8) + 8) % 8];
 
 export function planWorld(seed: number, n: number): WorldPlan {
   const R = mulberry(seed * 2654435761),
@@ -223,16 +227,36 @@ export function planWorld(seed: number, n: number): WorldPlan {
     const c = (k + 0.5 + (R() - 0.5) * 0.5) / ng;
     return { from: Math.max(0.05, c * 0.9 - 0.06), to: Math.min(0.97, c * 0.9 + 0.04 + 0.04 * R()), cool: 6 + 5 * R() };
   });
-  // The climate: from a frozen side to a hot one, or milder spreads; rain on one wind.
-  const span = R();
-  const climate = {
-    t0: 7 + 13 * R(),
-    dT: 14 + 18 * span,
-    warmDir: R() * Math.PI * 2,
-    wind: R() * Math.PI * 2,
-    dry: 0.3 + 2.2 * R() * R(),
-    season: (R() - 0.5) * 1.6,
-  };
+  // The climate: every kind of place somewhere on the map. Regions with a warmth at sea level, a
+  // wetness (a factor on the rain) and seasons; spread out so each has room, the frozen and the
+  // hot ones apart.
+  const kinds = [
+      { kind: "frozen", t: -6 + 3 * R(), wet: 0.6 + 0.3 * R(), season: 0 },
+      { kind: "cold", t: -1 + 4 * R(), wet: 1.1 + 0.4 * R(), season: (R() - 0.5) * 0.6 },
+      { kind: "mild", t: 9 + 5 * R(), wet: 0.8 + 0.5 * R(), season: R() < 0.5 ? 0.5 + 0.3 * R() : (R() - 0.5) * 0.5 },
+      { kind: "hot and dry", t: 24 + 5 * R(), wet: 0.18 + 0.12 * R(), season: (R() - 0.5) * 0.8 },
+      { kind: "hot and wet", t: 24 + 4 * R(), wet: 1.6 + 0.5 * R(), season: R() < 0.4 ? -0.6 : (R() - 0.5) * 0.4 },
+    ],
+    extra = Math.floor(R() * 3);
+  for (let k = 0; k < extra; k++) kinds.push({ kind: "", t: 2 + 22 * R(), wet: 0.3 + 1.3 * R(), season: (R() - 0.5) * 1.4 });
+  const regions: WorldPlan["climate"]["regions"] = [];
+  for (const k of kinds) {
+    let best: [number, number] = [n / 2, n / 2],
+      bd = -1;
+    // The best of a few tries: far from those placed; the frozen kept away from the hot.
+    for (let t = 0; t < 24; t++) {
+      const x = n * (0.08 + 0.84 * R()),
+        y = n * (0.08 + 0.84 * R());
+      let d = 1e9;
+      for (const r of regions) {
+        const far = Math.abs(r.t - k.t) > 20 ? 0.6 : 1;
+        d = Math.min(d, Math.hypot(r.x - x, r.y - y) * far);
+      }
+      if (d > bd) (bd = d), (best = [x, y]);
+    }
+    regions.push({ x: best[0], y: best[1], ...k });
+  }
+  const climate = { wind: R() * Math.PI * 2, dry: 0.3 + 1.2 * R(), regions };
   return { plates, joins: [], fields, plutons, glacials, climate, layers, story, cross: null };
 }
 
@@ -416,19 +440,31 @@ export function generateWorld(seed: number, o: WorldOptions = {}): World2D {
     temp = new Float32Array(N),
     season = new Float32Array(N),
     ocean = new Float32Array(N),
+    wetness = new Float32Array(N),
     wx = Math.cos(C.wind),
-    wy = Math.sin(C.wind),
-    tx = Math.cos(C.warmDir),
-    ty = Math.sin(C.warmDir);
+    wy = Math.sin(C.wind);
+  // Each place takes its warmth, wetness and seasons from the regions, nearest most, blended
+  // smoothly, read through warped coordinates so the borders wander.
   for (let i = 0; i < N; i++) {
     const x = i % n,
       y = (i / n) | 0,
-      // Climate borders that wander: the warmth gradient is read through warped coordinates.
-      wxp = x / n + 0.22 * (fbm(x / s(140), y / s(140), seed + 85, 3) - 0.5),
-      wyp = y / n + 0.22 * (fbm(x / s(140), y / s(140), seed + 87, 3) - 0.5),
-      u = ((wxp - 0.5) * tx + (wyp - 0.5) * ty) / 0.7;
-    T0[i] = C.t0 + C.dT * Math.max(-0.55, Math.min(0.55, u)) * 1.1 + 4 * (fbm(x / s(160), y / s(160), seed + 81, 2) - 0.5);
-    season[i] = Math.max(-1, Math.min(1, C.season + 0.8 * (fbm(x / s(180), y / s(180), seed + 83, 2) - 0.5)));
+      qx = x + n * 0.16 * (fbm(x / s(110), y / s(110), seed + 85, 3) - 0.5) * 2,
+      qy = y + n * 0.16 * (fbm(x / s(110), y / s(110), seed + 87, 3) - 0.5) * 2;
+    let ws = 0,
+      t = 0,
+      wt = 0,
+      se = 0;
+    for (const r of C.regions) {
+      const d = Math.hypot(qx - r.x, qy - r.y) / (n * 0.2),
+        w = Math.exp(-d * d * 1.6) + 1e-9;
+      ws += w;
+      t += w * r.t;
+      wt += w * Math.log(r.wet);
+      se += w * r.season;
+    }
+    T0[i] = t / ws + 2.5 * (fbm(x / s(60), y / s(60), seed + 81, 2) - 0.5);
+    wetness[i] = Math.exp(wt / ws) * (0.85 + 0.3 * fbm(x / s(45), y / s(45), seed + 82, 2));
+    season[i] = Math.max(-1, Math.min(1, se / ws + 0.3 * (fbm(x / s(180), y / s(180), seed + 83, 2) - 0.5)));
   }
   const order = new Int32Array(N);
   {
@@ -500,7 +536,7 @@ export function generateWorld(seed: number, o: WorldOptions = {}): World2D {
     }
     for (let i = 0; i < N; i++) {
       temp[i] = T0[i] - 0.0065 * Math.max(0, h[i]) - cool;
-      rain[i] = (60 + 900 * A[i]) * Math.min(1.9, Math.max(0.45, 0.62 + 0.042 * T0[i]));
+      rain[i] = (60 + 900 * A[i]) * Math.min(1.9, Math.max(0.45, 0.62 + 0.042 * T0[i])) * wetness[i];
     }
   };
   // ---- Water: sea, drainage, lakes, dry basins (Priority-Flood with epsilon; Barnes et al. 2014). ----
@@ -809,7 +845,8 @@ export function generateWorld(seed: number, o: WorldOptions = {}): World2D {
       q.length = 0;
       q.push(i0);
       seen[i0] = 1;
-      let low = 1e9;
+      let low = 1e9,
+        wet = false;
       for (let k = 0; k < q.length; k++) {
         const c = q[k],
           x = c % n,
@@ -820,13 +857,15 @@ export function generateWorld(seed: number, o: WorldOptions = {}): World2D {
             yy = y + DY[d];
           if (xx < 0 || yy < 0 || xx >= n || yy >= n) continue;
           const j = yy * n + xx;
+          // A hollow beside a lake or the sea is part of that water's shore, not a dry basin.
+          if ((lake[j] > 0 && !salt[j]) || sea[j]) wet = true;
           if (!seen[j] && !(lake[j] > 0) && !sea[j] && filled[j] - h[j] >= 0.5) {
             seen[j] = 1;
             q.push(j);
           }
         }
       }
-      if (q.length < 3) continue;
+      if (q.length < 3 || wet) continue;
       for (const c of q) {
         const up = h[c] - low;
         if (up < 6 && rain[c] > 260) {
@@ -995,11 +1034,25 @@ export function generateWorld(seed: number, o: WorldOptions = {}): World2D {
     if (lakes > N * 0.004) story.push("lakes left by the ice");
     if (salty > N * 0.002) story.push("salt flats in a dry basin");
     story.push(`${plan.glacials.length} ice ages`);
-    const cold = C.t0 - C.dT * 0.5,
-      hot = C.t0 + C.dT * 0.5,
-      feel = (t: number) => (t < -4 ? "frozen" : t < 3 ? "cold" : t < 10 ? "cool" : t < 17 ? "mild" : t < 23 ? "warm" : "hot");
-    story.push(`${feel(cold)} to the ${dirName(C.warmDir + Math.PI)}, ${feel(hot)} to the ${dirName(C.warmDir)}`);
-    story.push(`rain on the wind from the ${dirName(C.wind + Math.PI)}, ${C.dry > 1.4 ? "drying out fast inland" : "reaching far inland"}`);
+    // Where the climates lie: what most of each region's land became.
+    const where = (x: number, y: number) =>
+      Math.hypot(x - n / 2, y - n / 2) < n * 0.14 ? "in the middle" : `in the ${compass(Math.atan2(y - n / 2, x - n / 2))}`;
+    const parts: string[] = [];
+    for (const r of C.regions.slice(0, 5)) {
+      const zc = new Map<number, number>();
+      for (let dy = -12; dy <= 12; dy += 3)
+        for (let dx = -12; dx <= 12; dx += 3) {
+          const x = Math.round(r.x + s(dx)),
+            y = Math.round(r.y + s(dy));
+          if (x < 0 || y < 0 || x >= n || y >= n) continue;
+          const z = zone[y * n + x];
+          if (z !== ZONE.OCEAN && z !== ZONE.LAKE) zc.set(z, (zc.get(z) ?? 0) + 1);
+        }
+      const top = [...zc].sort((a, b) => b[1] - a[1])[0];
+      if (top) parts.push(`${ZONES[top[0]].name.toLowerCase()} ${where(r.x, r.y)}`);
+    }
+    story.push(parts.join(", "));
+    story.push(`rain on the wind from the ${compass(C.wind + Math.PI)}`);
   }
   o.progress?.(1);
   return { seed, n, cell, plan, h: hh, lake, salt, sea, rec, flow, rain, temp, season, ocean, uplift, sed, rock, zone, habitat, soil, biome, plate, tops, fold, granite };
