@@ -1,14 +1,16 @@
 // Vista sprites: the drawings. Every kind of thing Vista shows (seven kinds of tree, each in a few
-// variants; shrubs, grass, flowers, ferns, boulders and stones; the party; the party's marker) as a
-// drawing at any height in pixels. pack.ts turns these into what the GPU draws at each size.
+// variants; shrubs, heather, sage and rosettes, grass, flowers, ferns; rocks in six families, from
+// rocks.ts; the party; the party's marker) as a drawing at any height in pixels. pack.ts turns
+// these into what the GPU draws at each size.
 //
 // Trees are heaps of leaf clumps, each clump with its own fixed values, so a tree drawn a pixel
-// bigger moves its clumps a little instead of reshuffling them; trunks, branches, boulders and
-// ferns come from engine/strata/art.ts.
+// bigger moves its clumps a little instead of reshuffling them; trunks, branches and ferns come
+// from engine/strata/art.ts.
 import { M } from "../../../engine/strata/world";
-import { TREES, type Canvas, type CrownStyle, boulder, branch, fern, trunk } from "../../../engine/strata/art";
+import { TREES, type Canvas, type CrownStyle, branch, fern, trunk } from "../../../engine/strata/art";
 import { hex, rampOf } from "./color";
 import { mulberry } from "./common";
+import { ROCK_KINDS, rockImg } from "./rocks";
 
 /** Pixel heights of the size classes. */
 export const NC = 26;
@@ -599,9 +601,13 @@ export function drawParts(def: SlotDef, H: number, seed: number): Part[] {
 export const GRASS_R = rampOf(hex("#6f9a3c")),
   DRY_R = rampOf(hex("#a6a05a")),
   ROCK_R = rampOf(hex("#8c867c")),
-  MOSS_R = rampOf(hex("#5a7a34")),
   FERN_R = rampOf(hex("#4f8a34")),
   SHRUB_R = rampOf(hex("#4d7a30")),
+  HEATHER_R = rampOf(hex("#7a4a6a")),
+  SAGE_R = rampOf(hex("#8a9a7a")),
+  ROSETTE_R = rampOf(hex("#5a7a5a")),
+  TWIG_R = rampOf(hex("#5e4c3c")),
+  SPIKE_R = rampOf(hex("#e8e0c0")),
   BLOOM: Record<string, number[][]> = {
     white: rampOf(hex("#e8e4d8")),
     yellow: rampOf(hex("#e2c040")),
@@ -666,68 +672,97 @@ function shrubDraw(H: number, seed: number): Img {
   }
   return c.toImg({ [M.LEAF]: SHRUB_R }, 0, 0);
 }
-function rockDraw(H: number, seed: number, wide: number, moss: number): Img {
-  const { c } = canvasFor(H, wide + 0.4, seed);
+/** Heather: a low, wide cushion of fine leaves in two or three humps. */
+function heatherDraw(H: number, seed: number): Img {
+  const { c } = canvasFor(H, 2.8, seed);
   if (H < 4) {
-    for (let x = -1; x <= 1; x++) c.set(x, -1, M.ROCK, x < 0 ? 4 : 2);
-    if (H >= 3) c.set(0, -2, M.ROCK, 4);
+    for (let x = -2; x <= 2; x++) c.set(x, -1, M.LEAF, x < 0 ? 4 : 2);
+    if (H >= 3) for (let x = -1; x <= 1; x++) c.set(x, -2, M.LEAF, x < 0 ? 5 : 3);
   } else {
-    c.R = mulberry(seed);
-    boulder(c, 0, 0, H * wide, H, 0);
-    // Detail that stays on the stone as it grows: grain and moss keyed to pixels counted from the
-    // stone's peak (so they neither shuffle nor stretch: the facets' edges move over them), and
-    // cracks through fixed fractions of its size. Its own random sequence, the same at every size.
-    const D = mulberry(seed + 77),
-      salt = Math.floor(D() * 1e6),
-      px0 = Math.round(-H * wide * 0.1),
-      py0 = Math.round(-H * 0.55),
-      at = (x: number, y: number) => {
-        const px = x + c.ox,
-          py = y + c.oy;
-        return px < 0 || py < 0 || px >= c.w || py >= c.h ? -1 : py * c.w + px;
-      };
-    if (moss > 0)
-      for (let x = Math.floor((-H * wide) / 2); x <= Math.ceil((H * wide) / 2); x++) {
-        if (hashCell(x - px0, 0, salt + 3) >= moss) continue;
-        for (let y = -H - 2; y < 0; y++) {
-          const i = at(x, y);
-          if (i >= 0 && c.m[i] === M.ROCK) {
-            c.set(x, y, M.LEAF, hashCell(x - px0, 1, salt + 3) < 0.5 ? 4 : 3);
-            break;
-          }
-        }
-      }
-    const cracks = [0, 1].map(() => {
-      const L = 0.3 + 0.3 * D(),
-        dx = (D() - 0.5) * 1.2,
-        pts: [number, number][] = [[(D() - 0.5) * wide * 0.6, -(0.3 + 0.5 * D())]];
-      for (let k = 0; k < 6; k++) {
-        const [x, y] = pts[k];
-        pts.push([x + (L / 6) * (dx + (D() - 0.5) * 0.8), y + (L / 6) * (0.7 + 0.4 * D())]);
-      }
-      return pts;
-    });
-    if (H >= 7) {
-      for (let i = 0; i < c.m.length; i++) {
-        if (c.m[i] !== M.ROCK) continue;
-        const hsh = hashCell((i % c.w) - c.ox - px0, ((i / c.w) | 0) - c.oy - py0, salt);
-        if (hsh < 0.14) c.t[i] = Math.max(1, c.t[i] - 1);
-        else if (hsh > 0.9 && c.t[i] >= 3) c.t[i] = Math.min(6, c.t[i] + 1);
-        else if (hsh > 0.985 && c.t[i] >= 4) c.m[i] = M.MOSS;
-      }
-      for (const pts of cracks.slice(0, H >= 24 ? 2 : 1))
-        for (let k = 0; k < pts.length - 1; k++) {
-          const [ax, ay] = pts[k],
-            [bx, by] = pts[k + 1],
-            n = Math.max(1, Math.ceil(Math.max(Math.abs(bx - ax), Math.abs(by - ay)) * H));
-          for (let q = 0; q <= n; q++) {
-            const i = at(Math.round((ax + ((bx - ax) * q) / n) * H), Math.round((ay + ((by - ay) * q) / n) * H));
-            if (i >= 0 && c.m[i] === M.ROCK) c.t[i] = 1;
-          }
-        }
+    const R = mulberry(seed + 3),
+      k = Math.max(0.5, H / 18),
+      n = 2 + Math.floor(R() * 2);
+    for (let i = 0; i < n; i++) {
+      const x = (i - (n - 1) / 2) * H * 0.75 + (R() - 0.5) * H * 0.3,
+        h = H * (i === Math.floor(n / 2) ? 1 : 0.6 + 0.3 * R());
+      crownV(c, x, -h / 2, H * (0.6 + 0.2 * R()), h / 2, { r0: 1.2 * k, r1: 2 * k, density: 2.6, speckle: 0.6, holes: 0, rag: 1.4 }, seed + i * 31);
     }
   }
-  return c.toImg({ [M.ROCK]: ROCK_R, [M.LEAF]: MOSS_R, [M.MOSS]: rampOf(hex("#b8b070")) }, 0, 0);
+  return c.toImg({ [M.LEAF]: HEATHER_R }, 0, 0);
+}
+/** Sage: an open bush of small grey leaf clusters on crooked woody stems that show between them. */
+function sageDraw(H: number, seed: number): Img {
+  const { c } = canvasFor(H, 1.8, seed);
+  if (H < 5) {
+    for (let x = -1; x <= 1; x++) for (let y = -H + 1; y < 0; y++) c.set(x, y, M.LEAF, 4 - (x > 0 ? 2 : 0) - (y === -1 ? 1 : 0));
+    c.set(0, -1, M.WOOD, 2);
+  } else {
+    const R = mulberry(seed + 7),
+      k = Math.max(0.5, H / 16),
+      n = 3 + Math.floor(R() * 3),
+      tips: [number, number, number][] = [];
+    for (let i = 0; i < n; i++) {
+      const a = (n > 1 ? i / (n - 1) - 0.5 : 0) * 1.7 + (R() - 0.5) * 0.35,
+        len = H * (0.6 + 0.3 * R()),
+        x1 = Math.sin(a) * len * 0.95,
+        y1 = -Math.cos(a) * len;
+      branch(c, 0, -1, x1, y1, Math.max(1, Math.round(H / 18)));
+      tips.push([x1, y1, R()]);
+    }
+    tips.forEach(([x, y, r], i) =>
+      crownV(c, x, y + H * 0.08, H * (0.2 + 0.1 * r), H * (0.15 + 0.06 * r), { r0: 1.3 * k, r1: 2.2 * k, density: 1.6, speckle: 0.5, holes: 0, rag: 1.5 }, seed + i * 17),
+    );
+  }
+  return c.toImg({ [M.LEAF]: SAGE_R, [M.WOOD]: TWIG_R }, 0, 0);
+}
+/** A rosette (agave, yucca): stiff sword leaves fanning out from the ground, each lit along its
+ * upper edge. With a spike, H is the flower spike's height and the leaves SPIKE_K of it. */
+const SPIKE_K = 0.45;
+function rosetteDraw(HH: number, seed: number, spike: boolean): Img {
+  const H = spike ? Math.max(2, Math.round(HH * SPIKE_K)) : HH,
+    { c } = canvasFor(HH, spike ? 0.95 : 2, seed);
+  if (H < 4) {
+    c.set(-1, -1, M.LEAF, 4);
+    c.set(1, -1, M.LEAF, 2);
+    c.set(0, -2, M.LEAF, 4);
+    if (H >= 3) c.set(0, -3, M.LEAF, 5);
+  } else {
+    const R = mulberry(seed + 11),
+      n = 8 + Math.floor(R() * 5),
+      leaves: { a: number; len: number }[] = [];
+    for (let i = 0; i < n; i++) {
+      const a = ((i + 0.5 + (R() - 0.5) * 0.7) / n - 0.5) * 2.9;
+      leaves.push({ a, len: H * (0.65 + 0.35 * R()) * (1 - (0.3 * Math.abs(a)) / 1.45) });
+    }
+    // The upright ones behind, the spreading ones in front.
+    leaves.sort((p, q) => Math.abs(p.a) - Math.abs(q.a));
+    const w0 = Math.max(1.2, H * 0.17);
+    for (const { a, len } of leaves) {
+      const lit = 0.5 - 0.45 * Math.sin(a);
+      for (let st = 0; st <= len; st += 0.4) {
+        const t = st / len,
+          ang = a * (1 + 0.2 * t * t),
+          x = Math.sin(ang) * st,
+          y = -1 - Math.cos(ang) * st * 0.95,
+          half = w0 * (1 - t) * 0.5 + 0.25;
+        for (let d = -half; d <= half; d += 0.4) {
+          const edge = d < -half + 0.6 ? 1 : d > half - 0.6 ? -1 : 0,
+            tone = 1 + Math.round(lit * 3 + t * 1.2) + edge;
+          c.set(Math.round(x - Math.cos(ang) * d), Math.round(y - Math.sin(ang) * d), M.LEAF, Math.max(1, Math.min(6, tone)));
+        }
+      }
+    }
+    if (spike) {
+      const top = -HH,
+        x0 = Math.round((R() - 0.5) * H * 0.1);
+      branch(c, x0, -Math.round(H * 0.4), x0, top, Math.max(1, Math.round(H / 20)));
+      for (let y = top; y < top + H * 0.7; y++) {
+        const r = Math.max(1, Math.round(H * 0.14 * Math.sin((Math.PI * (y - top)) / (H * 0.7))));
+        for (let x = -r; x <= r; x++) if (hashCell(x, y, seed) < 0.75) c.set(x0 + x, y, M.FLOWER, x < 0 ? 5 : x > 0 ? 3 : 4);
+      }
+    }
+  }
+  return c.toImg({ [M.LEAF]: ROSETTE_R, [M.WOOD]: TWIG_R, [M.FLOWER]: SPIKE_R }, 0, 0);
 }
 
 // ---- People: drawn in colours directly -------------------------------------------------------
@@ -912,8 +947,20 @@ export function person(H: number, facing: number, frame: number, look: Look): Im
 // ---- The slots ----------------------------------------------------------------------------
 export const TREE_VARIANTS = 3;
 export const TREE_NAMES = ["oak", "beech", "maple", "birch", "spruce", "fir", "pine"];
-export const COVER = ["grass", "grass2", "dry grass", "flowers white", "flowers yellow", "flowers purple", "flowers red", "fern", "fern2", "shrub", "shrub2", "boulder", "boulder2", "stone", "stone2"];
-const COVER_H = [0.35, 0.3, 0.4, 0.45, 0.45, 0.45, 0.45, 0.8, 0.7, 1.5, 1.2, 1.4, 1.0, 0.35, 0.3];
+export const COVER = ["grass", "grass2", "dry grass", "flowers white", "flowers yellow", "flowers purple", "flowers red", "fern", "fern2", "shrub", "shrub2"];
+const COVER_H = [0.35, 0.3, 0.4, 0.45, 0.45, 0.45, 0.45, 0.8, 0.7, 1.5, 1.2];
+
+/** Bushes beyond the plain shrub, by the names the biomes give them (biomes.ts `bushes`). */
+export const PLANT_KINDS = [
+  { kind: "heather", n: 3, worldH: 0.45 },
+  { kind: "sage", n: 3, worldH: 0.9 },
+  { kind: "rosette", n: 3, worldH: 0.7 },
+];
+/** Families placed as one (any of their drawings, as they come): rocks and bushes, by kind. */
+export function familyOf(name: string) {
+  const kind = name.split(" ")[0];
+  return ROCK_KINDS.some((r) => r.kind === kind) || PLANT_KINDS.some((p) => p.kind === kind) ? kind : name;
+}
 
 export function slotDefs(): SlotDef[] {
   const out: SlotDef[] = [];
@@ -925,11 +972,33 @@ export function slotDefs(): SlotDef[] {
       if (name === "dry grass") return grass(H, s, true);
       if (name.startsWith("grass")) return grass(H, s + (name === "grass2" ? 31 : 0), false);
       if (name.startsWith("fern")) return fernDraw(H, s + (name === "fern2" ? 17 : 0));
-      if (name.startsWith("shrub")) return shrubDraw(H, s + (name === "shrub2" ? 23 : 0));
-      if (name.startsWith("boulder")) return rockDraw(H, s + (name === "boulder2" ? 5 : 0), 1.5, name === "boulder" ? 0.15 : 0);
-      return rockDraw(H, s + (name === "stone2" ? 9 : 0), 1.3, 0);
+      return shrubDraw(H, s + (name === "shrub2" ? 23 : 0));
     };
     out.push({ name, worldH: COVER_H[k], maxClass: 18, sunFlip: true, draw });
+  });
+  // Bushes of their own kinds (as the biomes name them), a few drawings each.
+  PLANT_KINDS.forEach(({ kind, n, worldH }, f) => {
+    for (let v = 0; v < n; v++)
+      out.push({
+        // (A yucca in flower is as tall as its spike.)
+        name: `${kind} ${v}`, worldH: kind === "rosette" && v === n - 1 ? worldH / SPIKE_K : worldH, maxClass: 18, sunFlip: true,
+        draw: (H) => {
+          const sd = 503 + f * 1013 + v * 41;
+          return kind === "heather" ? heatherDraw(H, sd) : kind === "sage" ? sageDraw(H, sd) : rosetteDraw(H, sd, v === n - 1);
+        },
+      });
+  });
+  // Rocks: each family a few drawings, each its own shape (rocks.ts); its seed fixed by family and
+  // number, so adding slots elsewhere never changes a rock.
+  ROCK_KINDS.forEach(({ kind, n, worldH }, f) => {
+    for (let v = 0; v < n; v++)
+      out.push({
+        name: `${kind} ${v}`, worldH, maxClass: 18, sunFlip: true,
+        draw: (H) => {
+          LAST_RAMPS = { [M.ROCK]: ROCK_R };
+          return rockImg(kind, 101 + f * 1009 + v * 37, H, M.ROCK, INDEX, ROCK_R);
+        },
+      });
   });
   PARTY.forEach((look, m) => {
     for (let f = 0; f < 3; f++) for (let fr = 0; fr < 4; fr++) out.push({ name: `person ${m} ${f} ${fr}`, worldH: 1.75, maxClass: 15, sunFlip: false, draw: (H) => person(H, f, fr, look) });

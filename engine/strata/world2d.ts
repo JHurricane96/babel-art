@@ -122,7 +122,21 @@ export function fbm(x: number, y: number, s: number, oct: number) {
     f *= 2.03;
     amp *= 0.5;
   }
-  return t / (1 - 0.5 ** oct);
+  return t / (oct < FBM_NORM.length ? FBM_NORM[oct] : 1 - 0.5 ** oct);
+}
+const FBM_NORM = Array.from({ length: 9 }, (_, oct) => 1 - 0.5 ** oct);
+/**
+ * Math.hypot(a, b) as V8 computes it (each scaled by the larger, squared and summed, the root taken
+ * and scaled back), so the same bits, but a few times faster: V8 does not inline Math.hypot.
+ */
+export function hypot2(a: number, b: number) {
+  a = Math.abs(a);
+  b = Math.abs(b);
+  const m = a > b ? a : b;
+  if (!(m > 0 && m < Infinity) || b !== b) return Math.hypot(a, b);
+  const x = a / m,
+    y = b / m;
+  return Math.sqrt(x * x + y * y) * m;
 }
 
 // ---- The plan -------------------------------------------------------------------------------
@@ -490,6 +504,15 @@ export function generateWorld(seed: number, o: WorldOptions = {}): World2D {
     wy = Math.sin(C.wind);
   // Each place takes its warmth, wetness and seasons from the regions, nearest most, blended
   // smoothly, read through warped coordinates so the borders wander.
+  // (The regions as flat arrays, their wetness's log taken once.)
+  const nR = C.regions.length,
+    RX = C.regions.map((r) => r.x),
+    RY = C.regions.map((r) => r.y),
+    RT = C.regions.map((r) => r.t),
+    RW = C.regions.map((r) => Math.log(r.wet)),
+    RS = C.regions.map((r) => r.season),
+    RD = n * 0.05,
+    FAR2 = (7 * RD) ** 2;
   for (let i = 0; i < N; i++) {
     const x = i % n,
       y = (i / n) | 0,
@@ -499,13 +522,20 @@ export function generateWorld(seed: number, o: WorldOptions = {}): World2D {
       t = 0,
       wt = 0,
       se = 0;
-    for (const r of C.regions) {
-      const d = Math.hypot(qx - r.x, qy - r.y) / (n * 0.05),
+    for (let k = 0; k < nR; k++) {
+      const dx = qx - RX[k],
+        dy = qy - RY[k];
+      let w = 1e-12;
+      // (A region more than 7 of its radii off weighs exactly 1e-12: what exp adds to it is under
+      // half its last bit.)
+      if (dx * dx + dy * dy < FAR2) {
+        const d = hypot2(dx, dy) / RD;
         w = Math.exp(-d * d * 1.6) + 1e-12;
+      }
       ws += w;
-      t += w * r.t;
-      wt += w * Math.log(r.wet);
-      se += w * r.season;
+      t += w * RT[k];
+      wt += w * RW[k];
+      se += w * RS[k];
     }
     T0[i] = t / ws + 2.5 * (fbm(x / s(60), y / s(60), seed + 81, 2) - 0.5);
     wetness[i] = Math.exp(wt / ws) * (0.85 + 0.3 * fbm(x / s(45), y / s(45), seed + 82, 2));
@@ -547,11 +577,9 @@ export function generateWorld(seed: number, o: WorldOptions = {}): World2D {
           y0 = Math.min(n - 2, Math.floor(fy)),
           ax = fx - x0,
           ay = fy - y0,
-          a = y0 * n + x0,
-          lerp = (A: ArrayLike<number>, f: (v: number) => number) =>
-            (f(A[a]) * (1 - ax) + f(A[a + 1]) * ax) * (1 - ay) + (f(A[a + n]) * (1 - ax) + f(A[a + n + 1]) * ax) * ay;
-        m = lerp(M, (v) => v);
-        up = lerp(h, (v) => Math.max(0, v));
+          a = y0 * n + x0;
+        m = (M[a] * (1 - ax) + M[a + 1] * ax) * (1 - ay) + (M[a + n] * (1 - ax) + M[a + n + 1] * ax) * ay;
+        up = (Math.max(0, h[a]) * (1 - ax) + Math.max(0, h[a + 1]) * ax) * (1 - ay) + (Math.max(0, h[a + n]) * (1 - ax) + Math.max(0, h[a + n + 1]) * ax) * ay;
       } else {
         m = seaUpwind ? 1 : 0.85;
         up = here;
@@ -565,6 +593,19 @@ export function generateWorld(seed: number, o: WorldOptions = {}): World2D {
     for (let pass = 0; pass < 3; pass++) {
       for (let y = 0; y < n; y++)
         for (let x = 0; x < n; x++) {
+          if (y >= 2 && y < n - 2 && x >= 2 && x < n - 2) {
+            // (Inside, the same sum in the same order, without the checks.)
+            let t = 0;
+            for (let r = (y - 2) * n + x, e = r + 5 * n; r < e; r += n) {
+              t += A[r - 2];
+              t += A[r - 1];
+              t += A[r];
+              t += A[r + 1];
+              t += A[r + 2];
+            }
+            B[y * n + x] = t / 25;
+            continue;
+          }
           let t = 0,
             c = 0;
           for (let dy = -2; dy <= 2; dy++)
@@ -597,7 +638,9 @@ export function generateWorld(seed: number, o: WorldOptions = {}): World2D {
     lakeNow = new Uint8Array(N);
   const DX = [1, -1, 0, 0, 1, 1, -1, -1],
     DY = [0, 0, 1, -1, 1, -1, 1, -1],
-    DD = [1, 1, 1, 1, Math.SQRT2, Math.SQRT2, Math.SQRT2, Math.SQRT2];
+    DD = [1, 1, 1, 1, Math.SQRT2, Math.SQRT2, Math.SQRT2, Math.SQRT2],
+    /** The neighbours as offsets in the map (for cells not on its edges). */
+    OFF = DX.map((dx, d) => DY[d] * n + dx);
   let hn = 0;
   const push = (k: number, i: number) => {
     let c = hn++;
@@ -674,29 +717,48 @@ export function generateWorld(seed: number, o: WorldOptions = {}): World2D {
       state[c] = 2;
       stack[sn++] = c;
       const x = c % n,
-        y = (c / n) | 0;
+        y = (c / n) | 0,
+        fc = filled[c],
+        inner = x > 0 && y > 0 && x < n - 1 && y < n - 1;
       let best = -1,
         bs = 0;
-      if (!sea[c] && !(useSinks && sink[c]) && x > 0 && y > 0 && x < n - 1 && y < n - 1)
-        for (let d = 0; d < 8; d++) {
-          const j = (y + DY[d]) * n + x + DX[d];
+      // (The steepest way down: straight neighbours first, then diagonal ones, as DX, DY order
+      // them; a straight step's slope needs no division, its length being 1.)
+      if (!sea[c] && !(useSinks && sink[c]) && inner) {
+        for (let d = 0; d < 4; d++) {
+          const j = c + OFF[d];
           if (state[j] !== 2) continue;
-          const sl = (filled[c] - filled[j]) / DD[d];
+          const sl = fc - filled[j];
           if (best < 0 || sl > bs) {
             best = j;
             bs = sl;
           }
         }
+        for (let d = 4; d < 8; d++) {
+          const j = c + OFF[d];
+          if (state[j] !== 2) continue;
+          const sl = (fc - filled[j]) / Math.SQRT2;
+          if (best < 0 || sl > bs) {
+            best = j;
+            bs = sl;
+          }
+        }
+      }
       rec[c] = best;
+      const up = fc + 1e-3;
       for (let d = 0; d < 8; d++) {
-        const xx = x + DX[d],
-          yy = y + DY[d];
-        if (xx < 0 || yy < 0 || xx >= n || yy >= n) continue;
-        const j = yy * n + xx;
+        let j: number;
+        if (inner) j = c + OFF[d];
+        else {
+          const xx = x + DX[d],
+            yy = y + DY[d];
+          if (xx < 0 || yy < 0 || xx >= n || yy >= n) continue;
+          j = yy * n + xx;
+        }
         if (state[j]) continue;
         state[j] = 1;
-        if (h[j] <= filled[c] + 1e-3) {
-          filled[j] = filled[c] + 1e-3;
+        if (h[j] <= up) {
+          filled[j] = up;
           pit[pt++] = j;
         } else {
           filled[j] = h[j];
@@ -751,22 +813,22 @@ export function generateWorld(seed: number, o: WorldOptions = {}): World2D {
   const K = 6e-6,
     m = 0.45,
     talus = 0.85,
+    LIM = DD.map((dd) => talus * cell * dd),
     ice = new Float32Array(N);
   for (let e = 0; e < eras; e++) {
     const f = e / eras,
       glacial = plan.glacials.find((g) => f >= g.from && f < g.to);
-    // Uplift.
-    for (let i = 0; i < N; i++) {
-      const x = i % n,
-        y = (i / n) | 0;
-      if (x === 0 || y === 0 || x === n - 1 || y === n - 1) continue;
-      const J = plan.joins[joinOf[i]],
-        J2 = join2[i] >= 0 ? plan.joins[join2[i]] : null;
-      let u = swellU[i] + (f >= J.from && f < J.to ? range[i] : 0) + (J2 && f >= J2.from && f < J2.to ? range2[i] : 0);
-      for (let fi = 0; fi < plan.fields.length; fi++) if (f >= plan.fields[fi].from) u += volc[fi][i];
-      h[i] += u * dt;
-      uplift[i] += u * dt;
-    }
+    // Uplift. (Which joins and volcanic fields are active this era, worked out once.)
+    const active = Uint8Array.from(plan.joins, (J) => (f >= J.from && f < J.to ? 1 : 0)),
+      cones = volc.filter((_, fi) => f >= plan.fields[fi].from);
+    for (let y = 1; y < n - 1; y++)
+      for (let i = y * n + 1, end = i + n - 2; i < end; i++) {
+        const j2 = join2[i];
+        let u = swellU[i] + (active[joinOf[i]] ? range[i] : 0) + (j2 >= 0 && active[j2] ? range2[i] : 0);
+        for (let k = 0; k < cones.length; k++) u += cones[k][i];
+        h[i] += u * dt;
+        uplift[i] += u * dt;
+      }
     if (e % 6 === 0 || glacial) climate(glacial ? glacial.cool : 0);
     surfaceRock();
     route();
@@ -789,9 +851,12 @@ export function generateWorld(seed: number, o: WorldOptions = {}): World2D {
         sed[c] += add;
         continue;
       }
-      const d = Math.hypot((c % n) - (r % n), ((c / n) | 0) - ((r / n) | 0)) * cell,
+      const hr = Math.max(h[r], filled[r] > h[r] + 0.5 ? filled[r] : h[r]);
+      // (Where the receiver stands no lower, nothing is cut, whatever the stream's power.)
+      if (hr >= h[c]) continue;
+      // (A receiver is a neighbour: a step of 1 or √2 cells, as Math.hypot gives them.)
+      const d = (c % n !== r % n && ((c / n) | 0) !== ((r / n) | 0) ? Math.SQRT2 : 1) * cell,
         fk = (K * (0.2 + 0.8 * kRock[c]) * dt * flow[c] ** m) / d,
-        hr = Math.max(h[r], filled[r] > h[r] + 0.5 ? filled[r] : h[r]),
         nh = (h[c] + fk * hr) / (1 + fk);
       if (nh < h[c]) {
         const cut = h[c] - Math.max(nh, hr);
@@ -845,13 +910,15 @@ export function generateWorld(seed: number, o: WorldOptions = {}): World2D {
       for (let y = 1; y < n - 1; y++)
         for (let x = 1; x < n - 1; x++) {
           const i = y * n + x;
+          let hi = h[i];
           for (let d = 0; d < 8; d++) {
-            const j = (y + DY[d]) * n + x + DX[d],
-              lim = talus * cell * DD[d],
-              dh = h[i] - h[j];
+            const j = i + OFF[d],
+              lim = LIM[d],
+              dh = hi - h[j];
             if (dh > lim) {
               const mv = (dh - lim) * 0.25;
-              h[i] -= mv;
+              hi -= mv;
+              h[i] = hi;
               h[j] += mv;
               sed[j] += mv;
               sed[i] = Math.max(0, sed[i] - mv);

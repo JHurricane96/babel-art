@@ -11,11 +11,13 @@
 // For trees the span's drawing is the parts put together at the height where the parts take
 // over, so the hand-over from one to the other changes nothing.
 //
-// Trees, shrubs and ground cover are drawn in materials and shades (red: material * 8 + shade;
-// green: which cell of the tree the pixel belongs to, for autumn colour), so the renderer can
-// colour every tree its own way. People, the ox and the cart are drawn in colour.
+// Trees, shrubs, rocks and ground cover are drawn in materials and shades (red: material * 8 +
+// shade; green: for a tree, which cell of it the pixel belongs to, for autumn colour; for a rock,
+// how open it is to the sky, for moss, lichen or snow), so the renderer can colour each one its own
+// way. People are drawn in colour.
 import { colsFor, cut, kept, orderOf } from "./grow";
-import { type Img, type Part, type SlotDef, TREE_NAMES, drawParts, indexMode, lastRamps } from "./sprites";
+import { ROCK_KINDS } from "./rocks";
+import { type Img, type Part, type SlotDef, PLANT_KINDS, TREE_NAMES, drawParts, indexMode, lastRamps } from "./sprites";
 
 export const HMAX = 384;
 /** Pixels of an image: RGBA bytes (in index form: red the material and shade, green the cell). */
@@ -47,9 +49,15 @@ export function planOf(def: SlotDef): Plan {
   // fronds break into dots).
   if (TREE_NAMES.includes(kind)) return { E: 5, T: 128, K: 384, N: 128, direct: false };
   if (kind.startsWith("shrub")) return { E: 5, T: 64, K: 256, N: 64, direct: false };
-  if (kind.startsWith("boulder") || kind.startsWith("stone")) return { E: 5, T: 0, K: 192, N: 192, direct: false };
+  // Rocks: drawn as big as they are ever seen before they grow by whole pixels (a stone is 96 px
+  // tall only 4 m from the camera; a crag, 192 px at 20 m).
+  if (ROCK_KINDS.some((r) => r.kind === kind)) {
+    const K = def.worldH < 1 ? 96 : def.worldH < 2 ? 128 : 192;
+    return { E: 5, T: 0, K, N: K, direct: false };
+  }
+  if (PLANT_KINDS.some((p) => p.kind === kind)) return { E: 5, T: 0, K: 128, N: 128, direct: false };
   if (kind === "marker") return { E: 1, T: 0, K: 1, N: 1, direct: true };
-  if (kind === "person" || kind === "ox" || kind === "cart") return { E: 48, T: 0, K: 96, N: 96, direct: true };
+  if (kind === "person") return { E: 48, T: 0, K: 96, N: 96, direct: true };
   return { E: 64, T: 0, K: 192, N: 192, direct: false };
 }
 /** Rows and columns kept at each height of a span, and where the foot is. */

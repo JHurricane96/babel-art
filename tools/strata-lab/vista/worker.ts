@@ -2,7 +2,7 @@
 // the GPU (pack.ts).
 import { generateWorld } from "../../../engine/strata/world2d";
 import { buildBand } from "./grids";
-import { setLand } from "./land";
+import { landFromWorld, setLand } from "./land";
 import { packSlot } from "./pack";
 import { slotDefs } from "./sprites";
 
@@ -11,8 +11,12 @@ self.onmessage = (e: MessageEvent) => {
   const job = e.data;
   if (job.type === "land") setLand(job.data);
   else if (job.type === "world") {
-    const w = generateWorld(job.seed, { n: job.n, progress: (f) => (self as any).postMessage({ progress: f }) });
-    (self as any).postMessage({ world: w });
+    // The world, and at once its land (what the page and the other workers need of it: far less to
+    // send than the world); this worker keeps it too.
+    const w = generateWorld(job.seed, { n: job.n, progress: (f) => (self as any).postMessage({ progress: f }) }),
+      L = landFromWorld(w);
+    setLand(L);
+    (self as any).postMessage({ land: L });
   } else if (job.type === "band") {
     const b = buildBand(job.gi, job.r0, job.r1, job.spec, job.route),
       transfer: Transferable[] = [b.h.buffer, b.nrm.buffer, b.kind.buffer, b.road.buffer];
