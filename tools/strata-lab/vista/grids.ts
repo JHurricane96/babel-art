@@ -70,7 +70,9 @@ export function buildBand(gi: number, r0: number, r1: number, g: GridSpec, route
     kind = new Uint8Array(out * n * 2),
     trees: number[] = [],
     cell = g.cell,
-    R = Math.max(1, Math.round(6 / cell));
+    R = Math.max(1, Math.round(6 / cell)),
+    ac = Math.round(g.x0 / cell),
+    ar = Math.round(g.z0 / cell);
   for (let r = r0; r < r1; r++) {
     const z = g.z0 + r * cell,
       li = r - ra;
@@ -117,17 +119,21 @@ export function buildBand(gi: number, r0: number, r1: number, g: GridSpec, route
       kind[o * 2 + 1] = water ? 255 : b;
       // Trees (fine grid): thick in the woods, scattered in the open, by what the biome grows.
       if (gi !== 0 || water || onRoad[o] || slope > 0.9) continue;
+      // Trees hang on the world's own cells (not the grid's), so a grid laid elsewhere grows the
+      // same trees where it overlaps.
+      const wc = c + ac,
+        wr = r + ar;
       const { dense } = woodsOf(b);
       if (dense <= 0) continue;
-      const p = hash2(c, r, 11),
+      const p = hash2(wc, wr, 11),
         woods = k === KIND.FOREST || k === KIND.CONIFER,
         want = woods ? p < Math.min(0.24, dense * 2.6) * (0.35 + 0.65 * forest) : p < dense * 0.09;
       if (!want) continue;
-      const tk = pickTree(b, hash2(c, r, 17)),
-        jx = x + (hash2(c, r, 12) - 0.5) * cell * 0.9,
-        jz = z + (hash2(c, r, 13) - 0.5) * cell * 0.9,
+      const tk = pickTree(b, hash2(wc, wr, 17)),
+        jx = x + (hash2(wc, wr, 12) - 0.5) * cell * 0.9,
+        jz = z + (hash2(wc, wr, 13) - 0.5) * cell * 0.9,
         [h0, h1] = TREE_KINDS[tk].h;
-      trees.push(jx, gh - 0.3, jz, h0 + (h1 - h0) * hash2(c, r, 15), tk, Math.floor(hash2(c, r, 16) * 3));
+      trees.push(jx, gh - 0.3, jz, h0 + (h1 - h0) * hash2(wc, wr, 15), tk, Math.floor(hash2(wc, wr, 16) * 3));
     }
   }
   return { gi, r0, r1, h, nrm, road, kind, trees: gi === 0 ? Float32Array.from(trees) : undefined };

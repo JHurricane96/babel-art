@@ -3,8 +3,9 @@
 import { ART_H, ART_W, F, FOV, HORIZON, Renderer, type Camera, type PartsFrame, type Sprites, type SpriteData } from "./render";
 import { BIOMES as BIOME_DEFS, ZONE } from "../../../engine/strata/biomes";
 import { BIOMES as BIOME_MAP, type World2D } from "../../../engine/strata/world2d";
-import { G, type LandData, type Place, biomeAt, ground, groundKind, land, landFromWorld, setLand, worldSize } from "./land";
-import { FAR, FINE, GRIDS, KIND, MID, ROUTE, along, cumulative, hash2, mulberry, placeGrids } from "./common";
+import { G, biomeAt, ground, groundKind, land, landFromWorld, setLand, worldSize } from "./land";
+import { type Journey, append, planJourney, refine } from "./journey";
+import { FINE, type GridSpec, GRIDS, KIND, ROUTE, along, cumulative, mulberry } from "./common";
 import { M } from "../../../engine/strata/world";
 import { hex, rampOf, shiftColor } from "./color";
 import { HMAX, type Plan, type SlotPack } from "./pack";
@@ -40,11 +41,11 @@ const LEAD_FX = 0.27,
   TRAIL_UP = 6,
   TRAIL_SIDE = 4;
 
-// CPU copies of the grids (heights for all three; kinds for the fine one).
-const HGT = GRIDS.map((g) => new Float32Array(g.n * g.n));
-const FINE_K = new Uint8Array(FINE.n * FINE.n),
-  FINE_B = new Uint8Array(FINE.n * FINE.n),
-  FINE_R = new Uint8Array(FINE.n * FINE.n);
+// CPU copies of the grids (heights for all three; kinds for the fine one), swapped with the grids.
+const HGT: Float32Array[] = GRIDS.map((g) => new Float32Array(g.n * g.n));
+let FINE_K: Uint8Array = new Uint8Array(FINE.n * FINE.n),
+  FINE_B: Uint8Array = new Uint8Array(FINE.n * FINE.n),
+  FINE_R: Uint8Array = new Uint8Array(FINE.n * FINE.n);
 function heightIn(gi: number, x: number, z: number) {
   const g = GRIDS[gi],
     n = g.n,
@@ -72,135 +73,242 @@ function surfaceMax(x: number, z: number, r: number) {
   return m;
 }
 
-// ---- The route ---------------------------------------------------------------------------------
-// Each place has its own walk: across the fine grid, through the place, by the easiest way.
+// ---- The journey -------------------------------------------------------------------------------
+// One walk through today's places (journey.ts): the coarse route planned at the start, the walk
+// itself refined a few km ahead of the party as it goes (ROUTE grows; what is behind never moves).
 let RC = [0, 1],
   TOTAL = 1,
-  place: Place = { name: "", x: 0, z: 0 },
-  placeIndex = 0;
+  journey: Journey | null = null,
+  /** How far along the coarse route the walk has been refined, and the coarse route's length. */
+  cursor = 0,
+  coarseTotal = 1;
 const routeAt = (v: number) => along(ROUTE, RC, v);
 const partyY = (v: number) => {
   const p = routeAt(v);
   return surfaceAt(p.x, p.z);
 };
-/** The walk at a place: A* over a 32 m lattice on the fine grid (steep ground costs, rivers can be forded,
- * lakes and the sea cannot), from one side of the grid to the other, then smoothed. */
-function planRoute(p: Place): [number, number][] {
-  const g = FINE,
-    size = g.cell * g.n,
-    margin = 220,
-    step = 32,
-    m = Math.floor((size - 2 * margin) / step),
-    x0 = g.x0 + margin,
-    z0 = g.z0 + margin,
-    H = new Float32Array(m * m),
-    W = new Uint8Array(m * m);
-  for (let j = 0; j < m; j++)
-    for (let i = 0; i < m; i++) {
-      const h = ground(x0 + i * step, z0 + j * step);
-      H[j * m + i] = h;
-      W[j * m + i] = G.level > h ? (G.lake || G.sea ? 2 : 1) : 0;
-    }
-  const node = (x: number, z: number) => {
-    const i = Math.min(m - 1, Math.max(0, Math.round((x - x0) / step))),
-      j = Math.min(m - 1, Math.max(0, Math.round((z - z0) / step)));
-    // The nearest dry node.
-    for (let r = 0; r < m; r++)
-      for (let dj = -r; dj <= r; dj++)
-        for (let di = -r; di <= r; di++) {
-          if (Math.max(Math.abs(di), Math.abs(dj)) !== r) continue;
-          const ii = i + di,
-            jj = j + dj;
-          if (ii < 0 || jj < 0 || ii >= m || jj >= m) continue;
-          if (!W[jj * m + ii]) return jj * m + ii;
-        }
-    return j * m + i;
-  };
-  const cx = Math.min(g.x0 + size - 600, Math.max(g.x0 + 600, p.x)),
-    cz = Math.min(g.z0 + size - 600, Math.max(g.z0 + 600, p.z)),
-    R0 = size / 2 - margin - 80,
-    a0 = hash2(land().seed & 0xffff, placeIndex, 5) * Math.PI * 2;
-  // Which way across: the line that crosses the most biomes and climbs the most, keeping off water;
-  // walked from its low end up.
-  const ways = Array.from({ length: 12 }, (_, k) => {
-    const a = a0 + (k * Math.PI) / 12,
-      seen = new Set<number>();
-    let lo = 1e9,
-      hi = -1e9,
-      wet = 0;
-    for (let q = 0; q <= 32; q++) {
-      const t = (q / 32 - 0.5) * 2 * R0,
-        x = cx + Math.cos(a) * t,
-        z = cz + Math.sin(a) * t,
-        h = ground(x, z);
-      if (G.level > h) wet++;
-      else seen.add(biomeAt(x, z));
-      lo = Math.min(lo, h);
-      hi = Math.max(hi, h);
-    }
-    return { a, score: seen.size + Math.min(4, (hi - lo) / 120) - (wet / 33) * 6 };
-  }).sort((p, q) => q.score - p.score);
-  let best: number[] | null = null;
-  for (let tries = 0; tries < 6 && !best; tries++) {
-    const a = ways[tries].a;
-    let s0 = node(cx - Math.cos(a) * R0, cz - Math.sin(a) * R0),
-      s1 = node(cx + Math.cos(a) * R0, cz + Math.sin(a) * R0);
-    if (H[s0] > H[s1]) [s0, s1] = [s1, s0];
-    // A*.
-    const cost = new Float32Array(m * m).fill(Infinity),
-      from = new Int32Array(m * m).fill(-1),
-      open: number[] = [s0],
-      est = (k: number) => Math.hypot((k % m) - (s1 % m), Math.floor(k / m) - Math.floor(s1 / m)) * step;
-    cost[s0] = 0;
-    const done = new Uint8Array(m * m);
-    while (open.length) {
-      let bi = 0;
-      for (let q = 1; q < open.length; q++) if (cost[open[q]] + est(open[q]) < cost[open[bi]] + est(open[bi])) bi = q;
-      const k = open[bi];
-      open[bi] = open[open.length - 1];
-      open.pop();
-      if (done[k]) continue;
-      done[k] = 1;
-      if (k === s1) break;
-      const ki = k % m,
-        kj = Math.floor(k / m);
-      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
-        const ii = ki + di,
-          jj = kj + dj;
-        if (ii < 0 || jj < 0 || ii >= m || jj >= m) continue;
-        const q = jj * m + ii;
-        if (done[q] || W[q] === 2) continue;
-        const len = Math.hypot(di, dj) * step,
-          sl = Math.abs(H[q] - H[k]) / len,
-          c = cost[k] + len * (1 + 60 * sl * sl + (sl > 0.45 ? 40 : 0)) + (W[q] === 1 ? 500 : 0);
-        if (c < cost[q]) {
-          cost[q] = c;
-          from[q] = k;
-          open.push(q);
-        }
+const journeyDone = () => cursor >= coarseTotal;
+/** The whole journey's length: what is walked out so far, and the rest in proportion. */
+const journeyLength = () => (journeyDone() ? TOTAL : TOTAL + (coarseTotal - cursor) * (TOTAL / Math.max(1, cursor)));
+/** Refine the walk until it reaches `until` metres (and the coarse route at least `coarse` metres),
+ * or the journey's end. */
+function ensureRoute(until: number, coarse = 0) {
+  if (!journey) return;
+  let grew = false;
+  while ((ROUTE.length < 2 || RC[RC.length - 1] < until || cursor < coarse) && !journeyDone()) {
+    const end = ROUTE.length ? ROUTE[ROUTE.length - 1] : journey.coarse[0],
+      to = Math.min(coarseTotal, cursor + 2500),
+      more = refine(journey, end[0], end[1], to);
+    cursor = to;
+    if (!more) continue;
+    append(ROUTE, more);
+    RC = cumulative(ROUTE);
+    grew = true;
+  }
+  if (grew) {
+    TOTAL = RC[RC.length - 1];
+    routeEl.max = String(Math.floor(journeyLength()));
+  }
+}
+/** Where along the walk the journey passes nearest each stop (once the walk reaches past it). */
+const stopCache = new Map<number, number>();
+function stopS(i: number) {
+  const st = journey!.stops[i];
+  let v = stopCache.get(i);
+  if (v !== undefined) return v;
+  ensureRoute(0, st.at + 2600);
+  let best = 0,
+    bd = Infinity;
+  ROUTE.forEach(([x, z], k) => {
+    const d = Math.hypot(x - st.x, z - st.z);
+    if (d < bd) (bd = d), (best = k);
+  });
+  v = RC[best];
+  stopCache.set(i, v);
+  return v;
+}
+/** The stop the party comes to next (the last once it is past them all), and how far it is. */
+function nextStop() {
+  const stops = journey?.stops ?? [];
+  for (let i = 0; i < stops.length; i++) {
+    const known = stopCache.get(i),
+      ahead = known !== undefined ? known - s : (stops[i].at - cursor) * (TOTAL / Math.max(1, cursor)) + (TOTAL - s);
+    if (ahead > 30) return { i, name: stops[i].name, ahead };
+  }
+  return { i: stops.length - 1, name: stops[stops.length - 1]?.name ?? "", ahead: 0 };
+}
+
+// ---- Streaming the land ----------------------------------------------------------------------------
+// The fine (2 m) and mid (16 m) grids follow the party: when it is well past the middle of one, its
+// next placement, centred on the way ahead, is built by the workers into the renderer's back set
+// and swapped in whole when done. The far grid covers the world and is built once.
+interface Build {
+  spec: GridSpec;
+  left: number;
+  total: number;
+  h: Float32Array;
+  k?: Uint8Array;
+  b?: Uint8Array;
+  r?: Uint8Array;
+  trees: Float32Array[];
+  blocking: boolean;
+}
+const building: (Build | null)[] = [null, null, null],
+  built = [false, false, false],
+  spareH: (Float32Array | null)[] = [null, null, null];
+let spareFine: Uint8Array[] | null = null,
+  landReady = false;
+/** Where a grid lies centred on (x, z), kept inside the world (the far grid: over all of it). */
+function placement(gi: number, x: number, z: number): GridSpec {
+  const g = GRIDS[gi],
+    size = worldSize();
+  if (gi === 2) return { x0: 0, z0: 0, cell: size / g.n, n: g.n };
+  // (On whole cells of the world, so every placement samples the same points.)
+  const span = g.cell * g.n,
+    at = (v: number) => Math.floor(Math.min(size - span, Math.max(0, v - span / 2)) / g.cell) * g.cell;
+  return { x0: at(x), z0: at(z), cell: g.cell, n: g.n };
+}
+function buildGrid(gi: number, spec: GridSpec, blocking: boolean) {
+  const n = spec.n,
+    N = n * n,
+    h = spareH[gi]?.length === N ? spareH[gi]! : new Float32Array(N),
+    b: Build = { spec, left: 0, total: 0, h, trees: [], blocking };
+  spareH[gi] = null;
+  if (gi === 0) {
+    const [k, bb, r] = spareFine ?? [new Uint8Array(N), new Uint8Array(N), new Uint8Array(N)];
+    Object.assign(b, { k, b: bb, r });
+    spareFine = null;
+  }
+  building[gi] = b;
+  // The walk through this placement: for the line through the woods (and the path, when shown).
+  let route: number[][] = [];
+  if (gi === 0) {
+    const M = 20,
+      span = spec.cell * n;
+    let i0 = -1,
+      i1 = -1;
+    ROUTE.forEach(([x, z], i) => {
+      if (x > spec.x0 - M && z > spec.z0 - M && x < spec.x0 + span + M && z < spec.z0 + span + M) {
+        if (i0 < 0) i0 = i;
+        i1 = i;
       }
-    }
-    if (from[s1] < 0) continue;
-    const path: number[] = [];
-    for (let k = s1; k >= 0; k = from[k]) path.push(k);
-    best = path.reverse();
+    });
+    if (i0 >= 0) route = ROUTE.slice(Math.max(0, i0 - 1), Math.min(ROUTE.length, i1 + 2)).map((p) => [p[0], p[1]]);
   }
-  let pts: [number, number][] = (best ?? [node(cx - R0, cz), node(cx + R0, cz)]).map((k) => [x0 + (k % m) * step, z0 + Math.floor(k / m) * step]);
-  for (let it = 0; it < 3; it++) {
-    const q: [number, number][] = [pts[0]];
-    for (let k = 0; k < pts.length - 1; k++) {
-      const [ax, az] = pts[k],
-        [bx, bz] = pts[k + 1];
-      q.push([0.75 * ax + 0.25 * bx, 0.75 * az + 0.25 * bz], [0.25 * ax + 0.75 * bx, 0.25 * az + 0.75 * bz]);
-    }
-    q.push(pts[pts.length - 1]);
-    pts = q;
+  for (let r = 0; r < n; r += 128) {
+    const r0 = r,
+      r1 = Math.min(n, r + 128);
+    b.left++;
+    b.total++;
+    run({ type: "band", gi, r0, r1, spec, route }, (d) => {
+      // (A build overtaken by another of the same grid is dropped.)
+      if (building[gi] !== b) return;
+      const band = d.band;
+      renderer.uploadBand(gi, r0, r1, band.h, band.nrm, band.kind, band.road);
+      b.h.set(band.h, r0 * n);
+      if (gi === 0) {
+        for (let q = 0; q < band.kind.length / 2; q++) {
+          b.k![r0 * n + q] = band.kind[q * 2];
+          b.b![r0 * n + q] = band.kind[q * 2 + 1];
+        }
+        b.r!.set(band.road, r0 * n);
+        b.trees.push(band.trees);
+      }
+      if (--b.left === 0) swapIn(gi, b);
+      else if (b.blocking) {
+        const all = building.filter((x) => x?.blocking) as Build[],
+          done = all.reduce((t, x) => t + x.total - x.left, 0),
+          total = all.reduce((t, x) => t + x.total, 0);
+        $("loading").textContent = `Building the land… ${Math.round((done / total) * 100)}%`;
+      }
+    });
   }
-  // Every 16 m or so is plenty.
-  const out: [number, number][] = [pts[0]];
-  for (const pt of pts) if (Math.hypot(pt[0] - out[out.length - 1][0], pt[1] - out[out.length - 1][1]) > 16) out.push(pt);
-  out.push(pts[pts.length - 1]);
-  return out;
+}
+function swapIn(gi: number, b: Build) {
+  renderer.swapGrid(gi);
+  Object.assign(GRIDS[gi], b.spec);
+  spareH[gi] = HGT[gi];
+  HGT[gi] = b.h;
+  if (gi === 0) {
+    spareFine = [FINE_K, FINE_B, FINE_R];
+    FINE_K = b.k!;
+    FINE_B = b.b!;
+    FINE_R = b.r!;
+    // Trees: x, y, z, height, slot (kind * 3 + variant), flipped with the sun.
+    let n = 0;
+    for (const t of b.trees) n += t.length / 6;
+    const trees = new Float32Array(n * 6);
+    let o = 0;
+    for (const t of b.trees)
+      for (let i = 0; i < t.length; i += 6) {
+        trees.set([t[i], t[i + 1], t[i + 2], t[i + 3], t[i + 4] * 3 + t[i + 5], 2], o);
+        o += 6;
+      }
+    bucketTrees(trees);
+    lastCull = { x: 1e9, z: 0, yaw: 0 };
+    // Cover tiles that now lie in the fine grid but were made without it (from the land's coarse
+    // kinds, not knowing the walked line) are made again, a few a frame; the rest stand.
+    for (const k of [...coverCache.keys()]) {
+      if (coverFine.has(k)) continue;
+      const base = Math.floor(k / 2),
+        tz = Math.floor(base / 100000),
+        tx = base - tz * 100000;
+      if (inside(0, tx * TILE + TILE / 2, tz * TILE + TILE / 2)) coverCache.delete(k);
+    }
+    coverKey = "";
+  }
+  building[gi] = null;
+  built[gi] = true;
+  if (!landReady && built.every(Boolean)) {
+    landReady = true;
+    maybeStart();
+  }
+  if (b.blocking && !building.some((x) => x?.blocking)) {
+    if (started) $("loading").hidden = true;
+    snap = true;
+  }
+}
+/** Each frame: walk out the route ahead, and move a grid on once the party is `reach` metres from
+ * its middle, to a new middle `ahead` metres on. The fine grid so always reaches at least 1.5 km
+ * ahead (2048 - 500), past where trees have faded out (TREE_FAR), so moving it never adds a tree
+ * that can be seen; the mid grid at least 12 km, so what changes as it moves on (heights from 16 m
+ * cells instead of 100 m) lies deep in the haze. */
+function stream() {
+  if (!landReady || !journey) return;
+  ensureRoute(s + 6000);
+  const p = routeAt(s);
+  for (const [gi, reach, ahead] of [
+    [0, 500, 400],
+    [1, 4000, 3000],
+  ] as const) {
+    if (building[gi]) continue;
+    const g = GRIDS[gi],
+      half = (g.cell * g.n) / 2;
+    if (Math.hypot(p.x - (g.x0 + half), p.z - (g.z0 + half)) < reach) continue;
+    const a = routeAt(s + ahead),
+      spec = placement(gi, a.x, a.z);
+    // (At the world's edge a grid can move no further.)
+    if (Math.abs(spec.x0 - g.x0) + Math.abs(spec.z0 - g.z0) < reach * 0.25) continue;
+    buildGrid(gi, spec, false);
+  }
+}
+/** Is the walk at v well inside the fine grid (so the party can go on while the next one builds)? */
+function roomAt(v: number, margin: number) {
+  const p = routeAt(v),
+    g = GRIDS[0],
+    span = g.cell * g.n;
+  return p.x > g.x0 + margin && p.z > g.z0 + margin && p.x < g.x0 + span - margin && p.z < g.z0 + span - margin;
+}
+/** Go somewhere along the journey at once: the land there is built before the walk goes on. */
+function travel(v: number) {
+  ensureRoute(v + 6000);
+  s = Math.max(0, Math.min(TOTAL - 1, v));
+  snap = true;
+  const a = routeAt(s + 300);
+  $("loading").hidden = false;
+  $("loading").textContent = "Building the land…";
+  buildGrid(1, placement(1, a.x, a.z), true);
+  buildGrid(0, placement(0, a.x, a.z), true);
 }
 
 // ---- The camera director ----------------------------------------------------------------------
@@ -334,7 +442,10 @@ function updateCamera(dt: number) {
   if (m === "trail") {
     // Behind the party on the way they came, a little to one side (so they read as a file, not one
     // figure), looking the way they are going.
-    const B = routeAt(Math.max(0, s - TRAIL_BACK)),
+    // (Near the journey's start, back along its first heading.)
+    const back = s - TRAIL_BACK,
+      B0 = routeAt(Math.max(0, back)),
+      B = back < 0 ? { x: B0.x + B0.hx * back, z: B0.z + B0.hz * back } : B0,
       A = routeAt(s + 30),
       hy = Math.atan2(A.x - B.x, A.z - B.z),
       bx = B.x + Math.cos(hy) * TRAIL_SIDE,
@@ -777,8 +888,10 @@ function coverTile(tx: number, tz: number, far: boolean): Float32Array {
   }
   return Float32Array.from(out);
 }
-/** Tiles made, near and far kinds (kept a while after they leave the view, so turning back is free). */
-const coverCache = new Map<number, Float32Array>();
+/** Tiles made, near and far kinds (kept a while after they leave the view, so turning back is free),
+ * and which were made from the fine grid. */
+const coverCache = new Map<number, Float32Array>(),
+  coverFine = new Set<number>();
 let coverKey = "";
 /** Is a disc (centre x, z, radius r) at all in view of a camera at (cx, cz) facing yaw, within far? */
 function inView(x: number, z: number, r: number, cx: number, cz: number, yaw: number, far: number) {
@@ -789,7 +902,10 @@ function inView(x: number, z: number, r: number, cx: number, cz: number, yaw: nu
   return d > -r && d < far + r && Math.abs(l) < Math.max(0, d) * Math.tan(FOV / 2 + 0.15) + r * 1.5;
 }
 
-// Trees, kept by 128 m buckets so a frame hands the GPU only those in view.
+// Trees, kept by 128 m buckets so a frame hands the GPU only those in view. Beyond about 1.2 km
+// they fade out (into the canopy the ground draws for woods), so they are only ever needed inside
+// the fine grid, which reaches further than that wherever the party is.
+const TREE_FAR = 1450;
 const TBK = 128,
   TNB = Math.ceil((FINE.n * FINE.cell) / TBK);
 let treeAll = new Float32Array(0),
@@ -822,7 +938,7 @@ function cullTrees(c: Camera) {
       const b = bz * TNB + bx,
         a0 = treeStart[b],
         a1 = treeStart[b + 1];
-      if (a0 === a1 || !inView(FINE.x0 + bx * TBK + TBK / 2, FINE.z0 + bz * TBK + TBK / 2, TBK * 0.75, c.x, c.z, c.yaw, 6000)) continue;
+      if (a0 === a1 || !inView(FINE.x0 + bx * TBK + TBK / 2, FINE.z0 + bz * TBK + TBK / 2, TBK * 0.75, c.x, c.z, c.yaw, TREE_FAR)) continue;
       treeOut.set(treeAll.subarray(a0 * 6, a1 * 6), n);
       n += (a1 - a0) * 6;
     }
@@ -865,6 +981,8 @@ function coverAround(x: number, z: number, yaw: number) {
     if (!coverCache.has(t.k)) {
       if (coverHave && performance.now() - t0 > 2) return null;
       coverCache.set(t.k, coverTile(t.tx, t.tz, t.far));
+      if (inside(0, t.tx * TILE + TILE / 2, t.tz * TILE + TILE / 2)) coverFine.add(t.k);
+      else coverFine.delete(t.k);
     }
   let n = 0,
     nn = 0;
@@ -1074,21 +1192,23 @@ function drawMap(c2: Camera) {
   c.drawImage(mapBase, 0, 0, n, n);
   c.lineCap = "round";
   c.lineJoin = "round";
-  // Places to go, and the fine grid's square (where the walk is).
-  c.fillStyle = "rgba(244,239,226,0.9)";
-  for (const pl of land().places) {
+  // The day's journey (its coarse route), its stops, and the fine grid's square (where the party is).
+  if (journey) {
+    c.strokeStyle = "rgba(244,239,226,0.95)";
+    c.lineWidth = 1.2 * u;
     c.beginPath();
-    c.arc(mx(pl.x), my(pl.z), 2 * u, 0, 7);
-    c.fill();
+    journey.coarse.forEach(([x, z], i) => (i ? c.lineTo(mx(x), my(z)) : c.moveTo(mx(x), my(z))));
+    c.stroke();
+    c.fillStyle = "rgba(244,239,226,0.95)";
+    for (const st of journey.stops) {
+      c.beginPath();
+      c.arc(mx(st.x), my(st.z), 2.2 * u, 0, 7);
+      c.fill();
+    }
   }
   c.strokeStyle = "rgba(244,239,226,0.8)";
   c.lineWidth = u;
   c.strokeRect(mx(FINE.x0), my(FINE.z0 + FINE.cell * FINE.n), FINE.cell * FINE.n * k, FINE.cell * FINE.n * k);
-  c.strokeStyle = "rgba(244,239,226,0.95)";
-  c.lineWidth = 1.6 * u;
-  c.beginPath();
-  ROUTE.forEach(([x, z], i) => (i ? c.lineTo(mx(x), my(z)) : c.moveTo(mx(x), my(z))));
-  c.stroke();
   const L = 12000,
     a0 = c2.yaw - FOV / 2,
     a1 = c2.yaw + FOV / 2;
@@ -1130,7 +1250,9 @@ function hud(now: number, c2: Camera) {
     d = ex * Math.sin(c2.yaw) + ez * Math.cos(c2.yaw),
     px = (1.75 * F) / Math.max(1, d),
     st = renderer.stats;
-  $("r-stretch").textContent = place.name;
+  const ns = nextStop();
+  $("r-stretch").textContent = `${BIOME_DEFS[biomeAt(p.x, p.z)].name}; next ${ns.name}${ns.ahead > 0 ? `, ${(ns.ahead / 1000).toFixed(1)} km` : ""}`;
+  placesEl.value = String(ns.i);
   $("r-camera").textContent = mode === "auto" ? `auto: ${current}` : current;
   $("r-dist").textContent = `${Math.round(Math.hypot(ex, ez))} m from the camera`;
   $("r-size").textContent = `${px.toFixed(1)} px tall, ${Math.round(px * (1084 / ART_W))} mm on the wall`;
@@ -1169,6 +1291,7 @@ document.querySelectorAll<HTMLButtonElement>("[data-toggle]").forEach(
       // The path changes what grows on it.
       if (k === "path") {
         coverCache.clear();
+        coverFine.clear();
         coverKey = "";
         coverHave = false;
       }
@@ -1182,27 +1305,39 @@ $("play").onclick = () => {
 const placesEl = $("places") as HTMLSelectElement;
 function placeButtons() {
   placesEl.replaceChildren(
-    ...land().places.map((pl, i) => {
+    ...journey!.stops.map((st, i) => {
       const o = document.createElement("option");
       o.value = String(i);
-      o.textContent = pl.name;
+      o.textContent = `${i + 1}. ${st.name}`;
       return o;
     }),
   );
-  placesEl.value = String(placeIndex);
 }
-placesEl.onchange = () => goPlace(Number(placesEl.value));
+/** Go to where the journey passes a stop. */
+function goStop(i: number) {
+  if (!journey) return;
+  travel(stopS(Math.max(0, Math.min(journey.stops.length - 1, i))));
+}
+placesEl.onchange = () => goStop(Number(placesEl.value));
 // Seeking: a slider along the whole route, steps of 10 and 100 m, a single frame on.
 const routeEl = $("route") as HTMLInputElement;
 let dragging = false;
+/** Seek along the journey: within the land already built, at once; further, by travelling there. */
 const seekTo = (v: number) => {
-  s = Math.min(TOTAL - 1, Math.max(0, v));
-  snap = true;
+  if (!journey) return;
+  v = Math.max(0, Math.min(journeyLength() - 1, v));
+  ensureRoute(v + 6000);
+  v = Math.min(TOTAL - 1, v);
+  if (roomAt(v, 500)) {
+    s = v;
+    snap = true;
+  } else travel(v);
   showRoute();
 };
 function showRoute() {
   if (!dragging) routeEl.value = String(Math.round(s));
-  $("route-at").textContent = `${(s / 1000).toFixed(2)} of ${(TOTAL / 1000).toFixed(1)} km · ${place.name}`;
+  const ns = nextStop();
+  $("route-at").textContent = `${(s / 1000).toFixed(2)} of ${(journeyLength() / 1000).toFixed(0)} km · next: ${ns.name}${ns.ahead > 0 ? ` in ${(ns.ahead / 1000).toFixed(1)} km` : ""}`;
 }
 routeEl.oninput = () => {
   dragging = true;
@@ -1272,8 +1407,7 @@ for (let k = 0; k < nW; k++) {
   idle.push(w);
 }
 const spritePacks: SlotPack[] = [];
-let treeParts: Float32Array[] = [],
-  spritesLeft = 0,
+let spritesLeft = 0,
   ready = false,
   treesList: Sprites | null = null,
   coverList: Sprites | null = null,
@@ -1317,74 +1451,21 @@ function onWorld(w: World2D) {
   setLand(L);
   for (const wk of workers) wk.postMessage({ type: "land", data: L });
   renderer.setBiomeRamps(biomeRamps());
+  journey = planJourney(L);
+  coarseTotal = journey.coarseAt[journey.coarseAt.length - 1];
+  ensureRoute(6000);
   buildMap();
   placeButtons();
-  goPlace(0);
-}
-let bandsLeft = 0;
-/** Go to a place: lay the mid and fine grids over it, plan its walk, rebuild their bands. */
-function goPlace(i: number) {
-  const L: LandData = land();
-  placeIndex = Math.min(L.places.length - 1, Math.max(0, i));
-  place = L.places[placeIndex];
-  placeGrids(place.x, place.z, worldSize());
-  ROUTE.splice(0, ROUTE.length, ...planRoute(place));
-  RC = cumulative(ROUTE);
-  TOTAL = RC[RC.length - 1];
-  routeEl.max = String(Math.floor(TOTAL - 1));
   s = 0;
-  walked = 0;
   snap = true;
-  placesEl.value = String(placeIndex);
-  $("loading").hidden = false;
-  $("loading").textContent = `Going to ${place.name}…`;
-  treeParts = [];
-  const grids = started ? [1, 0] : [2, 1, 0],
-    route = ROUTE.map((p) => [p[0], p[1]]);
-  for (const gi of grids)
-    for (let r = 0; r < GRIDS[gi].n; r += 128) {
-      bandsLeft++;
-      run({ type: "band", gi, r0: r, r1: Math.min(GRIDS[gi].n, r + 128), spec: { ...GRIDS[gi] }, route }, (d) => {
-        const b = d.band,
-          g = GRIDS[b.gi];
-        renderer.uploadBand(b.gi, b.r0, b.r1, b.h, b.nrm, b.kind, b.road);
-        HGT[b.gi].set(b.h, b.r0 * g.n);
-        if (b.gi === 0) {
-          for (let q = 0; q < b.kind.length / 2; q++) {
-            FINE_K[b.r0 * g.n + q] = b.kind[q * 2];
-            FINE_B[b.r0 * g.n + q] = b.kind[q * 2 + 1];
-          }
-          FINE_R.set(b.road, b.r0 * g.n);
-          treeParts.push(b.trees);
-        }
-        bandsLeft--;
-        if (!bandsLeft) placeReady();
-        else $("loading").textContent = `${started ? `Going to ${place.name}` : "Building the land"}… ${Math.round((1 - bandsLeft / 400) * 100)}%`;
-      });
-    }
-}
-function placeReady() {
-  // Trees: x, y, z, height, slot (kind * 3 + variant), flipped with the sun.
-  let n = 0;
-  for (const t of treeParts) n += t.length / 6;
-  const trees = new Float32Array(n * 6);
-  let o = 0;
-  for (const t of treeParts)
-    for (let i = 0; i < t.length; i += 6) {
-      trees.set([t[i], t[i + 1], t[i + 2], t[i + 3], t[i + 4] * 3 + t[i + 5], 2], o);
-      o += 6;
-    }
-  bucketTrees(trees);
-  lastCull = { x: 1e9, z: 0, yaw: 0 };
-  coverCache.clear();
-  coverKey = "";
-  coverHave = false;
-  snap = true;
-  maybeStart();
-  if (started) $("loading").hidden = true;
+  const a = routeAt(300);
+  $("loading").textContent = "Building the land…";
+  buildGrid(2, placement(2, 0, 0), true);
+  buildGrid(1, placement(1, a.x, a.z), true);
+  buildGrid(0, placement(0, a.x, a.z), true);
 }
 function maybeStart() {
-  if (started || spritesLeft > 0 || bandsLeft > 0 || !treeParts.length) return;
+  if (started || spritesLeft > 0 || !landReady) return;
   started = true;
   buildMs = performance.now() - t0;
   renderer.setSprites(buildSprites(spritePacks));
@@ -1401,9 +1482,6 @@ function maybeStart() {
     frame(t);
   });
 }
-void MID;
-void FAR;
-void hash2;
 
 // ---- Checking motion on this device ----------------------------------------------------------------
 /**
@@ -1482,14 +1560,13 @@ async function runCheck(o: { quick?: boolean; timing?: boolean; settle?: number;
       });
     }
     const stretches = [];
-    // Three stretches of this place's walk: the start, the middle, near the end.
+    // Three stretches of the walk just ahead (within the land already built).
     for (const [name, at] of o.timing === false ? [] : ([["start", 0.08], ["middle", 0.45], ["end", 0.8]] as const)) {
       say(`Timing frames: the ${name} of the walk…`);
       mode = "auto";
       speed = 6;
       paused = false;
-      s = TOTAL * at;
-      snap = true;
+      seekTo(keep.s + 300 * at);
       await pause(quick ? 300 : 1200);
       frameLog = [];
       await pause(quick ? 1500 : 5000);
@@ -1520,8 +1597,7 @@ async function runCheck(o: { quick?: boolean; timing?: boolean; settle?: number;
         mode = m;
         speed = 3;
         paused = false;
-        s = TOTAL * at;
-        snap = true;
+        seekTo(keep.s + 300 * at);
         for (let k = 0; k < (o.settle ?? (quick ? 3 : 30)); k++) frame(performance.now(), 1 / 60);
         let prev = renderer.readArt(),
           sumU = 0,
@@ -1615,12 +1691,17 @@ function frame(now: number, forced = -1) {
   simTime += dt;
   const grade = (partyY(s + 2) - partyY(s - 2)) / 4,
     step = (WALK / (1 + 5 * Math.max(0, grade) + 1.5 * Math.max(0, -grade))) * dt;
-  s += step;
-  walked += step;
-  if (s >= TOTAL) {
-    s = 0;
-    snap = true;
+  // (The party waits at the edge of the land built so far, or while the land is built after a jump.)
+  const waiting = !landReady || building.some((b) => b?.blocking) || (building[0] && !roomAt(s + step, 300));
+  if (!waiting) {
+    s += step;
+    walked += step;
   }
+  if (s >= TOTAL - 1) {
+    if (journeyDone()) travel(0);
+    else s = TOTAL - 1;
+  }
+  stream();
   updateCamera(dt);
   const rc = renderCamera();
   const visTrees = cullTrees(rc);
@@ -1637,13 +1718,13 @@ function frame(now: number, forced = -1) {
   renderer.draw(
     rc,
     [
-      { sprites: treesList!, near: 10, far: 6000 },
+      { sprites: treesList!, near: 10, far: TREE_FAR },
       { sprites: coverList!, near: 3, far: COVER_FAR },
       { sprites: partyList!, near: 1.5, far: 20000, ghost: opt.ghost },
     ],
     { bands: opt.bands, wall: opt.wall, path: opt.path, time: simTime },
     partsFrame(rc, [
-      { data: treeVis, near: 10, far: 6000 },
+      { data: treeVis, near: 10, far: TREE_FAR },
       { data: coverVis, near: 3, far: COVER_FAR },
     ]),
   );
@@ -1671,19 +1752,25 @@ Object.assign(window, {
       return buildMs;
     },
     /** Go to a place, by its number or name. */
+    /** Go to a stop of the journey, by its number or name. */
     jump(which: number | string) {
-      const i = typeof which === "number" ? which : land().places.findIndex((p) => p.name === which);
-      goPlace(Math.max(0, i));
+      const i = typeof which === "number" ? which : (journey?.stops.findIndex((p) => p.name === which) ?? 0);
+      goStop(Math.max(0, i));
     },
     get places() {
-      return land().places.map((p) => p.name);
+      return journey?.stops.map((p) => p.name) ?? [];
     },
     get place() {
-      return place.name;
+      const p = routeAt(s);
+      return BIOME_DEFS[biomeAt(p.x, p.z)].name;
     },
+    get building() {
+      return building.some(Boolean);
+    },
+    /** Where the walk is v metres along. */
+    routeAt: (v: number) => routeAt(v),
     setS(v: number) {
-      s = v;
-      snap = true;
+      seekTo(v);
     },
     setMode(m: typeof mode) {
       mode = m;

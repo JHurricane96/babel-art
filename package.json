@@ -11,7 +11,7 @@
     "test:strata:quick": "node --import tsx --test --test-name-pattern=\"identically|seamless|wall|budget|same world|join seamlessly\" tests/strata-*.test.js",
     "test:browser": "node scripts/browser-check.mjs",
     "build:pages": "vite build --base=/babel-art/",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tools/strata-lab/tsconfig.json",
     "test:chemical": "node scripts/check-chemical.mjs",
     "test:evolution": "node scripts/check-evolution.mjs",
     "test:visuals": "node scripts/check-visuals.mjs",

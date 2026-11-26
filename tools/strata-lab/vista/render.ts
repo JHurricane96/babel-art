@@ -518,7 +518,11 @@ export class Renderer {
   color: WebGLTexture;
   progs: Record<string, WebGLProgram> = {};
   grids: { h: WebGLTexture; n: WebGLTexture; k: WebGLTexture; spec: GridSpec }[] = [];
+  /** A second set of each grid's textures: the next placement is built into it while the first is
+   * drawn, then the two are swapped (swapGrid). */
+  back: { h: WebGLTexture; n: WebGLTexture; k: WebGLTexture }[] = [];
   road!: WebGLTexture;
+  roadBack!: WebGLTexture;
   pal: WebGLTexture;
   palBase: Uint8Array;
   patchVao!: WebGLVertexArrayObject;
@@ -559,14 +563,17 @@ export class Renderer {
     gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     // Grids (filled band by band as workers finish).
-    for (const spec of GRIDS)
-      this.grids.push({
-        spec,
-        h: this.tex2d(gl.R32F, spec.n, spec.n, gl.RED, gl.FLOAT, null, gl.NEAREST),
-        n: this.tex2d(gl.RGBA8, spec.n, spec.n, gl.RGBA, gl.UNSIGNED_BYTE, null, gl.LINEAR),
-        k: this.tex2d(gl.RG8, spec.n, spec.n, gl.RG, gl.UNSIGNED_BYTE, null, gl.NEAREST),
-      });
+    const set = (spec: GridSpec) => ({
+      h: this.tex2d(gl.R32F, spec.n, spec.n, gl.RED, gl.FLOAT, null, gl.NEAREST),
+      n: this.tex2d(gl.RGBA8, spec.n, spec.n, gl.RGBA, gl.UNSIGNED_BYTE, null, gl.LINEAR),
+      k: this.tex2d(gl.RG8, spec.n, spec.n, gl.RG, gl.UNSIGNED_BYTE, null, gl.NEAREST),
+    });
+    for (const spec of GRIDS) {
+      this.grids.push({ spec, ...set(spec) });
+      this.back.push(set(spec));
+    }
     this.road = this.tex2d(gl.R8, GRIDS[0].n, GRIDS[0].n, gl.RED, gl.UNSIGNED_BYTE, null, gl.LINEAR);
+    this.roadBack = this.tex2d(gl.R8, GRIDS[0].n, GRIDS[0].n, gl.RED, gl.UNSIGNED_BYTE, null, gl.LINEAR);
     // The palette.
     const pal = new Uint8Array(6 * RAMP_COLOURS.length * 4);
     RAMP_COLOURS.forEach(([c, spread], r) => rampOf(hex(c), spread).forEach((rgb, t) => pal.set([...rgb.map((v) => Math.round(v * 255)), 255], (r * 6 + t) * 4)));
@@ -628,11 +635,11 @@ export class Renderer {
     return this.gl.getUniformLocation(p, name);
   }
 
-  /** A band of a grid has arrived from a worker. */
+  /** A band of a grid's next placement has arrived from a worker (into the back set). */
   uploadBand(gi: number, r0: number, r1: number, h: Float32Array, nrm: Uint8Array, kind: Uint8Array, road: Uint8Array) {
     const gl = this.gl,
-      g = this.grids[gi],
-      n = g.spec.n;
+      g = this.back[gi],
+      n = this.grids[gi].spec.n;
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.bindTexture(gl.TEXTURE_2D, g.h);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, r0, n, r1 - r0, gl.RED, gl.FLOAT, h);
@@ -641,9 +648,18 @@ export class Renderer {
     gl.bindTexture(gl.TEXTURE_2D, g.k);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, r0, n, r1 - r0, gl.RG, gl.UNSIGNED_BYTE, kind);
     if (gi === 0) {
-      gl.bindTexture(gl.TEXTURE_2D, this.road);
+      gl.bindTexture(gl.TEXTURE_2D, this.roadBack);
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, r0, n, r1 - r0, gl.RED, gl.UNSIGNED_BYTE, road);
     }
+  }
+  /** The grid's next placement is complete: draw from it (its spec is set by the caller). */
+  swapGrid(gi: number) {
+    const g = this.grids[gi],
+      b = this.back[gi];
+    [g.h, b.h] = [b.h, g.h];
+    [g.n, b.n] = [b.n, g.n];
+    [g.k, b.k] = [b.k, g.k];
+    if (gi === 0) [this.road, this.roadBack] = [this.roadBack, this.road];
   }
 
   /** The terrain patch: 33 x 33 vertices and a skirt round its edge. */
