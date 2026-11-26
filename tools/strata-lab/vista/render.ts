@@ -30,6 +30,8 @@ export interface Camera {
   y: number;
   z: number;
   yaw: number;
+  /** The horizon's row (a lens shift up or down, so the party stays in frame on steep ground). */
+  hz?: number;
 }
 
 const COMMON = /* glsl */ `#version 300 es
@@ -375,7 +377,11 @@ void main() {
   if (vz < 1.5 || vz > uFar2 || (want < 1.0 && !top)) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
   int slot = int(iInfo.x + 0.5);
   int K = int(texelFetch(uEntry, ivec2(0, slot), 0).x);
-  int H = clamp(int(floor(want + 0.5)), 1, K);
+  // Taller than its tallest drawing (close to the camera): drawn in pixels twice or three times
+  // the size, so it keeps growing as it comes nearer instead of stopping (and seeming to shrink).
+  // (Not those with one drawing at one size, like the party's marker.)
+  int m = K <= 1 || top ? 1 : max(1, int(ceil(want / float(K))));
+  int H = clamp(int(floor(want / float(m) + 0.5)), 1, K);
   uvec4 e0 = texelFetch(uEntry, ivec2(H * 2, slot), 0), e1 = texelFetch(uEntry, ivec2(H * 2 + 1, slot), 0);
   int mode = int(e1.x & 15u);
   if (mode == 0 || mode == 3) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
@@ -386,7 +392,7 @@ void main() {
   if ((flags & 2) == 2 && uSunFlip > 0.5) flip = !flip;
   ivec2 sz = ivec2(e0.z & 0xffffu, e0.z >> 16), a = ivec2(int(e0.w & 0xffffu) - 32768, int(e0.w >> 16) - 32768);
   vec2 o = flip ? vec2(float(a.x - sz.x), -float(a.y)) : vec2(-float(a.x), -float(a.y));
-  vec2 P = o + aCorner * vec2(sz), px = floor(sc + 0.5) + P;
+  vec2 P = o + aCorner * vec2(sz), px = floor(sc + 0.5) + P * float(m);
   gl_Position = vec4((px.x / uRes.x * 2.0 - 1.0) * vz, (1.0 - px.y / uRes.y * 2.0) * vz, top ? -vz : depthClip(vz), vz);
   vP = P;
   vRect = ivec4(int(e0.x & 0xffffu), int(e0.x >> 16), sz);
@@ -445,7 +451,8 @@ void main() {
   vec3 v = tp.xyz - uCam;
   float want = tp.w * uF / max(vz, 0.01);
   if (vz < 1.5 || vz > uFar2 || want < 1.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
-  int H = clamp(int(floor(want + 0.5)), 1, uK);
+  int m = max(1, int(ceil(want / float(uK))));
+  int H = clamp(int(floor(want / float(m) + 0.5)), 1, uK);
   if (H < uT) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
   int gi = uPartBase + pi;
   uvec4 m0 = texelFetch(uMeta, wrap(gi * 2), 0), m1 = texelFetch(uMeta, wrap(gi * 2 + 1), 0);
@@ -459,7 +466,7 @@ void main() {
   if ((flags & 2) == 2 && uSunFlip > 0.5) flip = !flip;
   vec2 sc = vec2(uRes.x * 0.5 + uF * dot(v.xz, uRight) / vz, uHz - uF * v.y / vz);
   vec2 o = flip ? vec2(float(-x - nc), float(y)) : vec2(float(x), float(y));
-  vec2 P = o + aCorner * vec2(float(nc), float(h)), px = floor(sc + 0.5) + P;
+  vec2 P = o + aCorner * vec2(float(nc), float(h)), px = floor(sc + 0.5) + P * float(m);
   gl_Position = vec4((px.x / uRes.x * 2.0 - 1.0) * vz, (1.0 - px.y / uRes.y * 2.0) * vz, depthClip(vz), vz);
   vP = P;
   vRect = ivec4(int(m0.x & 0xffffu), int(m0.x >> 16), nc, h);
@@ -1004,7 +1011,7 @@ export class Renderer {
     gl.uniform2f(this.u(p, "uRight"), Math.cos(cam.yaw), -Math.sin(cam.yaw));
     gl.uniform2f(this.u(p, "uRes"), ART_W, ART_H);
     gl.uniform1f(this.u(p, "uF"), F);
-    gl.uniform1f(this.u(p, "uHz"), HORIZON);
+    gl.uniform1f(this.u(p, "uHz"), cam.hz ?? HORIZON);
     gl.uniform1f(this.u(p, "uBands"), opt.bands ? 1 : 0);
     gl.uniform1f(this.u(p, "uPath"), opt.path ? 1 : 0);
     gl.uniform1f(this.u(p, "uTime"), opt.time);

@@ -1,6 +1,6 @@
 // Strata Vista: the page. Builds the valley in workers, packs the sprites,
 // walks the party along the route, directs the camera, and draws.
-import { ART_H, ART_W, F, FOV, Renderer, type Camera, type PartsFrame, type Sprites, type SpriteData } from "./render";
+import { ART_H, ART_W, F, FOV, HORIZON, Renderer, type Camera, type PartsFrame, type Sprites, type SpriteData } from "./render";
 import { BIOMES as BIOME_DEFS, ZONE } from "../../../engine/strata/biomes";
 import { BIOMES as BIOME_MAP, type World2D } from "../../../engine/strata/world2d";
 import { G, type LandData, type Place, biomeAt, ground, land, landFromWorld, setLand, worldSize } from "./land";
@@ -346,6 +346,7 @@ function updateCamera(dt: number) {
     cam.x = snap ? bx : cam.x + (bx - cam.x) * ease(dt, 2.5);
     cam.z = snap ? bz : cam.z + (bz - cam.z) * ease(dt, 2.5);
     cam.y = snap ? ty : cam.y + (ty - cam.y) * ease(dt, 2);
+    frameParty(dt);
     snap = false;
     return;
   }
@@ -394,7 +395,20 @@ function updateCamera(dt: number) {
     ty = Math.max(floor, Ly + 14 + depth * 0.13);
   cam.y = snap ? ty : cam.y + (ty - cam.y) * ease(dt, 3);
   if (cam.y < floor) cam.y = floor;
+  frameParty(dt);
   snap = false;
+}
+/** Keep the party in frame: where the camera must stand well above them (or below), shift the
+ * horizon (a lens shift, so verticals stay vertical) until they sit inside the middle of the frame. */
+function frameParty(dt: number) {
+  const L = routeAt(s),
+    depth = Math.max(5, (L.x - cam.x) * Math.sin(cam.yaw) + (L.z - cam.z) * Math.cos(cam.yaw)),
+    row = HORIZON + (F * (cam.y - partyY(s) - 0.9)) / depth,
+    lo = ART_H * 0.3,
+    hi = ART_H * 0.72,
+    want = row > hi ? HORIZON - (row - hi) : row < lo ? HORIZON + (lo - row) : HORIZON,
+    target = Math.max(-ART_H * 0.8, Math.min(ART_H * 0.75, want));
+  cam.hz = snap || cam.hz === undefined ? target : cam.hz + (target - cam.hz) * ease(dt, 1.5);
 }
 /** The camera drawn with: turned and moved in whole-pixel steps (at the party's usual distance). */
 function renderCamera(): Camera {
@@ -407,7 +421,7 @@ function renderCamera(): Camera {
     step = (current === "trail" ? TRAIL_BACK : 120) / F,
     cf = cam.x * fx + cam.z * fz,
     cr = Math.round((cam.x * rx + cam.z * rz) / step) * step;
-  return { x: fx * cf + rx * cr, z: fz * cf + rz * cr, y: Math.round(cam.y / step) * step, yaw };
+  return { x: fx * cf + rx * cr, z: fz * cf + rz * cr, y: Math.round(cam.y / step) * step, yaw, hz: Math.round(cam.hz ?? HORIZON) };
 }
 
 // ---- Sprites ----------------------------------------------------------------------------------
@@ -684,6 +698,7 @@ function coverFor(b: number, kind: number): [string, number][] {
   return list;
 }
 const COVER_PATH: [string, number][] = [["stone2", 0.01]];
+const COVER_FAR = 520;
 /** Where the party walks with no path drawn: what grows there, but nothing that would hide them. */
 const lowLists = new Map<[string, number][], [string, number][]>();
 const lowCover = (list: [string, number][]) => {
@@ -767,7 +782,8 @@ function cullTrees(c: Camera) {
   return treeOut.subarray(0, n);
 }
 function coverAround(x: number, z: number, yaw: number) {
-  const RAD = 210,
+  // Out to where a shrub is down to two or three pixels and has faded by its size, so nothing pops in.
+  const RAD = 330,
     fx = Math.sin(yaw),
     fz = Math.cos(yaw),
     cx = x + fx * RAD * 0.6,
@@ -925,6 +941,21 @@ function layout() {
 // The panel's numbers opening or closing changes the room left for the map.
 document.querySelector("details.more")?.addEventListener("toggle", layout);
 addEventListener("resize", layout);
+// The view's area changes size without the window doing so: when the fonts arrive, when the Go to
+// menu fills with places, when the panel's numbers fold open. Fit the view (and the map) again then.
+{
+  let queued = false;
+  const ro = new ResizeObserver(() => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      layout();
+    });
+  });
+  ro.observe(area);
+  ro.observe(document.querySelector(".readout")!);
+}
 
 // The map: the whole world from above, north up: its biomes, shaded; the fine grid's square.
 const MAPN = 256,
@@ -1532,14 +1563,14 @@ function frame(now: number, forced = -1) {
     rc,
     [
       { sprites: treesList!, near: 10, far: 6000 },
-      { sprites: coverList!, near: 3, far: 260 },
+      { sprites: coverList!, near: 3, far: COVER_FAR },
       { sprites: actorList!, near: 1.5, far: 20000 },
       { sprites: partyList!, near: 1.5, far: 20000, ghost: opt.ghost },
     ],
     { bands: opt.bands, wall: opt.wall, path: opt.path, time: simTime },
     partsFrame(rc, [
       { data: treeVis, near: 10, far: 6000 },
-      { data: coverVis, near: 3, far: 260 },
+      { data: coverVis, near: 3, far: COVER_FAR },
     ]),
   );
   drawMap(rc);
