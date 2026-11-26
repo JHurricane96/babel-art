@@ -4,7 +4,9 @@
 // The world is a map of 512 cells of 200 m; Vista draws down to 2 m. In between:
 // - heights: the world's, interpolated smoothly, with relief added in proportion to how rugged the
 //   world is there (crags in the mountains, swells on the plains), quieted near water so rivers and
-//   shores stay level;
+//   shores stay level; and rock standing out, as a game world has it: mesas and buttes in the dry
+//   lands, crags and tors elsewhere, and in patches the land stepped into benches and cliffs where
+//   its beds show;
 // - rivers: the world's drainage, traced where enough water gathers, smoothed into curves and cut
 //   as channels with a flat floodplain, wider downstream;
 // - lakes and the sea at the world's levels;
@@ -107,31 +109,85 @@ export function landFromWorld(w: World2D): LandData {
     const sm = smoothChain(pts);
     for (let k = 0; k < sm.length - 1; k++) segs.push(sm[k][0], sm[k][1], sm[k + 1][0], sm[k + 1][1], sm[k][2], sm[k + 1][2], (sm[k][3] + sm[k + 1][3]) / 2);
   }
-  // Places to visit: the middle of each climate region, named for what grows there, on land.
-  const places: Place[] = [];
-  for (const r of w.plan.climate.regions) {
-    let best = -1,
-      bd = 1e18;
-    for (let dy = -20; dy <= 20; dy += 2)
-      for (let dx = -20; dx <= 20; dx += 2) {
-        const x = Math.round(r.x + dx),
-          y = Math.round(r.y + dy);
-        if (x < 12 || y < 12 || x >= n - 12 || y >= n - 12) continue;
-        const c = y * n + x;
-        if (w.sea[c] || w.lake[c] > 0 || w.biome[c] === WATER) continue;
-        const d = dx * dx + dy * dy;
-        if (d < bd) (bd = d), (best = c);
-      }
-    if (best < 0) continue;
-    const name = BIOME_DEFS[w.biome[best]].name;
-    if (places.some((p) => p.name === name)) continue;
-    places.push({ name, x: X(best), z: Z(best) });
+  // Places to visit: where the most lies within a walk: several biomes, a rise and fall of the land,
+  // some water, rock. Spots a km or so apart are scored; the best are taken, well apart, those of a
+  // climate not yet visited first; each named for what grows most there.
+  // (Distances in cells of a 512 map, ~200 m, scaled to this one's.)
+  const sc = n / 512,
+    cands: { c: number; score: number; zone: number; names: number[] }[] = [],
+    RAD = Math.max(3, Math.round(10 * sc)),
+    ds = RAD >= 6 ? 2 : 1,
+    edge = Math.max(RAD + 1, Math.round(14 * sc)),
+    stepC = Math.max(1, Math.round(6 * sc));
+  for (let y = edge; y < n - edge; y += stepC)
+    for (let x = edge; x < n - edge; x += stepC) {
+      const c0 = y * n + x;
+      if (w.sea[c0] || w.lake[c0] > 0 || w.biome[c0] === WATER) continue;
+      const count = new Map<number, number>();
+      let dry = 0,
+        wetN = 0,
+        lo = 1e9,
+        hi = -1e9,
+        rg = 0;
+      for (let dy = -RAD; dy <= RAD; dy += ds)
+        for (let dx = -RAD; dx <= RAD; dx += ds) {
+          if (dx * dx + dy * dy > RAD * RAD) continue;
+          const c = (y + dy) * n + x + dx;
+          if (w.sea[c] || w.lake[c] > 0 || w.biome[c] === WATER) {
+            wetN++;
+            continue;
+          }
+          dry++;
+          count.set(w.biome[c], (count.get(w.biome[c]) ?? 0) + 1);
+          lo = Math.min(lo, w.h[c]);
+          hi = Math.max(hi, w.h[c]);
+          rg += rough[c];
+        }
+      if (dry < (dry + wetN) * 0.65) continue;
+      const ranked = [...count].sort((p, q) => q[1] - p[1]),
+        many = ranked.filter(([, k]) => k >= dry * 0.06).length,
+        wf = wetN / (dry + wetN),
+        score = many + Math.min(3, (hi - lo) / 300) + (wf > 0.02 ? 1.2 : 0) + (2 * rg) / dry;
+      cands.push({ c: c0, score, zone: BIOME_DEFS[ranked[0][0]].zone, names: ranked.slice(0, 2).map(([b]) => b) });
+    }
+  cands.sort((p, q) => q.score - p.score);
+  const places: Place[] = [],
+    zones = new Set<number>(),
+    groups = new Set<number>(),
+    // Cold, temperate, dry, hot and wet: one of each first if there is one.
+    groupOf = (z: number) =>
+      z === ZONE.ICE || z === ZONE.TUNDRA || z === ZONE.ALPINE || z === ZONE.BOREAL ? 0
+      : z === ZONE.STEPPE || z === ZONE.DESERT || z === ZONE.SALT_FLAT || z === ZONE.SAVANNA ? 2
+      : z === ZONE.MONSOON || z === ZONE.RAINFOREST ? 3 : 1,
+    taken: number[] = [];
+  for (let k = 0; k < 8; k++) {
+    let best: (typeof cands)[number] | null = null,
+      bs = -1e9;
+    for (const cd of cands) {
+      const cx = cd.c % n,
+        cy = Math.floor(cd.c / n);
+      if (taken.some((t) => Math.hypot((t % n) - cx, Math.floor(t / n) - cy) < 60 * sc)) continue;
+      const v = cd.score + (zones.has(cd.zone) ? 0 : 1.5) + (groups.has(groupOf(cd.zone)) ? 0 : 4);
+      if (v > bs) (bs = v), (best = cd);
+    }
+    if (!best) break;
+    taken.push(best.c);
+    zones.add(best.zone);
+    groups.add(groupOf(best.zone));
+    const [b0, b1] = best.names;
+    let name = BIOME_DEFS[b0].name;
+    if (places.some((p) => p.name === name) && b1 !== undefined) name = `${name} and ${BIOME_DEFS[b1].name.toLowerCase()}`;
+    if (places.some((p) => p.name === name)) name = `${name} (${k + 1})`;
+    places.push({ name, x: X(best.c), z: Z(best.c) });
   }
   return { seed: w.seed, n, cell, h: w.h, wet, sea: w.sea, biome: w.biome, zone: w.zone, rough, rivers: Float32Array.from(segs), places };
 }
 
 // ---- Asking about a point -----------------------------------------------------------------------
 let L: LandData | null = null;
+/** Per world cell, smoothed: how much the land breaks into benches and cliffs, and into mesas. */
+let TERR = new Float32Array(0),
+  MESA = new Float32Array(0);
 const BUCKET = 400;
 let bucketN = 0,
   bucketStart = new Int32Array(0),
@@ -139,6 +195,31 @@ let bucketN = 0,
 /** Use this land (in each thread that asks). */
 export function setLand(d: LandData) {
   L = d;
+  const n = d.n,
+    blur = (A: Float32Array) => {
+      for (let pass = 0; pass < 2; pass++)
+        for (const [sx, sy] of [[1, 0], [0, 1]]) {
+          const B = A.slice();
+          for (let y = 0; y < n; y++)
+            for (let x = 0; x < n; x++) {
+              let t = 0;
+              for (let k = -2; k <= 2; k++) t += B[Math.min(n - 1, Math.max(0, y + k * sy)) * n + Math.min(n - 1, Math.max(0, x + k * sx))];
+              A[y * n + x] = t / 5;
+            }
+        }
+      return A;
+    };
+  TERR = new Float32Array(n * n);
+  MESA = new Float32Array(n * n);
+  for (let i = 0; i < n * n; i++) {
+    const z = d.zone[i],
+      dry = z === ZONE.DESERT || z === ZONE.STEPPE || z === ZONE.SAVANNA || z === ZONE.MEDITERRANEAN || z === ZONE.SALT_FLAT,
+      cold = z === ZONE.ALPINE || z === ZONE.ICE || z === ZONE.TUNDRA;
+    TERR[i] = dry ? 1 : cold ? 0.75 : Math.min(1, 0.2 + 0.8 * d.rough[i]);
+    MESA[i] = dry ? 1 : cold ? 0.5 : 0.3;
+  }
+  blur(TERR);
+  blur(MESA);
   const size = d.n * d.cell;
   bucketN = Math.ceil(size / BUCKET) + 1;
   const lists: number[][] = Array.from({ length: bucketN * bucketN }, () => []),
@@ -239,6 +320,29 @@ export function ground(x: number, z: number) {
       (0.8 + 8 * rough) * (fbm(x / 60, z / 60, 65, 3) - 0.5) +
       0.9 * (fbm(x / 14, z / 14, 67, 2) - 0.5);
   let h = base + detail * quiet;
+  // Rock standing out: blocks with steep sides (mesas and buttes, or crags and tors), and in
+  // patches the land stepped into benches, with cliffs between where the beds show.
+  const mw = lin(MESA, n, u, v) * quiet,
+    // Benches only on rugged ground (on gentle slopes they would be long, even stripes).
+    tw = lin(TERR, n, u, v) * quiet * smooth(0.1, 0.4, rough);
+  if (mw > 0.01) {
+    const m = fbm(x / 1300, z / 1300, 91, 3),
+      thr = 0.64 - 0.05 * mw;
+    if (m > thr) h += mw * smooth(thr, thr + 0.02, m) * (30 + 50 * vnoise(x / 2700, z / 2700, 93));
+  }
+  if (tw > 0.01) {
+    const patch = smooth(0.5, 0.62, fbm(x / 3200, z / 3200, 99, 2));
+    if (patch > 0) {
+      // Each bench its own: along it the step sharpens into a cliff and eases off into a slope.
+      const S = 14 + 24 * vnoise(x / 2300, z / 2300, 95),
+        off = 0.5 * vnoise(x / 650, z / 650, 97),
+        t = h / S + off,
+        i = Math.floor(t),
+        f = t - i,
+        e = Math.min(0.94, 0.3 + 0.75 * vnoise(x / 380 + i * 3.7, z / 380 - i * 1.3, 101));
+      h += (S * (i + smooth(e, 1, f) - off) - h) * tw * patch;
+    }
+  }
   // The river: a flat floodplain, then the channel.
   if (dr < fp) h = Math.min(h, lv + 1.2 + Math.max(0, dr - rw) * 0.05 + (h - lv) * smooth(rw * 2, fp, dr));
   if (dr < rw) h = Math.min(h, lv - 0.3 - 1.8 * (1 - (dr / rw) ** 2));
@@ -259,8 +363,8 @@ export function ground(x: number, z: number) {
 export function biomeAt(x: number, z: number) {
   const d = L!,
     n = d.n,
-    wx = x + 180 * (vnoise(x / 260, z / 260, 71) - 0.5),
-    wz = z + 180 * (vnoise(x / 260, z / 260, 73) - 0.5),
+    wx = x + 280 * (vnoise(x / 430, z / 430, 71) - 0.5) + 90 * (vnoise(x / 110, z / 110, 75) - 0.5),
+    wz = z + 280 * (vnoise(x / 430, z / 430, 73) - 0.5) + 90 * (vnoise(x / 110, z / 110, 77) - 0.5),
     u = Math.round(wx / d.cell - 0.5),
     v = Math.round(n - wz / d.cell - 0.5);
   for (let r = 0; r < 4; r++)
@@ -285,7 +389,7 @@ export function groundKind(x: number, z: number, h: number, slope: number, b: nu
   const look = BIOME_DEFS[b],
     zone = look.zone,
     nz5 = vnoise(x / 180, z / 180, 5);
-  if (look.ground === "snow") return [slope > 1.0 ? KIND.ROCK : KIND.SNOW, 0];
+  if (look.ground === "snow") return [slope > 0.6 ? KIND.ROCK : slope > 0.35 && nz5 > 0.55 ? KIND.SCREE : KIND.SNOW, 0];
   if (slope > 0.95) return [KIND.ROCK, 0];
   if (look.ground === "rock") return [slope > 0.5 ? KIND.ROCK : KIND.SCREE, 0];
   if (look.ground === "gravel" || look.ground === "ash") return [KIND.SCREE, 0];

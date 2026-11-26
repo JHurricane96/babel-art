@@ -227,29 +227,41 @@ export function planWorld(seed: number, n: number): WorldPlan {
     const c = (k + 0.5 + (R() - 0.5) * 0.5) / ng;
     return { from: Math.max(0.05, c * 0.9 - 0.06), to: Math.min(0.97, c * 0.9 + 0.04 + 0.04 * R()), cool: 6 + 5 * R() };
   });
-  // The climate: every kind of place somewhere on the map. Regions with a warmth at sea level, a
-  // wetness (a factor on the rain) and seasons; spread out so each has room, the frozen and the
-  // hot ones apart.
-  const kinds = [
-      { kind: "frozen", t: -6 + 3 * R(), wet: 0.6 + 0.3 * R(), season: 0 },
-      { kind: "cold", t: -1 + 4 * R(), wet: 1.1 + 0.4 * R(), season: (R() - 0.5) * 0.6 },
-      { kind: "mild", t: 9 + 5 * R(), wet: 0.8 + 0.5 * R(), season: R() < 0.5 ? 0.5 + 0.3 * R() : (R() - 0.5) * 0.5 },
-      { kind: "hot and dry", t: 24 + 5 * R(), wet: 0.18 + 0.12 * R(), season: (R() - 0.5) * 0.8 },
-      { kind: "hot and wet", t: 24 + 4 * R(), wet: 1.6 + 0.5 * R(), season: R() < 0.4 ? -0.6 : (R() - 0.5) * 0.4 },
+  // The climate, as a game world has it: every kind of place, in many regions about 10 km across,
+  // side by side (snow country a day's walk from desert). Each region has a warmth at sea level, a
+  // wetness (a factor on the rain) and seasons; every kind several times, a few odd ones between;
+  // spread out so each has room, the frozen and the hot kept a region apart.
+  const KINDS: [string, () => { t: number; wet: number; season: number }][] = [
+      ["frozen", () => ({ t: -4 + 2.5 * R(), wet: 0.6 + 0.3 * R(), season: 0 })],
+      ["cold", () => ({ t: -1 + 4 * R(), wet: 1.1 + 0.4 * R(), season: (R() - 0.5) * 0.6 })],
+      ["mild", () => ({ t: 9 + 5 * R(), wet: 0.8 + 0.5 * R(), season: R() < 0.5 ? 0.5 + 0.3 * R() : (R() - 0.5) * 0.5 })],
+      ["hot and dry", () => ({ t: 24 + 5 * R(), wet: 0.18 + 0.12 * R(), season: (R() - 0.5) * 0.8 })],
+      ["hot and wet", () => ({ t: 24 + 4 * R(), wet: 1.6 + 0.5 * R(), season: R() < 0.4 ? -0.6 : (R() - 0.5) * 0.4 })],
     ],
-    extra = Math.floor(R() * 3);
-  for (let k = 0; k < extra; k++) kinds.push({ kind: "", t: 2 + 22 * R(), wet: 0.3 + 1.3 * R(), season: (R() - 0.5) * 1.4 });
+    kinds: { kind: string; t: number; wet: number; season: number }[] = [],
+    share = [0.08, 0.18, 0.26, 0.2, 0.16],
+    count = 60 + Math.floor(R() * 20);
+  for (let k = 0; k < count; k++) {
+    // Each kind at least three times; then by its share, and now and then an odd one.
+    let q = k < 15 ? k % 5 : -1;
+    if (q < 0 && R() < 0.88) {
+      let u = R() * share.reduce((a, b) => a + b, 0);
+      q = 0;
+      while ((u -= share[q]) > 0) q++;
+    }
+    kinds.push(q < 0 ? { kind: "", t: 2 + 22 * R(), wet: 0.3 + 1.3 * R(), season: (R() - 0.5) * 1.4 } : { kind: KINDS[q][0], ...KINDS[q][1]() });
+  }
   const regions: WorldPlan["climate"]["regions"] = [];
   for (const k of kinds) {
     let best: [number, number] = [n / 2, n / 2],
       bd = -1;
     // The best of a few tries: far from those placed; the frozen kept away from the hot.
     for (let t = 0; t < 24; t++) {
-      const x = n * (0.08 + 0.84 * R()),
-        y = n * (0.08 + 0.84 * R());
+      const x = n * (0.04 + 0.92 * R()),
+        y = n * (0.04 + 0.92 * R());
       let d = 1e9;
       for (const r of regions) {
-        const far = Math.abs(r.t - k.t) > 20 ? 0.6 : 1;
+        const far = Math.abs(r.t - k.t) > 20 ? 0.5 : 1;
         d = Math.min(d, Math.hypot(r.x - x, r.y - y) * far);
       }
       if (d > bd) (bd = d), (best = [x, y]);
@@ -448,15 +460,15 @@ export function generateWorld(seed: number, o: WorldOptions = {}): World2D {
   for (let i = 0; i < N; i++) {
     const x = i % n,
       y = (i / n) | 0,
-      qx = x + n * 0.16 * (fbm(x / s(110), y / s(110), seed + 85, 3) - 0.5) * 2,
-      qy = y + n * 0.16 * (fbm(x / s(110), y / s(110), seed + 87, 3) - 0.5) * 2;
+      qx = x + n * 0.035 * (fbm(x / s(40), y / s(40), seed + 85, 3) - 0.5) * 2,
+      qy = y + n * 0.035 * (fbm(x / s(40), y / s(40), seed + 87, 3) - 0.5) * 2;
     let ws = 0,
       t = 0,
       wt = 0,
       se = 0;
     for (const r of C.regions) {
-      const d = Math.hypot(qx - r.x, qy - r.y) / (n * 0.2),
-        w = Math.exp(-d * d * 1.6) + 1e-9;
+      const d = Math.hypot(qx - r.x, qy - r.y) / (n * 0.05),
+        w = Math.exp(-d * d * 1.6) + 1e-12;
       ws += w;
       t += w * r.t;
       wt += w * Math.log(r.wet);
@@ -1034,24 +1046,12 @@ export function generateWorld(seed: number, o: WorldOptions = {}): World2D {
     if (lakes > N * 0.004) story.push("lakes left by the ice");
     if (salty > N * 0.002) story.push("salt flats in a dry basin");
     story.push(`${plan.glacials.length} ice ages`);
-    // Where the climates lie: what most of each region's land became.
-    const where = (x: number, y: number) =>
-      Math.hypot(x - n / 2, y - n / 2) < n * 0.14 ? "in the middle" : `in the ${compass(Math.atan2(y - n / 2, x - n / 2))}`;
-    const parts: string[] = [];
-    for (const r of C.regions.slice(0, 5)) {
-      const zc = new Map<number, number>();
-      for (let dy = -12; dy <= 12; dy += 3)
-        for (let dx = -12; dx <= 12; dx += 3) {
-          const x = Math.round(r.x + s(dx)),
-            y = Math.round(r.y + s(dy));
-          if (x < 0 || y < 0 || x >= n || y >= n) continue;
-          const z = zone[y * n + x];
-          if (z !== ZONE.OCEAN && z !== ZONE.LAKE) zc.set(z, (zc.get(z) ?? 0) + 1);
-        }
-      const top = [...zc].sort((a, b) => b[1] - a[1])[0];
-      if (top) parts.push(`${ZONES[top[0]].name.toLowerCase()} ${where(r.x, r.y)}`);
-    }
-    story.push(parts.join(", "));
+    // The climates: the commonest, and the rest in patches.
+    const zc = new Map<number, number>();
+    for (let i = 0; i < N; i++) if (zone[i] !== ZONE.OCEAN && zone[i] !== ZONE.LAKE) zc.set(zone[i], (zc.get(zone[i]) ?? 0) + 1);
+    const byShare = [...zc].sort((a, b) => b[1] - a[1]).map(([z]) => ZONES[z].name.toLowerCase()),
+      list = (a: string[]) => (a.length > 1 ? `${a.slice(0, -1).join(", ")} and ${a[a.length - 1]}` : a[0] ?? "");
+    story.push(`${C.regions.length} climate regions: mostly ${list(byShare.slice(0, 2))}, with ${list(byShare.slice(2, 6))} in patches`);
     story.push(`rain on the wind from the ${compass(C.wind + Math.PI)}`);
   }
   o.progress?.(1);

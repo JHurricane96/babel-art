@@ -3,7 +3,7 @@
 import { ART_H, ART_W, F, FOV, Renderer, type Camera, type PartsFrame, type Sprites, type SpriteData } from "./render";
 import { BIOMES as BIOME_DEFS, ZONE } from "../../../engine/strata/biomes";
 import { BIOMES as BIOME_MAP, type World2D } from "../../../engine/strata/world2d";
-import { G, type LandData, type Place, ground, land, landFromWorld, setLand, worldSize } from "./land";
+import { G, type LandData, type Place, biomeAt, ground, land, landFromWorld, setLand, worldSize } from "./land";
 import { FAR, FINE, GRIDS, KIND, MID, ROUTE, along, cumulative, hash2, mulberry, placeGrids } from "./valley";
 import { M } from "../../../engine/strata/world";
 import { hex, rampOf, shiftColor } from "./color";
@@ -14,9 +14,10 @@ declare const WORKER_SOURCE: string;
 const $ = (id: string) => document.getElementById(id)!;
 
 // ---- State ------------------------------------------------------------------------------------
-const opt = { snap: true, bands: true, marker: true, ghost: true, wall: true };
+const opt = { snap: true, bands: true, marker: true, ghost: true, wall: true, path: false };
 let stepOnce = false;
-let mode: "auto" | "follow" | "turn" = "auto",
+type Shot = "follow" | "turn" | "trail";
+let mode: "auto" | Shot = "auto",
   speed = 6,
   paused = matchMedia("(prefers-reduced-motion: reduce)").matches,
   simTime = 0,
@@ -24,14 +25,20 @@ let mode: "auto" | "follow" | "turn" = "auto",
   walked = 0;
 const cam: Camera = { x: 0, y: 0, z: 0, yaw: 0 };
 let snap = true,
-  autoPick: "follow" | "turn" = "turn",
-  pending: string | null = null,
+  autoPick: Shot = "follow",
   lastEval = -1e9,
+  hiddenRun = 0,
+  clearRun = 0,
+  trailFrom = 0,
   followYaw = 0,
   followFx = 0.27,
-  current: "follow" | "turn" = "turn";
+  current: Shot = "follow";
 const LEAD_FX = 0.27,
-  WALK = 1.35;
+  WALK = 1.35,
+  /** The Trail shot: this far behind the party along the route, this far above it. */
+  TRAIL_BACK = 34,
+  TRAIL_UP = 6,
+  TRAIL_SIDE = 4;
 
 // CPU copies of the grids (heights for all three; kinds for the fine one).
 const HGT = GRIDS.map((g) => new Float32Array(g.n * g.n));
@@ -113,11 +120,32 @@ function planRoute(p: Place): [number, number][] {
     cz = Math.min(g.z0 + size - 600, Math.max(g.z0 + 600, p.z)),
     R0 = size / 2 - margin - 80,
     a0 = hash2(land().seed & 0xffff, placeIndex, 5) * Math.PI * 2;
+  // Which way across: the line that crosses the most biomes and climbs the most, keeping off water;
+  // walked from its low end up.
+  const ways = Array.from({ length: 12 }, (_, k) => {
+    const a = a0 + (k * Math.PI) / 12,
+      seen = new Set<number>();
+    let lo = 1e9,
+      hi = -1e9,
+      wet = 0;
+    for (let q = 0; q <= 32; q++) {
+      const t = (q / 32 - 0.5) * 2 * R0,
+        x = cx + Math.cos(a) * t,
+        z = cz + Math.sin(a) * t,
+        h = ground(x, z);
+      if (G.level > h) wet++;
+      else seen.add(biomeAt(x, z));
+      lo = Math.min(lo, h);
+      hi = Math.max(hi, h);
+    }
+    return { a, score: seen.size + Math.min(4, (hi - lo) / 120) - (wet / 33) * 6 };
+  }).sort((p, q) => q.score - p.score);
   let best: number[] | null = null;
   for (let tries = 0; tries < 6 && !best; tries++) {
-    const a = a0 + tries * (Math.PI / 6),
-      s0 = node(cx - Math.cos(a) * R0, cz - Math.sin(a) * R0),
+    const a = ways[tries].a;
+    let s0 = node(cx - Math.cos(a) * R0, cz - Math.sin(a) * R0),
       s1 = node(cx + Math.cos(a) * R0, cz + Math.sin(a) * R0);
+    if (H[s0] > H[s1]) [s0, s1] = [s1, s0];
     // A*.
     const cost = new Float32Array(m * m).fill(Infinity),
       from = new Int32Array(m * m).fill(-1),
@@ -194,25 +222,132 @@ function stretch(v: number, len: number) {
     arc = Math.min(TOTAL, v + len) - v;
   return { yaw: Math.atan2(dx, dz), across: Math.atan2(-dz, dx), straight: arc > 0 ? chord / arc : 1 };
 }
+/** How much of the party a camera at c cannot see (0..1): points on each figure, tested against the
+ * trees between (their crowns as upright boards facing the camera) and the land. */
+function hiddenFrom(c: { x: number; y: number; z: number; yaw: number }) {
+  const fx = Math.sin(c.yaw),
+    fz = Math.cos(c.yaw),
+    rx = Math.cos(c.yaw),
+    rz = -Math.sin(c.yaw),
+    pts: number[][] = [];
+  for (let m = 0; m < 4; m++) {
+    const v = Math.max(0, s - m * 2.8),
+      p = routeAt(v),
+      y = partyY(v);
+    pts.push([p.x, y + 0.5, p.z], [p.x, y + 1.4, p.z]);
+  }
+  // Trees near the line of sight, from their 128 m buckets.
+  const L = routeAt(s),
+    near: number[] = [],
+    bx0 = Math.max(0, Math.floor((Math.min(c.x, L.x) - 30 - FINE.x0) / TBK)),
+    bx1 = Math.min(TNB - 1, Math.floor((Math.max(c.x, L.x) + 30 - FINE.x0) / TBK)),
+    bz0 = Math.max(0, Math.floor((Math.min(c.z, L.z) - 30 - FINE.z0) / TBK)),
+    bz1 = Math.min(TNB - 1, Math.floor((Math.max(c.z, L.z) + 30 - FINE.z0) / TBK));
+  for (let bz = bz0; bz <= bz1; bz++)
+    for (let bx = bx0; bx <= bx1; bx++) {
+      const b = bz * TNB + bx;
+      for (let i = treeStart[b]; i < treeStart[b + 1]; i++) near.push(i);
+    }
+  let hid = 0;
+  for (const [px, py, pz] of pts) {
+    const ex = px - c.x,
+      ez = pz - c.z,
+      dP = ex * fx + ez * fz,
+      lP = ex * rx + ez * rz;
+    if (dP < 2) continue;
+    let blocked = false;
+    for (const i of near) {
+      const o = i * 6,
+        tx = treeAll[o] - c.x,
+        tz = treeAll[o + 2] - c.z,
+        dT = tx * fx + tz * fz;
+      if (dT < 6 || dT > dP - 1.5) continue;
+      const t = dT / dP,
+        th = treeAll[o + 3],
+        conifer = Math.floor(treeAll[o + 4] / 3) >= 4,
+        half = th * (conifer ? 0.17 : 0.3),
+        lo = th * (conifer ? 0.12 : 0.3),
+        ry = c.y + t * (py - c.y) - treeAll[o + 1];
+      if (ry > lo && ry < th && Math.abs(t * lP - (tx * rx + tz * rz)) < half) {
+        blocked = true;
+        break;
+      }
+    }
+    // The land in between.
+    for (let k = 1; k < 12 && !blocked; k++) {
+      const t = k / 12;
+      if (surfaceAt(c.x + ex * t, c.z + ez * t) > c.y + t * (py - c.y)) blocked = true;
+    }
+    if (blocked) hid++;
+  }
+  return hid / pts.length;
+}
+/** Where Follow would put the camera now (for Auto to ask whether it would see the party). */
+function followSpot() {
+  const L = routeAt(s),
+    yaw = stretch(s, 600).yaw,
+    x = L.x - Math.sin(yaw) * 120,
+    z = L.z - Math.cos(yaw) * 120;
+  return { x, z, yaw, y: Math.max(surfaceMax(x, z, 22) + 6, partyY(s) + 14 + 120 * 0.13) };
+}
 function updateCamera(dt: number) {
   const L = routeAt(s),
     Ly = partyY(s);
-  // Auto: across the screen where the way runs straight; following into the scene where it winds.
+  // Auto: Follow, looking ahead into the land; Trail, close behind the party, while Follow would
+  // lose them behind trees or a hill.
   if (mode === "auto") {
-    if (snap || s - lastEval > 50) {
+    if (snap) {
+      autoPick = hiddenFrom(followSpot()) > 0.6 ? "trail" : "follow";
+      hiddenRun = clearRun = 0;
+      trailFrom = s;
       lastEval = s;
-      const st = stretch(s, 350),
-        pick = st.straight > 0.82 ? "turn" : "follow";
-      if (pick !== autoPick && (pending === pick || snap)) {
-        autoPick = pick;
-        pending = null;
-      } else pending = pick !== autoPick ? pick : null;
+    } else if (s - lastEval > 6) {
+      lastEval = s;
+      if (autoPick === "follow") {
+        hiddenRun = hiddenFrom(cam) > 0.6 ? hiddenRun + 1 : 0;
+        if (hiddenRun >= 2) {
+          autoPick = "trail";
+          trailFrom = s;
+          hiddenRun = 0;
+        }
+      } else {
+        clearRun = hiddenFrom(followSpot()) < 0.25 ? clearRun + 1 : 0;
+        if (clearRun >= 4 && s - trailFrom > 60) {
+          autoPick = "follow";
+          clearRun = 0;
+        }
+      }
     }
   }
-  const m = mode === "auto" ? autoPick : mode;
+  const m: Shot = mode === "auto" ? autoPick : mode;
   if (m !== current || snap) {
     if (m === "follow") followYaw = stretch(s, 600).yaw;
     current = m;
+  }
+  // Follow looks again where the way ahead has turned well away from where it looks.
+  if (m === "follow") {
+    const ahead = stretch(s, 600).yaw;
+    let d = ahead - followYaw;
+    while (d > Math.PI) d -= 2 * Math.PI;
+    while (d < -Math.PI) d += 2 * Math.PI;
+    if (Math.abs(d) > 0.6) followYaw = ahead;
+  }
+  if (m === "trail") {
+    // Behind the party on the way they came, a little to one side (so they read as a file, not one
+    // figure), looking the way they are going.
+    const B = routeAt(Math.max(0, s - TRAIL_BACK)),
+      A = routeAt(s + 30),
+      hy = Math.atan2(A.x - B.x, A.z - B.z),
+      bx = B.x + Math.cos(hy) * TRAIL_SIDE,
+      bz = B.z - Math.sin(hy) * TRAIL_SIDE,
+      tYaw = Math.atan2(A.x - bx, A.z - bz),
+      ty = Math.max(surfaceMax(bx, bz, 4) + 2, Ly + TRAIL_UP);
+    cam.yaw = snap ? tYaw : angleTo(cam.yaw, tYaw, ease(dt, 3));
+    cam.x = snap ? bx : cam.x + (bx - cam.x) * ease(dt, 2.5);
+    cam.z = snap ? bz : cam.z + (bz - cam.z) * ease(dt, 2.5);
+    cam.y = snap ? ty : cam.y + (ty - cam.y) * ease(dt, 2);
+    snap = false;
+    return;
   }
   let tYaw: number;
   if (m === "turn") {
@@ -237,8 +372,9 @@ function updateCamera(dt: number) {
   let depth = Lf - cf;
   if (m === "follow") {
     // Let the party walk away into the scene (or towards us) before following.
+    // (Eased when closer, so coming out of Trail the camera draws back rather than jumps.)
     if (depth > 260) cf = Lf - 260;
-    else if (depth < 55) cf = Lf - 55;
+    else if (depth < 55) cf += (Lf - 55 - cf) * ease(dt, 2);
     else cf += (Lf - 120 - cf) * ease(dt, 90);
     const ahead = routeAt(s + 120),
       across = (ahead.x - L.x) * rx + (ahead.z - L.z) * rz;
@@ -268,7 +404,7 @@ function renderCamera(): Camera {
     fz = Math.cos(yaw),
     rx = Math.cos(yaw),
     rz = -Math.sin(yaw),
-    step = 120 / F,
+    step = (current === "trail" ? TRAIL_BACK : 120) / F,
     cf = cam.x * fx + cam.z * fz,
     cr = Math.round((cam.x * rx + cam.z * rz) / step) * step;
   return { x: fx * cf + rx * cr, z: fz * cf + rz * cr, y: Math.round(cam.y / step) * step, yaw };
@@ -548,6 +684,13 @@ function coverFor(b: number, kind: number): [string, number][] {
   return list;
 }
 const COVER_PATH: [string, number][] = [["stone2", 0.01]];
+/** Where the party walks with no path drawn: what grows there, but nothing that would hide them. */
+const lowLists = new Map<[string, number][], [string, number][]>();
+const lowCover = (list: [string, number][]) => {
+  let low = lowLists.get(list);
+  if (!low) lowLists.set(list, (low = list.filter(([name]) => DEFS[SLOTS.get(name)!].worldH < 0.6)));
+  return low;
+};
 const TILE = 32;
 function coverTile(tx: number, tz: number): Float32Array {
   const out: number[] = [],
@@ -560,7 +703,8 @@ function coverTile(tx: number, tz: number): Float32Array {
     const ri = Math.round((z - FINE.z0) / FINE.cell) * FINE.n + Math.round((x - FINE.x0) / FINE.cell),
       rd = FINE_R[ri] / 20;
     if (FINE_B[ri] === 255) continue;
-    const list = rd < 2.1 ? COVER_PATH : coverFor(FINE_B[ri], FINE_K[ri]);
+    const here = coverFor(FINE_B[ri], FINE_K[ri]),
+      list = rd < 2.1 ? (opt.path ? COVER_PATH : lowCover(here)) : here;
     let r = R() * 0.65;
     for (const [name, d] of list) {
       if ((r -= d) < 0) {
@@ -765,11 +909,21 @@ function layout() {
   const dpr = window.devicePixelRatio || 1;
   view.width = Math.round(w * dpr);
   view.height = Math.round(h * dpr);
+  // The map: as big as the side panel has room for beside everything else in it (at most its width).
   const m = $("map") as HTMLCanvasElement,
-    mr = m.getBoundingClientRect();
+    side = m.parentElement!;
+  if (getComputedStyle(side).flexDirection === "column") {
+    m.style.width = m.style.height = "236px";
+    const others = side.scrollHeight - m.offsetHeight,
+      size = Math.max(110, Math.min(side.clientWidth, side.clientHeight - others));
+    m.style.width = m.style.height = `${size}px`;
+  } else m.style.width = m.style.height = "";
+  const mr = m.getBoundingClientRect();
   m.width = Math.round(mr.width * dpr);
   m.height = Math.round(mr.height * dpr);
 }
+// The panel's numbers opening or closing changes the room left for the map.
+document.querySelector("details.more")?.addEventListener("toggle", layout);
 addEventListener("resize", layout);
 
 // The map: the whole world from above, north up: its biomes, shaded; the fine grid's square.
@@ -849,9 +1003,10 @@ function drawMap(c2: Camera) {
 }
 
 const NOTES: Record<string, string> = {
-  auto: "Picks for each stretch: Turn where the way runs straight, Follow where it winds.",
+  auto: "Follows the party, looking ahead into the land; drops in close behind them (Trail) while trees or a hill would hide them.",
   follow: "Faces the way the route is heading and lets the party walk away into the scene before moving after them.",
   turn: "Swings round as the route turns, so the party walks across the screen while the land turns behind them.",
+  trail: "Close behind the party, looking the way they are going: for woods and hollows where they would be hidden.",
 };
 let hudAt = 0,
   fps = 60,
@@ -901,25 +1056,31 @@ document.querySelectorAll<HTMLButtonElement>("[data-toggle]").forEach(
       const k = b.dataset.toggle as keyof typeof opt;
       opt[k] = !opt[k];
       b.setAttribute("aria-pressed", String(opt[k]));
+      // The path changes what grows on it.
+      if (k === "path") {
+        coverCache.clear();
+        coverKey = "";
+      }
     }),
 );
 $("play").onclick = () => {
   paused = !paused;
   $("play").textContent = paused ? "Play" : "Pause";
 };
-/** Buttons for the places to go (once the world is made). */
+/** The places to go, in the Go to menu (once the world is made). */
+const placesEl = $("places") as HTMLSelectElement;
 function placeButtons() {
-  const el = $("chapters");
-  el.querySelectorAll("button").forEach((b) => b.remove());
-  land().places.forEach((pl, i) => {
-    const b = document.createElement("button");
-    b.textContent = pl.name;
-    b.id = `c-${i}`;
-    b.setAttribute("aria-pressed", String(i === placeIndex));
-    b.onclick = () => goPlace(i);
-    el.appendChild(b);
-  });
+  placesEl.replaceChildren(
+    ...land().places.map((pl, i) => {
+      const o = document.createElement("option");
+      o.value = String(i);
+      o.textContent = pl.name;
+      return o;
+    }),
+  );
+  placesEl.value = String(placeIndex);
 }
+placesEl.onchange = () => goPlace(Number(placesEl.value));
 // Seeking: a slider along the whole route, steps of 10 and 100 m, a single frame on.
 const routeEl = $("route") as HTMLInputElement;
 let dragging = false;
@@ -1064,7 +1225,7 @@ function goPlace(i: number) {
   s = 0;
   walked = 0;
   snap = true;
-  document.querySelectorAll("#chapters button").forEach((b) => b.setAttribute("aria-pressed", String(b.id === `c-${placeIndex}`)));
+  placesEl.value = String(placeIndex);
   $("loading").hidden = false;
   $("loading").textContent = `Going to ${place.name}…`;
   treeParts = [];
@@ -1180,7 +1341,11 @@ async function runCheck(o: { quick?: boolean; timing?: boolean; settle?: number;
   const quick = !!o.quick;
   const btn = $("check") as HTMLButtonElement,
     outEl = $("check-out"),
-    say = (t: string) => (outEl.textContent = t),
+    say = (t: string) => {
+      outEl.hidden = false;
+      outEl.textContent = t;
+      layout();
+    },
     keep = { mode, speed, paused, snap: opt.snap, s };
   btn.disabled = true;
   const gl = renderer.gl,
@@ -1296,6 +1461,7 @@ async function runCheck(o: { quick?: boolean; timing?: boolean; settle?: number;
     on = stab.filter((x) => x.snap).reduce((x, y) => x + y.unexplainedPct, 0) / 2,
     off = stab.filter((x) => !x.snap).reduce((x, y) => x + y.unexplainedPct, 0) / 2;
   outEl.innerHTML = "";
+  outEl.hidden = false;
   const line = (label: string, value: string) => {
     const b = document.createElement("b");
     b.textContent = value;
@@ -1317,6 +1483,7 @@ async function runCheck(o: { quick?: boolean; timing?: boolean; settle?: number;
     saved.textContent = `Not saved (${(err as { code?: string }).code ?? "error"}).`;
   }
   btn.disabled = false;
+  layout();
   return result;
 }
 $("check").onclick = () => void runCheck();
@@ -1369,7 +1536,7 @@ function frame(now: number, forced = -1) {
       { sprites: actorList!, near: 1.5, far: 20000 },
       { sprites: partyList!, near: 1.5, far: 20000, ghost: opt.ghost },
     ],
-    { bands: opt.bands, wall: opt.wall, time: simTime },
+    { bands: opt.bands, wall: opt.wall, path: opt.path, time: simTime },
     partsFrame(rc, [
       { data: treeVis, near: 10, far: 6000 },
       { data: coverVis, near: 3, far: 260 },

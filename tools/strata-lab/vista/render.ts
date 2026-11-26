@@ -39,7 +39,7 @@ precision highp sampler2D;
 precision highp usampler2D;
 uniform vec3 uCam;
 uniform vec2 uFwd, uRight, uRes;
-uniform float uF, uHz, uBands, uTime;
+uniform float uF, uHz, uBands, uTime, uPath;
 uniform vec3 uHaze, uSun;
 const float NEAR = ${NEAR.toFixed(1)}, FAR = ${FAR.toFixed(1)};
 float depthClip(float vz) { return (vz * (FAR + NEAR) - 2.0 * FAR * NEAR) / (FAR - NEAR); }
@@ -168,7 +168,7 @@ void main() {
   int k = kindAt(gi, P.xz + warp);
   if (gi == 0) {
     float rd = texture(uRoad, ((P.xz - uG0.xy) / uG0.z + 0.5) / uG0.w).r * 12.75;
-    if (rd < 1.75 + 0.35 * (vnoise(P.xz / 1.3, 35u) - 0.5) && k != 7 && k != 8) k = 9;
+    if (uPath > 0.5 && rd < 1.75 + 0.35 * (vnoise(P.xz / 1.3, 35u) - 0.5) && k != 7 && k != 8) k = 9;
   }
   float lam = max(0.0, dot(n, uSun));
   float light = 0.2 + 0.85 * lam - (hollow - 0.5) * 0.6;
@@ -211,9 +211,14 @@ void main() {
   } else if (k == 5) { // scree
     ramp = 10;
     pat = 1.2 * (hashf(ti, 16u) - 0.5) * clamp(0.4 / s - 0.5, 0.0, 1.0) + 0.6 * bn(Q, 1.2, s, 17u) + 0.5 * bn(Q, 9.0, s, 18u);
-  } else if (k == 6) { // snow
+  } else if (k == 6) { // snow: wind ripples on it, blue ice showing in the hollows
     ramp = 11;
-    pat = 0.5 * bn(Q, 7.0, s, 19u) + 0.3 * bn(Q, 1.1, s, 20u);
+    float rip = dot(Q, vec2(0.8, 0.6)) / 2.6 + 0.5 * vnoise(Q / 13.0, 50u);
+    pat = 0.5 * bn(Q, 7.0, s, 19u) + 0.3 * bn(Q, 1.1, s, 20u) + (fract(rip) < 0.3 ? -0.55 : 0.0) * clamp(2.6 / s * 0.5 - 0.8, 0.0, 1.0);
+    if (vnoise(Q / 55.0, 49u) + 0.9 * (hollow - 0.5) > 0.7) {
+      ramp = 32;
+      pat = 0.6 * bn(Q, 4.0, s, 51u) + 0.4 * bn(Q, 0.8, s, 52u);
+    }
     light = 0.3 + 0.8 * lam;
   } else if (k == 7 || k == 8) { // water: the sky in it, ripples
     ramp = k == 7 ? 12 : 13;
@@ -564,6 +569,7 @@ const RAMP_COLOURS: [string, number][] = [
   ["#5a5e6c", 1], // 29 slate
   ["#a88e56", 1], // 30 thatch
   ["#9a948a", 1], // 31 bridge stone
+  ["#9cc2d8", 0.9], // 32 blue ice
 ];
 
 // ---- The renderer ------------------------------------------------------------------------------
@@ -990,7 +996,7 @@ export class Renderer {
     return data;
   }
 
-  private common(p: WebGLProgram, cam: Camera, opt: { bands: boolean; time: number }) {
+  private common(p: WebGLProgram, cam: Camera, opt: { bands: boolean; path?: boolean; time: number }) {
     const gl = this.gl;
     gl.useProgram(p);
     gl.uniform3f(this.u(p, "uCam"), cam.x, cam.y, cam.z);
@@ -1000,6 +1006,7 @@ export class Renderer {
     gl.uniform1f(this.u(p, "uF"), F);
     gl.uniform1f(this.u(p, "uHz"), HORIZON);
     gl.uniform1f(this.u(p, "uBands"), opt.bands ? 1 : 0);
+    gl.uniform1f(this.u(p, "uPath"), opt.path ? 1 : 0);
     gl.uniform1f(this.u(p, "uTime"), opt.time);
     gl.uniform3f(this.u(p, "uHaze"), 0.79, 0.85, 0.9);
     const sun = [-0.45, 0.72, -0.53],
@@ -1021,7 +1028,7 @@ export class Renderer {
     return unit;
   }
 
-  draw(cam: Camera, lists: { sprites: Sprites; near: number; far: number; ghost?: boolean }[], opt: { bands: boolean; wall: boolean; time: number }, parts?: PartsFrame) {
+  draw(cam: Camera, lists: { sprites: Sprites; near: number; far: number; ghost?: boolean }[], opt: { bands: boolean; wall: boolean; path?: boolean; time: number }, parts?: PartsFrame) {
     const gl = this.gl,
       t = this.timer;
     if (t.ext && !t.q) {

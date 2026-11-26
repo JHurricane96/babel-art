@@ -45,7 +45,8 @@ test("vista land from a generated world: heights, water, kinds and biomes, no tr
     assert.ok(band.kind[i * 2 + 1] < BIOMES.length || band.kind[i * 2 + 1] === 255, "a biome");
   }
   const t = band.trees;
-  for (let i = 0; i < t.length; i += 6) assert.ok(Math.abs(t[i + 2] - mid) > 4, `a tree stands on the road at ${t[i].toFixed(0)}, ${t[i + 2].toFixed(0)}`);
+  for (let i = 0; i < t.length; i += 6)
+    if (t[i] > route[0][0] && t[i] < route[1][0]) assert.ok(Math.abs(t[i + 2] - mid) > 4, `a tree stands on the road at ${t[i].toFixed(0)}, ${t[i + 2].toFixed(0)}`);
   // The far grid covers the whole world.
   assert.equal(FAR.x0, 0);
   assert.ok(Math.abs(FAR.cell * FAR.n - L.n * L.cell) < 1);

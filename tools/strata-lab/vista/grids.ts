@@ -44,7 +44,8 @@ export function buildBand(gi: number, r0: number, r1: number, g: GridSpec, route
       DR[i] = G.river - G.rw;
     }
   }
-  // The day's route, on the fine grid: its distance (for the road's edges) and no trees on it.
+  // The day's route, on the fine grid: its distance (for the path's edges, drawn when asked) and no
+  // trees on it.
   const out = r1 - r0,
     road = new Uint8Array(out * n).fill(255),
     onRoad = new Uint8Array(out * n);
@@ -105,7 +106,6 @@ export function buildBand(gi: number, r0: number, r1: number, g: GridSpec, route
       let k: number = KIND.GRASS,
         forest = 0;
       if (water) k = water === 2 ? KIND.LAKE : KIND.RIVER;
-      else if (onRoad[o]) k = KIND.PATH;
       else if (DR[i] < 4 && cell <= 16) k = KIND.SHORE;
       else [k, forest] = groundKind(x, z, gh, slope, b);
       h[o] = surf[i];
