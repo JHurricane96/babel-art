@@ -1313,6 +1313,48 @@ function placeButtons() {
     }),
   );
 }
+/** River crossings: where the walk fords a river (in its channel; never a lake or the sea). */
+const inRiver = (v: number) => {
+  const p = routeAt(v),
+    h = ground(p.x, p.z);
+  return G.level > h && !G.lake && !G.sea;
+};
+/** Where the walk next (dir 1) or last (dir -1) enters a river, seen from `from`: looking 4 m at a
+ * time, on to the journey's end (walking the route out 40 km at a time as it goes) or back to the
+ * start. Null if there is none. */
+function crossing(from: number, dir: 1 | -1) {
+  const step = 4;
+  let v = from,
+    inside = true;
+  for (;;) {
+    if (dir > 0) ensureRoute(v + 40000);
+    const stop = dir > 0 ? Math.min(TOTAL - 1, v + 40000) : 0,
+      more = (x: number) => (dir > 0 ? x < stop : x > stop);
+    // First off the crossing the search starts on, then on to the next one.
+    if (inside) while (more(v) && inRiver(v)) v += dir * step;
+    if (more(v)) inside = false;
+    while (more(v) && !inRiver(v)) v += dir * step;
+    if (more(v)) break;
+    if (dir < 0 || (journeyDone() && v >= TOTAL - 2)) return null;
+  }
+  // (Going back, on to where that crossing begins.)
+  if (dir < 0) while (v > 0 && inRiver(v - step)) v -= step;
+  return v;
+}
+function goCrossing(dir: 1 | -1) {
+  if (!journey) return;
+  const v = crossing(dir > 0 ? s + 100 : s + 40, dir);
+  if (v === null) {
+    routeNote = dir > 0 ? "No river crossing ahead" : "No river crossing behind";
+    routeNoteUntil = performance.now() + 4000;
+    showRoute();
+    return;
+  }
+  // A little before it, so the party walks into it.
+  seekTo(Math.max(0, v - 60));
+}
+$("cross-prev").onclick = () => goCrossing(-1);
+$("cross-next").onclick = () => goCrossing(1);
 /** Go to where the journey passes a stop. */
 function goStop(i: number) {
   if (!journey) return;
@@ -1334,8 +1376,15 @@ const seekTo = (v: number) => {
   } else travel(v);
   showRoute();
 };
+/** A note shown in place of the route readout for a few seconds. */
+let routeNote = "",
+  routeNoteUntil = 0;
 function showRoute() {
   if (!dragging) routeEl.value = String(Math.round(s));
+  if (performance.now() < routeNoteUntil) {
+    $("route-at").textContent = routeNote;
+    return;
+  }
   const ns = nextStop();
   $("route-at").textContent = `${(s / 1000).toFixed(2)} of ${(journeyLength() / 1000).toFixed(0)} km · next: ${ns.name}${ns.ahead > 0 ? ` in ${(ns.ahead / 1000).toFixed(1)} km` : ""}`;
 }
@@ -1767,6 +1816,10 @@ Object.assign(window, {
     get building() {
       return building.some(Boolean);
     },
+    /** Seek to the next (1) or previous (-1) river crossing. */
+    crossing: (dir: 1 | -1) => goCrossing(dir),
+    crossingAt: (from: number, dir: 1 | -1) => crossing(from, dir),
+    inRiver: (v: number) => inRiver(v),
     /** Where the walk is v metres along. */
     routeAt: (v: number) => routeAt(v),
     setS(v: number) {
