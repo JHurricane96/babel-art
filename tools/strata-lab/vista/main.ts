@@ -2,8 +2,8 @@
 // walks the party along the route at a place, directs the camera, and draws.
 import { ART_H, ART_W, F, FOV, HORIZON, Renderer, type Camera, type PartsFrame, type Sprites, type SpriteData } from "./render";
 import { BIOMES as BIOME_DEFS, ZONE } from "../../../engine/strata/biomes";
-import { BIOMES as BIOME_MAP, ROCKS, type World2D } from "../../../engine/strata/world2d";
-import { G, biomeAt, ground, groundKind, land, landFromWorld, rockAt, setLand, worldSize } from "./land";
+import { BIOMES as BIOME_MAP, ROCKS } from "../../../engine/strata/world2d";
+import { G, type LandData, biomeAt, ground, groundKind, land, rockAt, setLand, worldSize } from "./land";
 import { type Journey, append, planJourney, refine } from "./journey";
 import { FINE, type GridSpec, GRIDS, KIND, ROUTE, along, cumulative, mulberry } from "./common";
 import { M } from "../../../engine/strata/world";
@@ -1558,6 +1558,7 @@ for (let k = 0; k < nW; k++) {
 }
 const spritePacks: SlotPack[] = [];
 let spritesLeft = 0,
+  spritesSet = false,
   ready = false,
   treesList: Sprites | null = null,
   coverList: Sprites | null = null,
@@ -1566,7 +1567,10 @@ const t0 = performance.now();
 let buildMs = 0,
   started = false;
 
-// Sprites: trees and shrubs one slot a job (the heavy ones), the rest a dozen at a time.
+// Today's world first, so a worker starts on it at once (it sends back the world's land: far less
+// than the world). The sprites take the other workers: trees and shrubs one slot a job (the heavy
+// ones), the rest a dozen at a time.
+run({ type: "world", seed: SEED, n: 512 }, (d) => onLand(d.land));
 const nSlots = DEFS.length;
 for (let a = 0; a < nSlots; ) {
   const heavy = DEFS[a].maxClass >= 25 || DEFS[a].name.startsWith("shrub");
@@ -1575,17 +1579,18 @@ for (let a = 0; a < nSlots; ) {
   spritesLeft++;
   run({ type: "sprites", from: a, to }, (d) => {
     spritePacks.push(...d.slots);
-    spritesLeft--;
-    maybeStart();
+    if (--spritesLeft === 0) spritesDone();
   });
   a = to;
 }
-// Today's world, first in the queue.
-queue.unshift({
-  msg: { type: "world", seed: SEED, n: 512 },
-  done: (d) => onWorld(d.world),
-});
-pump();
+/** The sprites are all here: on to the GPU now (while the land is still being made), and the clouds. */
+function spritesDone() {
+  renderer.setSprites(buildSprites(spritePacks));
+  const cl = buildClouds();
+  renderer.setClouds(cl.W, cl.H, cl.data);
+  spritesSet = true;
+  maybeStart();
+}
 
 /** Each biome's grass, leaves and sand, for the ground's palette. */
 function biomeRamps() {
@@ -1596,11 +1601,14 @@ function biomeRamps() {
   }
   return out;
 }
-function onWorld(w: World2D) {
-  const L = landFromWorld(w);
+function onLand(L: LandData) {
   setLand(L);
   for (const wk of workers) wk.postMessage({ type: "land", data: L });
   renderer.setBiomeRamps(biomeRamps());
+  $("loading").textContent = "Building the land…";
+  // The far grid (the whole world) needs only the land: the workers start on it while the journey
+  // is planned here.
+  buildGrid(2, placement(2, 0, 0), true);
   journey = planJourney(L);
   coarseTotal = journey.coarseAt[journey.coarseAt.length - 1];
   ensureRoute(6000);
@@ -1609,18 +1617,13 @@ function onWorld(w: World2D) {
   s = 0;
   snap = true;
   const a = routeAt(300);
-  $("loading").textContent = "Building the land…";
-  buildGrid(2, placement(2, 0, 0), true);
   buildGrid(1, placement(1, a.x, a.z), true);
   buildGrid(0, placement(0, a.x, a.z), true);
 }
 function maybeStart() {
-  if (started || spritesLeft > 0 || !landReady) return;
+  if (started || !spritesSet || !landReady) return;
   started = true;
   buildMs = performance.now() - t0;
-  renderer.setSprites(buildSprites(spritePacks));
-  const cl = buildClouds();
-  renderer.setClouds(cl.W, cl.H, cl.data);
   treesList = renderer.sprites(new Float32Array(0));
   coverList = renderer.sprites(new Float32Array(0));
   partyList = renderer.sprites(new Float32Array(0));

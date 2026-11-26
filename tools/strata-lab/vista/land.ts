@@ -40,6 +40,9 @@ export interface LandData {
   /** River segments, 7 floats each: ax, az, bx, bz, level at a, level at b, half-width. */
   rivers: Float32Array;
   places: Place[];
+  /** What setLand works out from the rest (kept with the land once worked out, so the threads it
+   * is sent to need not work it out again). */
+  derived?: { terr: Float32Array; mesa: Float32Array; bucketN: number; bucketStart: Int32Array; bucketList: Int32Array };
 }
 
 const smoothChain = (pts: number[][]) => {
@@ -188,15 +191,19 @@ export function landFromWorld(w: World2D): LandData {
 // ---- Asking about a point -----------------------------------------------------------------------
 let L: LandData | null = null;
 /** Per world cell, smoothed: how much the land breaks into benches and cliffs, and into mesas. */
-let TERR = new Float32Array(0),
-  MESA = new Float32Array(0);
+let TERR: Float32Array = new Float32Array(0),
+  MESA: Float32Array = new Float32Array(0);
 const BUCKET = 400;
 let bucketN = 0,
-  bucketStart = new Int32Array(0),
-  bucketList = new Int32Array(0);
+  bucketStart: Int32Array = new Int32Array(0),
+  bucketList: Int32Array = new Int32Array(0);
 /** Use this land (in each thread that asks). */
 export function setLand(d: LandData) {
   L = d;
+  if (d.derived) {
+    ({ terr: TERR, mesa: MESA, bucketN, bucketStart, bucketList } = d.derived);
+    return;
+  }
   const n = d.n,
     blur = (A: Float32Array) => {
       for (let pass = 0; pass < 2; pass++)
@@ -237,6 +244,7 @@ export function setLand(d: LandData) {
   bucketStart = new Int32Array(lists.length + 1);
   for (let b = 0; b < lists.length; b++) bucketStart[b + 1] = bucketStart[b] + lists[b].length;
   bucketList = Int32Array.from(lists.flat());
+  d.derived = { terr: TERR, mesa: MESA, bucketN, bucketStart, bucketList };
 }
 export const land = () => L!;
 export const worldSize = () => (L ? L.n * L.cell : 0);
@@ -246,22 +254,39 @@ export const G = { level: -1e9, river: 1e9, rw: 0, lake: false, sea: false, roug
 
 const cr = (p0: number, p1: number, p2: number, p3: number, t: number) =>
   p1 + 0.5 * t * (p2 - p0 + t * (2 * p0 - 5 * p1 + 4 * p2 - p3 + t * (3 * (p1 - p2) + p3 - p0)));
+/** A cell index clamped into 0..n-1. */
+const clampI = (i: number, n: number) => Math.min(n - 1, Math.max(0, i));
 function cubic(A: Float32Array, n: number, u: number, v: number) {
   const iu = Math.floor(u),
     iv = Math.floor(v),
     fu = u - iu,
     fv = v - iv,
-    at = (x: number, y: number) => A[Math.min(n - 1, Math.max(0, y)) * n + Math.min(n - 1, Math.max(0, x))],
-    row = (y: number) => cr(at(iu - 1, y), at(iu, y), at(iu + 1, y), at(iu + 2, y), fu);
-  return cr(row(iv - 1), row(iv), row(iv + 1), row(iv + 2), fv);
+    x0 = clampI(iu - 1, n),
+    x1 = clampI(iu, n),
+    x2 = clampI(iu + 1, n),
+    x3 = clampI(iu + 2, n),
+    y0 = clampI(iv - 1, n) * n,
+    y1 = clampI(iv, n) * n,
+    y2 = clampI(iv + 1, n) * n,
+    y3 = clampI(iv + 2, n) * n;
+  return cr(
+    cr(A[y0 + x0], A[y0 + x1], A[y0 + x2], A[y0 + x3], fu),
+    cr(A[y1 + x0], A[y1 + x1], A[y1 + x2], A[y1 + x3], fu),
+    cr(A[y2 + x0], A[y2 + x1], A[y2 + x2], A[y2 + x3], fu),
+    cr(A[y3 + x0], A[y3 + x1], A[y3 + x2], A[y3 + x3], fu),
+    fv,
+  );
 }
 function lin(A: Float32Array, n: number, u: number, v: number) {
   const iu = Math.floor(u),
     iv = Math.floor(v),
     fu = u - iu,
     fv = v - iv,
-    at = (x: number, y: number) => A[Math.min(n - 1, Math.max(0, y)) * n + Math.min(n - 1, Math.max(0, x))];
-  return (at(iu, iv) * (1 - fu) + at(iu + 1, iv) * fu) * (1 - fv) + (at(iu, iv + 1) * (1 - fu) + at(iu + 1, iv + 1) * fu) * fv;
+    x0 = clampI(iu, n),
+    x1 = clampI(iu + 1, n),
+    y0 = clampI(iv, n) * n,
+    y1 = clampI(iv + 1, n) * n;
+  return (A[y0 + x0] * (1 - fu) + A[y0 + x1] * fu) * (1 - fv) + (A[y1 + x0] * (1 - fu) + A[y1 + x1] * fu) * fv;
 }
 
 /** The ground's height at (x, z); the water there (G.level) and the nearest river (G.river, G.rw). */
@@ -278,8 +303,9 @@ export function ground(x: number, z: number) {
   let lake = -1e9,
     sea = false,
     near = 0;
-  for (const [a, b] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
-    const c = Math.min(n - 1, Math.max(0, iv + b)) * n + Math.min(n - 1, Math.max(0, iu + a)),
+  for (let k = 0; k < 4; k++) {
+    // (The corners (0, 0), (1, 0), (0, 1), (1, 1).)
+    const c = clampI(iv + (k >> 1), n) * n + clampI(iu + (k & 1), n),
       wl = d.wet[c];
     if (wl > -1e8) {
       near++;
@@ -393,28 +419,41 @@ export function rockAt(x: number, z: number, jitter = 0) {
 
 /** How wooded a biome is (trees per 2 m cell in its woods), and the woods' kind. */
 export function woodsOf(b: number) {
-  const L0 = BIOME_DEFS[b],
-    dense = L0.pines + L0.broad + L0.giants;
-  return { dense, conifer: L0.pines > L0.broad + L0.giants };
+  return WOODS[b];
 }
+const WOODS: readonly { readonly dense: number; readonly conifer: boolean }[] = BIOME_DEFS.map((L0) => ({
+  dense: L0.pines + L0.broad + L0.giants,
+  conifer: L0.pines > L0.broad + L0.giants,
+}));
 /** What kind of ground a point is, and how dense its woods (0..1). */
 export function groundKind(x: number, z: number, h: number, slope: number, b: number): [number, number] {
+  const k = kindOf(x, z, h, slope, b);
+  return [k, GK.forest];
+}
+/** What the last kindOf() call learnt besides the kind: how dense the woods are (0..1). */
+export const GK = { forest: 0 };
+/** What kind of ground a point is (and in GK, how dense its woods): groundKind without the array. */
+export function kindOf(x: number, z: number, h: number, slope: number, b: number): number {
   const look = BIOME_DEFS[b],
     zone = look.zone,
     nz5 = vnoise(x / 180, z / 180, 5);
-  if (look.ground === "snow") return [slope > 0.6 ? KIND.ROCK : slope > 0.35 && nz5 > 0.55 ? KIND.SCREE : KIND.SNOW, 0];
-  if (slope > 0.95) return [KIND.ROCK, 0];
-  if (look.ground === "rock") return [slope > 0.5 ? KIND.ROCK : KIND.SCREE, 0];
-  if (look.ground === "gravel" || look.ground === "ash") return [KIND.SCREE, 0];
-  if (slope > 0.7) return [KIND.SCREE, 0];
+  GK.forest = 0;
+  if (look.ground === "snow") return slope > 0.6 ? KIND.ROCK : slope > 0.35 && nz5 > 0.55 ? KIND.SCREE : KIND.SNOW;
+  if (slope > 0.95) return KIND.ROCK;
+  if (look.ground === "rock") return slope > 0.5 ? KIND.ROCK : KIND.SCREE;
+  if (look.ground === "gravel" || look.ground === "ash") return KIND.SCREE;
+  if (slope > 0.7) return KIND.SCREE;
   const { dense, conifer } = woodsOf(b);
   if (dense > 0.004) {
     const fm = fbm(x / 380, z / 380, 21, 4),
       thr = Math.min(0.7, 0.66 - 3.2 * dense);
-    if (fm > thr) return [conifer ? KIND.CONIFER : KIND.FOREST, smooth(thr, thr + 0.1, fm)];
+    if (fm > thr) {
+      GK.forest = smooth(thr, thr + 0.1, fm);
+      return conifer ? KIND.CONIFER : KIND.FOREST;
+    }
   }
-  if (look.ground === "sand") return [KIND.SAND, 0];
-  return [zone === ZONE.ALPINE || zone === ZONE.TUNDRA || (zone === ZONE.ICE && nz5 > 0.3) ? KIND.ALPINE : KIND.GRASS, 0];
+  if (look.ground === "sand") return KIND.SAND;
+  return zone === ZONE.ALPINE || zone === ZONE.TUNDRA || (zone === ZONE.ICE && nz5 > 0.3) ? KIND.ALPINE : KIND.GRASS;
 }
 
 // Trees: the strip's species, drawn as Vista's seven kinds.

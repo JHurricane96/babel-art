@@ -3,8 +3,8 @@
 // where there is water), its normal and hollowness (for shading), the woods' density, what the
 // ground is (KIND) and its biome. The fine grid also says where its trees stand and how far the
 // nearest road is.
-import { G, biomeAt, ground, groundKind, pickTree, woodsOf } from "./land";
-import { type GridSpec, KIND, TREE_KINDS, hash2, nearest } from "./common";
+import { G, GK, biomeAt, ground, kindOf, pickTree, woodsOf } from "./land";
+import { type GridSpec, KIND, TREE_KINDS, hash2, hypot2, hypot3, nearest } from "./common";
 
 export interface Band {
   gi: number;
@@ -87,20 +87,18 @@ export function buildBand(gi: number, r0: number, r1: number, g: GridSpec, route
         zu = li < rows - 1 ? i + n : i,
         hx = (groundH[xr] - groundH[xl]) / ((xr - xl) * cell || 1),
         hz = (groundH[zu] - groundH[zd]) / (((zu - zd) / n) * cell || 1),
-        slope = Math.hypot(hx, hz),
+        slope = hypot2(hx, hz),
         water = wk[i];
       // Hollowness: how far the ground lies below its neighbours a few metres off.
       let avg = 0,
         cnt = 0;
-      for (const [dc, dr] of [[R, 0], [-R, 0], [0, R], [0, -R]]) {
-        const cc = c + dc,
-          rr = li + dr;
-        if (cc < 0 || cc >= n || rr < 0 || rr >= rows) continue;
-        avg += groundH[rr * n + cc];
-        cnt++;
-      }
+      // (R cells east, west, north and south, in that order.)
+      if (c + R < n) (avg += groundH[i + R]), cnt++;
+      if (c - R >= 0) (avg += groundH[i - R]), cnt++;
+      if (li + R < rows) (avg += groundH[i + R * n]), cnt++;
+      if (li - R >= 0) (avg += groundH[i - R * n]), cnt++;
       const hollow = cnt ? Math.max(0, Math.min(1, 0.5 + (avg / cnt - gh) / (cell * R * 0.6))) : 0.5;
-      const nl = Math.hypot(hx, 1, hz),
+      const nl = hypot3(hx, 1, hz),
         nx = water ? 0 : -hx / nl,
         nz = water ? 0 : -hz / nl;
       // What the ground is.
@@ -109,7 +107,7 @@ export function buildBand(gi: number, r0: number, r1: number, g: GridSpec, route
         forest = 0;
       if (water) k = water === 2 ? KIND.LAKE : KIND.RIVER;
       else if (DR[i] < 4 && cell <= 16) k = KIND.SHORE;
-      else [k, forest] = groundKind(x, z, gh, slope, b);
+      else (k = kindOf(x, z, gh, slope, b)), (forest = GK.forest);
       h[o] = surf[i];
       nrm[o * 4] = Math.round((nx * 0.5 + 0.5) * 255);
       nrm[o * 4 + 1] = Math.round((nz * 0.5 + 0.5) * 255);

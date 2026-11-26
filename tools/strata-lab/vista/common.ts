@@ -60,6 +60,36 @@ export function fbm(x: number, z: number, s: number, oct: number) {
   }
   return t / n;
 }
+/**
+ * Math.hypot as V8 computes it (each value scaled by the largest, squared and summed with Kahan's
+ * compensation, the root taken and scaled back): the same bits, but inlined, so several times
+ * faster (V8 does not inline Math.hypot). For finite values; others go to Math.hypot.
+ */
+export function hypot2(a: number, b: number) {
+  a = Math.abs(a);
+  b = Math.abs(b);
+  const m = a > b ? a : b;
+  if (!(m > 0 && m < Infinity) || b !== b) return Math.hypot(a, b);
+  const x = a / m,
+    y = b / m;
+  return Math.sqrt(x * x + y * y) * m;
+}
+export function hypot3(a: number, b: number, c: number) {
+  a = Math.abs(a);
+  b = Math.abs(b);
+  c = Math.abs(c);
+  let m = a > b ? a : b;
+  if (c > m) m = c;
+  if (!(m > 0 && m < Infinity) || a !== a || b !== b || c !== c) return Math.hypot(a, b, c);
+  const x = a / m,
+    y = b / m,
+    z = c / m,
+    s1 = x * x,
+    q = y * y,
+    s2 = s1 + q,
+    comp = s2 - s1 - q;
+  return Math.sqrt(s2 + (z * z - comp)) * m;
+}
 export const smooth = (a: number, b: number, x: number) => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
