@@ -255,16 +255,38 @@ void main() {
 const SPRITE_COLOUR = /* glsl */ `
 uniform highp usampler2D uIdx, uMat;
 uniform sampler2D uRgb, uSPal;
-uniform int uAutumn0;
+uniform int uAutumn0, uWeather0;
 uniform float uGhost;
 ivec2 wrap(int i) { return ivec2(i & 4095, i >> 12); }
-vec4 spriteColour(int atlas, ivec2 src, int slot, uint seed) {
+// info: the instance's own colour (a row added to its material's first, for materials that take
+// one: a rock's bedrock, a plant's biome), and its weathering (1 moss, 2 lichen, 3 snow; and how
+// much, 0..3, in the bits above), laid where the drawing is open to the sky (green: 0..255).
+vec4 spriteColour(int atlas, ivec2 src, int slot, uint seed, ivec2 info) {
   if (atlas == 1) return texelFetch(uRgb, src, 0);
   uvec2 v = texelFetch(uIdx, src, 0).rg;
   if (v.r == 0u) return vec4(0.0);
   uint m = v.r >> 3, t = v.r & 7u;
   uint re = texelFetch(uMat, ivec2(int(m), slot), 0).r;
-  int ramp = int(re & 0x3fffu);
+  int ramp = int(re & 0x1fffu);
+  if ((re & 0x2000u) != 0u) {
+    ramp += info.x;
+    int wk = info.y & 3;
+    if (wk > 0 && v.g > 0u) {
+      // Patterns on the drawing's own pixels (so they stay put as it grows), different on each rock:
+      // lichen in blotches wherever the stone faces at all upward; moss and snow on what is most
+      // open, their edges ragged.
+      float o = float(v.g) / 255.0, amt = float(info.y >> 2);
+      vec2 q = vec2(src);
+      uint sl = (seed & 0xffffu) + 101u;
+      bool on;
+      if (wk == 2) on = o > 0.25 && vnoise(q / 3.5, sl) * 0.6 + vnoise(q / 11.0, sl + 1u) * 0.4 > 0.7 - 0.05 * amt;
+      else {
+        float nz = vnoise(q / 7.0, sl) * 0.65 + vnoise(q / 2.2, sl + 2u) * 0.35 - 0.5;
+        on = wk == 1 ? o + nz * 0.55 > 0.88 - 0.07 * amt : o + nz * 0.3 > 0.8 - 0.12 * amt;
+      }
+      if (on) ramp = uWeather0 + wk - 1;
+    }
+  }
   if ((re & 0x8000u) != 0u) {
     ramp += int(seed & 15u);
     // About one broadleaf in ten turning: some of its cells, all in one shade.
@@ -290,11 +312,13 @@ flat out ivec2 vA;
 flat out float vVis, vDepth;
 flat out int vFlip, vSlot;
 flat out uint vSeed;
+flat out ivec2 vInfo;
 uint treeSeed(vec3 p) { return hashu(uvec2(ivec2(floor(p.xz * 4.0)) + ivec2(1 << 20))); }
 void main() {
   float vz;
   project(iPos.xyz, vz);
   int flags = int(iInfo.y + 0.5);
+  vInfo = ivec2((flags >> 3) & 127, (flags >> 10) & 15);
   bool top = (flags & 4) == 4;
   vec3 v = iPos.xyz - uCam;
   float want = iPos.w * uF / max(vz, 0.01);
@@ -335,6 +359,7 @@ flat in ivec2 vA;
 flat in float vVis, vDepth;
 flat in int vFlip, vSlot;
 flat in uint vSeed;
+flat in ivec2 vInfo;
 uniform highp usampler2D uTab;
 out vec4 oColor;
 void main() {
@@ -344,7 +369,7 @@ void main() {
   if (l.x < 0 || l.y < 0 || l.x >= vRect.z || l.y >= vRect.w) discard;
   ivec2 s = l;
   if (vMap.x == 2) s = ivec2(int(texelFetch(uTab, wrap(vMap.w + l.x), 0).r), int(texelFetch(uTab, wrap(vMap.z + l.y), 0).r));
-  vec4 c = spriteColour(vMap.y, vRect.xy + s, vSlot, vSeed);
+  vec4 c = spriteColour(vMap.y, vRect.xy + s, vSlot, vSeed, vInfo);
   if (c.a < 0.5) discard;
   // The party seen through what stands in front of them: a pale silhouette.
   if (uGhost > 0.5) { oColor = vec4(0.99, 0.94, 0.78, 0.55); return; }
@@ -365,6 +390,7 @@ flat out ivec2 vOrg, vTab;
 flat out float vVis, vDepth;
 flat out int vFlip;
 flat out uint vSeed;
+flat out ivec2 vInfo;
 ivec2 wrap(int i) { return ivec2(i & 4095, i >> 12); }
 uint treeSeed(vec3 p) { return hashu(uvec2(ivec2(floor(p.xz * 4.0)) + ivec2(1 << 20))); }
 void main() {
@@ -386,6 +412,7 @@ void main() {
   int cx = int(m0.z & 0xffffu) - 32768, cy = int(m0.z >> 16) - 32768;
   int x = int(floor(float((2 * cx + 1) * H) / float(2 * uK))) - ci, y = int(floor(float((2 * cy + 1) * H) / float(2 * uK))) - ri;
   int flags = int(tq.y + 0.5);
+  vInfo = ivec2((flags >> 3) & 127, (flags >> 10) & 15);
   bool flip = (flags & 1) == 1;
   if ((flags & 2) == 2 && uSunFlip > 0.5) flip = !flip;
   vec2 sc = vec2(uRes.x * 0.5 + uF * dot(v.xz, uRight) / vz, uHz - uF * v.y / vz);
@@ -408,6 +435,7 @@ flat in ivec2 vOrg, vTab;
 flat in float vVis, vDepth;
 flat in int vFlip;
 flat in uint vSeed;
+flat in ivec2 vInfo;
 uniform highp usampler2D uPTab;
 uniform int uSlot;
 out vec4 oColor;
@@ -417,7 +445,7 @@ void main() {
   ivec2 l = ivec2(vFlip == 1 ? -vOrg.x - 1 - p.x : p.x - vOrg.x, p.y - vOrg.y);
   if (l.x < 0 || l.y < 0 || l.x >= vRect.z || l.y >= vRect.w) discard;
   ivec2 s = ivec2(int(texelFetch(uPTab, wrap(vTab.y + l.x), 0).r), int(texelFetch(uPTab, wrap(vTab.x + l.y), 0).r));
-  vec4 c = spriteColour(0, vRect.xy + s, uSlot, vSeed);
+  vec4 c = spriteColour(0, vRect.xy + s, uSlot, vSeed, vInfo);
   if (c.a < 0.5) discard;
   oColor = vec4(mix(c.rgb, uHaze, hazeT(vDepth)), 1.0);
 }`;
@@ -500,6 +528,8 @@ export interface SpriteData {
   meta: { w: number; h: number; data: Uint32Array };
   per: { w: number; h: number; data: Uint32Array };
   autumn0: number;
+  /** The first of the weathering ramps: moss, lichen, snow. */
+  weather0: number;
 }
 /** Trees drawn in parts this frame: one draw per slot. */
 export interface PartsFrame {
@@ -534,6 +564,7 @@ export class Renderer {
   clouds: WebGLTexture | null = null;
   spr: Record<string, WebGLTexture> | null = null;
   autumn0 = 0;
+  weather0 = 0;
   treesTex: WebGLTexture | null = null;
   treesCap = 0;
   timer: { ext: any; q: WebGLQuery | null; ms: number } = { ext: null, q: null, ms: 0 };
@@ -729,6 +760,7 @@ export class Renderer {
       per: t(gl.RGBA32UI, gl.RGBA_INTEGER, gl.UNSIGNED_INT, d.per),
     };
     this.autumn0 = d.autumn0;
+    this.weather0 = d.weather0;
   }
   private bindSpriteTextures(p: WebGLProgram, names: [string, string][]) {
     const gl = this.gl;
@@ -738,6 +770,7 @@ export class Renderer {
       gl.uniform1i(this.u(p, u), i);
     });
     gl.uniform1i(this.u(p, "uAutumn0"), this.autumn0);
+    gl.uniform1i(this.u(p, "uWeather0"), this.weather0);
   }
   /** Each biome's grass, leaves and sand (three ramps a biome, after the ground's own). */
   setBiomeRamps(ramps: number[][][]) {
@@ -753,7 +786,8 @@ export class Renderer {
     this.clouds = this.tex2d(this.gl.RGBA8, w, h, this.gl.RGBA, this.gl.UNSIGNED_BYTE, data, this.gl.NEAREST);
   }
 
-  /** A sprite list: x, y, z, height in metres, slot, flags (1 mirror, 2 flips with the sun, 4 drawn over everything). */
+  /** A sprite list: x, y, z, height in metres, slot, flags (1 mirror, 2 flips with the sun, 4 drawn
+   * over everything; bits 3-9 its own colour, bits 10-13 its weathering: see spriteColour). */
   sprites(data: Float32Array, old?: Sprites): Sprites {
     const gl = this.gl,
       p = this.progs.sprite;

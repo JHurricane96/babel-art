@@ -258,7 +258,7 @@ export const BIOMES: BiomeDef[] = [
   // Oceanic temperate
   b(Z.OCEANIC, "Oak and beech woods", { leaf: "#4f7a2e", broad: 0.05, giants: 0.006, shrubs: 0.05, logs: 0.004, flowers: 0.01, ivy: 0.6 , tufts: 0.15, tall: 2 , trees: "oak 3, beech 3, birch 0.5", bushes: "bush 2, fern 2" }),
   b(Z.OCEANIC, "Temperate rainforest", { ground: "moss", grass: "#3a6a2a", leaf: "#2a4a2a", giants: 0.02, pines: 0.03, shrubs: 0.1, logs: 0.008, ivy: 1 , tufts: 0.3, tall: 3 , trees: "redwood 2, fir 2, maple 1, tree fern 1", bushes: "fern 3, bush 1" }),
-  b(Z.OCEANIC, "Heath and moor", { grass: "#6a5a3a", leaf: "#7a4a6a", shrubs: 0.12, boulders: 0.004, flowers: 0.01, bloom: "#c87ab0", soil: 5 , tufts: 0.75, tall: 3 , trees: "juniper 1, birch 0.5", bushes: "heather 4, bush 1" , broad: 0.002}),
+  b(Z.OCEANIC, "Heath and moor", { grass: "#6a5a3a", leaf: "#55603a", shrubs: 0.12, boulders: 0.004, flowers: 0.01, bloom: "#c87ab0", soil: 5 , tufts: 0.75, tall: 3 , trees: "juniper 1, birch 0.5", bushes: "heather 4, bush 1" , broad: 0.002}),
   b(Z.OCEANIC, "Bracken and bluebell glades", { grass: "#8a7a3a", leaf: "#4f7a2e", broad: 0.015, shrubs: 0.07, flowers: 0.05, bloom: "#7a86d8", logs: 0.002 , tufts: 0.9, tall: 6 , trees: "oak 1, birch 2", bushes: "fern 3, bush 1" }),
   b(Z.OCEANIC, "Fen and reedbed", { grass: "#5a7a3a", leaf: "#3f6a34", reeds: 1, shrubs: 0.02, broad: 0.01 , tufts: 0.85, tall: 6 , trees: "willow 2, alder 1" }),
   b(Z.OCEANIC, "River meadow", { grass: "#7a9a40", leaf: "#5a8a3a", flowers: 0.07, broad: 0.01, reeds: 0.4 , tufts: 0.9, tall: 6 , trees: "willow 3, poplar 1" }),

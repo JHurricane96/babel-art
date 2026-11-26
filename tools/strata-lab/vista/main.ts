@@ -2,14 +2,15 @@
 // walks the party along the route at a place, directs the camera, and draws.
 import { ART_H, ART_W, F, FOV, HORIZON, Renderer, type Camera, type PartsFrame, type Sprites, type SpriteData } from "./render";
 import { BIOMES as BIOME_DEFS, ZONE } from "../../../engine/strata/biomes";
-import { BIOMES as BIOME_MAP, type World2D } from "../../../engine/strata/world2d";
-import { G, biomeAt, ground, groundKind, land, landFromWorld, setLand, worldSize } from "./land";
+import { BIOMES as BIOME_MAP, ROCKS, type World2D } from "../../../engine/strata/world2d";
+import { G, biomeAt, ground, groundKind, land, landFromWorld, rockAt, setLand, worldSize } from "./land";
 import { type Journey, append, planJourney, refine } from "./journey";
 import { FINE, type GridSpec, GRIDS, KIND, ROUTE, along, cumulative, mulberry } from "./common";
 import { M } from "../../../engine/strata/world";
 import { hex, rampOf, shiftColor } from "./color";
 import { HMAX, type Plan, type SlotPack } from "./pack";
-import { COVER, LEAF_HEX, TREE_NAMES, slotDefs, slotIndex } from "./sprites";
+import { LEAF_HEX, TREE_NAMES, familyOf, slotDefs, slotIndex } from "./sprites";
+import { ROCK_KINDS } from "./rocks";
 
 declare const WORKER_SOURCE: string;
 const $ = (id: string) => document.getElementById(id)!;
@@ -537,6 +538,30 @@ function renderCamera(): Camera {
 // ---- Sprites ----------------------------------------------------------------------------------
 const SLOTS = slotIndex(),
   DEFS = slotDefs();
+/** Families of drawings placed as one (a rock family's drawings: "boulder 0" ..), by name; anything
+ * else a family of one. Their height in the world, for what is low enough to walk through. */
+const FAMILY = new Map<string, number[]>(),
+  FAMILY_H = new Map<string, number>();
+DEFS.forEach((d, i) => {
+  const name = familyOf(d.name);
+  if (!FAMILY.has(name)) FAMILY.set(name, []);
+  FAMILY.get(name)!.push(i);
+  FAMILY_H.set(name, d.worldH);
+});
+/** Each slot's kind (its name's first word), and which are rocks. */
+const SLOT_KIND = DEFS.map((d) => d.name.split(" ")[0]),
+  SLOT_ROCK = SLOT_KIND.map((k) => ROCK_KINDS.some((r) => r.kind === k));
+const isRock = (slot: number) => SLOT_ROCK[slot];
+/** What takes its colour from the place: grass from the biome's grass; bushes, sage, rosettes and
+ * ferns from its leaves. */
+const GRASSY = ["grass", "grass2", "dry", "flowers"],
+  LEAFY = ["fern", "fern2", "shrub", "shrub2", "sage", "rosette"];
+/** Heather's own colours (whatever the biome), one per plant: in bloom, rusty, dark. */
+const HEATHER_HEX = ["#7a4a6a", "#8a5a78", "#6e4a3a", "#4f5236"];
+/** Rocks as they look in the sun at sprite size, by world2d ROCKS (the map colours are too dark or
+ * too bright for that: coal, basalt, salt): each in two colours, a little darker and warmer the second. */
+const ROCK_HEX = ["#6f6c76", "#a6918c", "#57545c", "#b2aa98", "#b6b09a", "#6c707c", "#b8956a", "#8c7e70", "#a4644a", "#c8a474", "#4c4846", "#968a7c", "#93979b", "#c8c4be", "#9a9182"];
+if (ROCK_HEX.length !== ROCKS.length) throw new Error("a sprite colour for every rock");
 // Plans by slot (filled from the packs): how each is drawn, and from what height in parts.
 let PLANS: Plan[] = [],
   PART_BASE: number[] = [],
@@ -577,6 +602,19 @@ function buildSprites(packs: SlotPack[]): SpriteData {
   };
   const autumn0 = rampRows.length;
   for (const c of ["#c89a32", "#b8582c", "#a8b040"]) rampRows.push(rampOf(hex(c)));
+  // Colours each thing takes from where it is (spriteColour: a row added to its material's first):
+  // rocks by the rock under them, two colours each; grass, shrubs and ferns by their biome.
+  const rockBase = rampRows.length;
+  for (const c of ROCK_HEX) rampRows.push(rampOf(hex(c)), rampOf(shiftColor(hex(c), -0.04, 0.12, 1.15)));
+  const grassBase = rampRows.length;
+  for (const b of BIOME_DEFS) rampRows.push(rampOf(hex(b.grass)));
+  const leafBase = rampRows.length;
+  for (const b of BIOME_DEFS) rampRows.push(rampOf(hex(b.leaf)));
+  const heatherBase = rampRows.length;
+  for (const c of HEATHER_HEX) rampRows.push(rampOf(hex(c)));
+  // Weathering on rocks: moss, lichen, snow.
+  const weather0 = rampRows.length;
+  for (const c of ["#5f7f38", "#b4ae7a", "#e8eef4"]) rampRows.push(rampOf(hex(c)));
   const mat = new Uint16Array(32 * nS);
   for (const pk of packs) {
     const kind = DEFS[pk.slot].name.split(" ")[0],
@@ -584,9 +622,16 @@ function buildSprites(packs: SlotPack[]): SpriteData {
     let first = -1;
     for (const [m, r] of pk.ramps) {
       // Leaves: the tree's own colour (0x8000), and broadleaves may turn for autumn (0x4000).
+      // Rocks, grass, shrubs and ferns: the colour of their place (0x2000, see above).
       const turns = ["oak", "beech", "maple", "birch"].includes(kind),
-        id = tree && m === M.LEAF ? leafFamily(kind) | 0x8000 | (turns ? 0x4000 : 0) : addRamp(r);
-      if (first < 0) first = id & 0x3fff;
+        id =
+          tree && m === M.LEAF ? leafFamily(kind) | 0x8000 | (turns ? 0x4000 : 0)
+          : isRock(pk.slot) && m === M.ROCK ? rockBase | 0x2000
+          : GRASSY.includes(kind) && m === M.GRASS ? grassBase | 0x2000
+          : LEAFY.includes(kind) && m === M.LEAF ? leafBase | 0x2000
+          : kind === "heather" && m === M.LEAF ? heatherBase | 0x2000
+          : addRamp(r);
+      if (first < 0) first = id & 0x1fff;
       mat[pk.slot * 32 + m] = id;
     }
     for (let m = 0; m < 32; m++) if (!pk.ramps.some(([q]) => q === m)) mat[pk.slot * 32 + m] = Math.max(0, first);
@@ -712,6 +757,7 @@ function buildSprites(packs: SlotPack[]): SpriteData {
     meta: wrap4096(meta, Uint32Array, 4),
     per: wrap4096(per, Uint32Array, 4),
     autumn0,
+    weather0,
   };
 }
 
@@ -782,11 +828,16 @@ function partsFrame(c: Camera, lists: { data: Float32Array; near: number; far: n
  * shrubs, boulders, scree) and on the ground (woods, rock, scree, shore, the road). */
 const BLOOMS: [string, number[]][] = [["white", [232, 228, 216]], ["yellow", [226, 192, 64]], ["purple", [138, 100, 176]], ["red", [196, 80, 60]]];
 const coverLists = new Map<number, [string, number][]>();
+// (Rocks by family: each placed rock one of the family's drawings, as they come.)
+const ON_ROCK: [string, number][] = [["stone", 0.03], ["rubble", 0.01], ["slab", 0.006], ["boulder", 0.006], ["outcrop", 0.002]],
+  ON_SCREE: [string, number][] = [["stone", 0.16], ["rubble", 0.06], ["slab", 0.03], ["boulder", 0.025], ["erratic", 0.002]],
+  ON_SHORE: [string, number][] = [["stone", 0.22], ["rubble", 0.06], ["slab", 0.025], ["boulder", 0.01]],
+  ON_SNOW: [string, number][] = [["stone", 0.01], ["boulder", 0.003]];
 function coverFor(b: number, kind: number): [string, number][] {
-  if (kind === KIND.ROCK) return [["stone", 0.04], ["boulder2", 0.006]];
-  if (kind === KIND.SCREE) return [["stone", 0.18], ["stone2", 0.1], ["boulder", 0.02], ["boulder2", 0.02]];
-  if (kind === KIND.SHORE) return [["stone", 0.25], ["stone2", 0.15], ["boulder2", 0.01]];
-  if (kind === KIND.SNOW) return [["stone", 0.01]];
+  if (kind === KIND.ROCK) return ON_ROCK;
+  if (kind === KIND.SCREE) return ON_SCREE;
+  if (kind === KIND.SHORE) return ON_SHORE;
+  if (kind === KIND.SNOW) return ON_SNOW;
   const key = b * 32 + kind;
   let list = coverLists.get(key);
   if (list) return list;
@@ -802,19 +853,51 @@ function coverFor(b: number, kind: number): [string, number][] {
   if (look.flowers > 0) list.push([`flowers ${bloom}`, Math.min(0.08, look.flowers * 0.5)]);
   if (woods && moist) list.push(["fern", 0.1], ["fern2", 0.06]);
   if (look.reeds > 0) list.push(["grass2", look.reeds * 0.2]);
-  if (look.shrubs > 0) list.push(["shrub", Math.min(0.12, look.shrubs * 0.35)], ["shrub2", Math.min(0.06, look.shrubs * 0.15)]);
-  if (look.boulders > 0) list.push(["boulder", Math.min(0.03, look.boulders * 3)]);
-  if (look.scree > 0.5 || kind === KIND.SAND) list.push(["stone", 0.015 * look.scree + (kind === KIND.SAND ? 0.01 : 0)]);
+  // Bushes of the kinds the biome names, in its proportions (bush, fern, heather, sage, rosette).
+  if (look.shrubs > 0) {
+    const all = Math.min(0.12, look.shrubs * 0.35) + Math.min(0.06, look.shrubs * 0.15),
+      kinds = look.bushes.split(",").map((e) => e.trim().split(" ")).filter((e) => e[0]),
+      sum = kinds.reduce((a, e) => a + Number(e[1] ?? 1), 0) || 1;
+    for (const [name, w] of kinds) {
+      const d = (all * Number(w ?? 1)) / sum;
+      if (name === "bush") list.push(["shrub", d * 0.67], ["shrub2", d * 0.33]);
+      else if (name === "fern") list.push(["fern", d * 0.6], ["fern2", d * 0.4]);
+      else if (FAMILY.has(name)) list.push([name, d]);
+    }
+  }
+  // Boulders, with now and then a slab, a lone big erratic, or a crag (fewer in woods).
+  if (look.boulders > 0)
+    list.push(
+      ["boulder", Math.min(0.025, look.boulders * 2.5)],
+      ["slab", Math.min(0.008, look.boulders * 0.8)],
+      ["erratic", Math.min(0.0025, look.boulders * 0.25)],
+      ["outcrop", woods ? 0 : Math.min(0.0015, look.boulders * 0.15)],
+    );
+  if (look.scree > 0.5 || kind === KIND.SAND) list.push(["stone", 0.015 * look.scree + (kind === KIND.SAND ? 0.01 : 0)], ["rubble", 0.004 * look.scree]);
   coverLists.set(key, list);
   return list;
 }
-const COVER_PATH: [string, number][] = [["stone2", 0.01]];
+const COVER_PATH: [string, number][] = [["stone", 0.01]];
+/** Weathering on rocks (render.ts spriteColour: 1 moss, 2 lichen, 3 snow, and how much, 0..3, in
+ * the bits above) by the climate and the ground: moss in wet woods, lichen where it is cold or by
+ * the sea, snow on snow; bare in dry lands. */
+function weatherFor(b: number, kind: number) {
+  const look = BIOME_DEFS[b],
+    z = look.zone,
+    woods = kind === KIND.FOREST || kind === KIND.CONIFER;
+  if (kind === KIND.SNOW || look.ground === "snow" || z === ZONE.ICE) return 3 | (3 << 2);
+  if (z === ZONE.RAINFOREST || z === ZONE.MONSOON || z === ZONE.OCEANIC) return 1 | ((woods ? 3 : 2) << 2);
+  if (z === ZONE.BOREAL || z === ZONE.CONTINENTAL) return woods || look.ground === "moss" ? 1 | (2 << 2) : 2 | (1 << 2);
+  if (z === ZONE.TUNDRA || z === ZONE.ALPINE) return 2 | (2 << 2);
+  if (kind === KIND.SHORE) return 2 | (1 << 2);
+  return 0;
+}
 const COVER_FAR = 1400;
 /** Where the party walks with no path drawn: what grows there, but nothing that would hide them. */
 const lowLists = new Map<[string, number][], [string, number][]>();
 const lowCover = (list: [string, number][]) => {
   let low = lowLists.get(list);
-  if (!low) lowLists.set(list, (low = list.filter(([name]) => DEFS[SLOTS.get(name)!].worldH < 0.6)));
+  if (!low) lowLists.set(list, (low = list.filter(([name]) => FAMILY_H.get(name)! < 0.6)));
   return low;
 };
 const TILE = 32;
@@ -879,9 +962,27 @@ function coverTile(tx: number, tz: number, far: boolean): Float32Array {
     let r = R() * 0.65;
     for (const [name, d] of list) {
       if ((r -= d) < 0) {
-        const slot = SLOTS.get(name)!,
-          hgt = DEFS[slot].worldH * (0.75 + 0.5 * R());
-        if (!far || DEFS[slot].worldH >= FAR_COVER_H) out.push(x, y - 0.05, z, hgt, slot, 2);
+        // Which drawing, how big, and its colour and weathering: a rock the colour of the rock
+        // under it (one of two), moss or lichen on some; a plant its biome's colour. (As many
+        // numbers drawn whatever it is, near or far, so a far tile is the near one thinned.)
+        const fam = FAMILY.get(name)!,
+          slot = fam[Math.min(fam.length - 1, Math.floor(R() * fam.length))],
+          rock = isRock(slot),
+          kind = SLOT_KIND[slot],
+          hgt = DEFS[slot].worldH * (rock ? 0.6 + 0.8 * R() : 0.75 + 0.5 * R()),
+          jit = R(),
+          shade = R() < 0.5 ? 1 : 0,
+          bare = R(),
+          less = R() < 0.5 ? 1 : 0;
+        let info = b;
+        if (kind === "heather") info = Math.floor(jit * HEATHER_HEX.length);
+        else if (rock) {
+          // (Snow on every rock where there is snow; moss or lichen on three in four.)
+          const w = weatherFor(b, kd),
+            weather = w && ((w & 3) === 3 || bare > 0.25) ? (w & 3) | (Math.max(0, (w >> 2) - less) << 2) : 0;
+          info = rockAt(x, z, jit) * 2 + shade + (weather << 7);
+        }
+        if (!far || DEFS[slot].worldH >= FAR_COVER_H) out.push(x, y - 0.05, z, hgt, slot, 2 | (info << 3));
         break;
       }
     }
@@ -1800,7 +1901,6 @@ Object.assign(window, {
     get buildMs() {
       return buildMs;
     },
-    /** Go to a place, by its number or name. */
     /** Go to a stop of the journey, by its number or name. */
     jump(which: number | string) {
       const i = typeof which === "number" ? which : (journey?.stops.findIndex((p) => p.name === which) ?? 0);
@@ -1889,6 +1989,26 @@ Object.assign(window, {
       return out;
     },
     slotNames: () => DEFS.map((d) => d.name),
+    /** Tiles of ground cover the view still waits for (made a few a frame after a seek). */
+    get coverPending() {
+      return coverNeed ? coverNeed.filter((t) => !coverCache.has(t.k)).length : 0;
+    },
+    /** Make the next frame's ground cover all at once (for checks: no waiting a few tiles a frame). */
+    coverNow() {
+      coverHave = false;
+    },
+    /** What the 32 m tile of ground cover at a point holds, by drawing (and its flags, as given). */
+    coverAt(x: number, z: number) {
+      const t = coverTile(Math.floor(x / TILE), Math.floor(z / TILE), false),
+        n: Record<string, number> = {},
+        flags: number[] = [];
+      for (let i = 0; i < t.length; i += 6) {
+        const k = DEFS[t[i + 4]].name;
+        n[k] = (n[k] ?? 0) + 1;
+        if (isRock(t[i + 4])) flags.push(t[i + 5]);
+      }
+      return { n, flags: flags.slice(0, 12) };
+    },
     /** The cover's cost as the camera moves on a tile at a time: the time each call takes (ms) until
      * the new list is ready, and how many sprites it holds. */
     coverCost(steps = 6) {

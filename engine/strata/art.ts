@@ -7,7 +7,7 @@
 //
 // Vista's sprites (tools/strata-lab/vista/sprites.ts) draw their trees, shrubs and
 // ground cover with these: trunks and branches, the kinds of broadleaf tree, a
-// faceted boulder, a fern.
+// fern. (Rocks are drawn by tools/strata-lab/vista/rocks.ts.)
 import { M } from "./world";
 
 /** Draws into a sprite: x, y in sprite or world cells, a material, a tone 1..6. */
@@ -139,85 +139,6 @@ export const TREES: Record<string, TreeKind> = {
     bark: { cracks: 0 },
   },
 };
-
-// ---- Boulders ---------------------------------------------------------------------
-
-/**
- * A boulder: a faceted stone, each facet lit by its own slope (light from the
- * upper left), a dark underside where it sits, moss on its top in wet woods.
- */
-export function boulder(c: Canvas, x: number, ground: number, w: number, h: number, moss: number) {
-  const R = c.R,
-    // A ring of points around an ellipse, jittered: the stone's outline.
-    n = 7 + Math.floor(R() * 3),
-    pts: [number, number][] = [];
-  for (let k = 0; k < n; k++) {
-    const a = Math.PI + (k / (n - 1)) * Math.PI,
-      rr = 0.8 + 0.25 * R();
-    pts.push([x + Math.cos(a) * (w / 2) * rr, ground - Math.max(0, -Math.sin(a)) * h * rr]);
-  }
-  // The facets: triangles from a raised centre toward each edge of the outline.
-  const apx = x - w * 0.1,
-    apy = ground - h * 0.55;
-  for (let k = 0; k < n - 1; k++) {
-    const [ax, ay] = pts[k],
-      [bx, by] = pts[k + 1],
-      // The facet's slope: its outward direction, tilted up.
-      mx = (ax + bx) / 2 - apx,
-      my = (ay + by) / 2 - apy,
-      len = Math.hypot(mx, my) || 1,
-      nx = (mx / len) * 0.7,
-      ny = (my / len) * 0.7,
-      nz = 0.71,
-      lam = Math.max(0, nx * LX + ny * LY + nz * LZ),
-      tone = clampT(1 + Math.round(lam * 4.4));
-    tri(c, apx, apy, ax, ay, bx, by, tone);
-  }
-  // Close the base: the facet facing down to the ground, in shadow.
-  const [lx, ly] = pts[0],
-    [rx, ry] = pts[n - 1];
-  tri(c, apx, apy, rx, ry, lx, ly, 2);
-  // The underside, where it meets the ground, in shadow.
-  for (let px = Math.floor(x - w / 2); px <= Math.ceil(x + w / 2); px++) c.set(px, ground, M.ROCK, 1);
-  // Moss on its top.
-  if (moss > 0)
-    for (let px = Math.floor(x - w / 2); px <= Math.ceil(x + w / 2); px++)
-      if (R() < moss) {
-        const top = topOf(pts, px);
-        if (top !== null) c.set(px, Math.round(top), M.LEAF, R() < 0.5 ? 4 : 3);
-      }
-}
-
-function topOf(pts: [number, number][], x: number) {
-  let best: number | null = null;
-  for (let k = 0; k < pts.length - 1; k++) {
-    const [ax, ay] = pts[k],
-      [bx, by] = pts[k + 1];
-    if ((x - ax) * (x - bx) > 0 || ax === bx) continue;
-    const y = ay + ((by - ay) * (x - ax)) / (bx - ax);
-    if (best === null || y < best) best = y;
-  }
-  return best;
-}
-
-function tri(c: Canvas, ax: number, ay: number, bx: number, by: number, cx: number, cy: number, tone: number) {
-  const x0 = Math.floor(Math.min(ax, bx, cx)),
-    x1 = Math.ceil(Math.max(ax, bx, cx)),
-    y0 = Math.floor(Math.min(ay, by, cy)),
-    y1 = Math.ceil(Math.max(ay, by, cy)),
-    area = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay);
-  if (Math.abs(area) < 1e-6) return;
-  for (let y = y0; y <= y1; y++)
-    for (let x = x0; x <= x1; x++) {
-      const px = x + 0.5,
-        py = y + 0.5,
-        w0 = ((bx - px) * (cy - py) - (cx - px) * (by - py)) / area,
-        w1 = ((cx - px) * (ay - py) - (ax - px) * (cy - py)) / area,
-        w2 = 1 - w0 - w1;
-      if (w0 < -0.02 || w1 < -0.02 || w2 < -0.02) continue;
-      c.set(x, y, M.ROCK, tone);
-    }
-}
 
 /**
  * A fern: fronds arching out from one crown, each a stem lined with

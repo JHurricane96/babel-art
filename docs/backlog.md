@@ -102,3 +102,19 @@ the ancients (giant skeletons buried in the layers of their age, exposed by
 erosion), living crystal (grows where hot mineral water flows), and the Deep
 (a molten realm at the world's floor). Characters stay grounded: no wizards.
 
+
+## Strata: fauna
+
+Agreed as the next system after the sprites' variety (2026-11), to be designed
+in detail as a system of its own before any is built:
+
+- **Creatures, real and fantastic.** Animals of the world's biomes, and
+  fantastic ones alongside them; which fantastic creatures is still open.
+- **Lives, simulated.** Each creature goes about its day: eating, drinking,
+  sleeping, moving with the seasons (migrating), and more besides; these are
+  examples, not the whole list.
+- **Predators and hunts.** Predators hunt their prey, and the hunt plays out.
+- **The party among them.** The party hunts for food, and runs from (or
+  otherwise deals with) predators.
+
+People and their works (civilization) come after the sprites and fauna.

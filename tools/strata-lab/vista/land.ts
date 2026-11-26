@@ -35,6 +35,8 @@ export interface LandData {
   zone: Uint8Array;
   /** How rugged (0 plains .. 1 crags). */
   rough: Float32Array;
+  /** The rock at the surface per world cell (world2d ROCKS: a bedrock, or SEDIMENT). */
+  rock: Uint8Array;
   /** River segments, 7 floats each: ax, az, bx, bz, level at a, level at b, half-width. */
   rivers: Float32Array;
   places: Place[];
@@ -180,7 +182,7 @@ export function landFromWorld(w: World2D): LandData {
     if (places.some((p) => p.name === name)) name = `${name} (${k + 1})`;
     places.push({ name, x: X(best.c), z: Z(best.c) });
   }
-  return { seed: w.seed, n, cell, h: w.h, wet, sea: w.sea, biome: w.biome, zone: w.zone, rough, rivers: Float32Array.from(segs), places };
+  return { seed: w.seed, n, cell, h: w.h, wet, sea: w.sea, biome: w.biome, zone: w.zone, rough, rock: w.rock, rivers: Float32Array.from(segs), places };
 }
 
 // ---- Asking about a point -----------------------------------------------------------------------
@@ -375,6 +377,18 @@ export function biomeAt(x: number, z: number) {
         if (d.biome[c] !== WATER) return d.biome[c];
       }
   return 0;
+}
+
+/** The rock at the surface near a point (world2d ROCKS): its cell's, the boundaries between cells
+ * wandering as the biomes' do, and frayed (`jitter`, 0..1, moves the point up to 150 m). */
+export function rockAt(x: number, z: number, jitter = 0) {
+  const d = L!,
+    n = d.n,
+    wx = x + 280 * (vnoise(x / 430, z / 430, 81) - 0.5) + 300 * (jitter - 0.5),
+    wz = z + 280 * (vnoise(x / 430, z / 430, 83) - 0.5) + 300 * (((jitter * 7.31) % 1) - 0.5),
+    u = Math.min(n - 1, Math.max(0, Math.round(wx / d.cell - 0.5))),
+    v = Math.min(n - 1, Math.max(0, Math.round(n - wz / d.cell - 0.5)));
+  return d.rock[v * n + u];
 }
 
 /** How wooded a biome is (trees per 2 m cell in its woods), and the woods' kind. */
