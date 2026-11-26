@@ -55,7 +55,7 @@ select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .check-out b { color: var(--fg); font-weight: 500; }
 button:disabled { opacity: 0.5; cursor: default; }
 .seek input { width: min(260px, 40vw); min-width: 0; accent-color: var(--accent); }
-.seek output { font-family: var(--mono); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 0; overflow-wrap: anywhere; }
+.seek output, .saved output { font-family: var(--mono); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 0; overflow-wrap: anywhere; }
 .controls { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; min-width: 0; }
 .group { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
 .group > span { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-right: 4px; }
@@ -160,6 +160,11 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
       <button id="t-marker" data-toggle="marker" aria-pressed="true">Party marker</button>
       <button id="t-ghost" data-toggle="ghost" aria-pressed="true">Party through things</button>
       <button id="t-wall" data-toggle="wall" aria-pressed="true">Wall frame</button>
+    </div>
+    <div class="group saved" role="group" aria-label="Saved in this browser">
+      <span>Saved</span>
+      <output id="saved-note">–</output>
+      <button id="forget" title="Delete the world saved in this browser. The next visit makes it again (a few seconds longer).">Forget saved world</button>
     </div>
     <div class="group" role="group" aria-label="Measure">
       <span>Measure</span>

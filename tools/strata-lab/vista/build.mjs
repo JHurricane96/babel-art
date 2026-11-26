@@ -5,7 +5,13 @@
 //
 // The worker is bundled first and embedded in the page as a string, so the page
 // needs no other files.
+//
+// LAND_CODE, the version of the day's land the page saves in the browser (cache.ts): a hash of the
+// code that makes it (the world generator, landFromWorld and setLand, bundled and minified with all
+// they use), so a change to any of that code, and to nothing else, makes the page make the land
+// again instead of using one saved by an older build.
 import { build } from "esbuild";
+import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +28,16 @@ const here = dirname(fileURLToPath(import.meta.url)),
     legalComments: "none",
   };
 
+const landCode = await build({
+    ...common,
+    stdin: {
+      contents: 'export { generateWorld } from "../../../engine/strata/world2d"; export { landFromWorld, setLand } from "./land";',
+      resolveDir: here,
+      loader: "ts",
+    },
+    format: "esm",
+  }),
+  LAND_CODE = createHash("sha256").update(landCode.outputFiles[0].text).digest("hex").slice(0, 16);
 const worker = await build({
     ...common,
     entryPoints: [resolve(here, "worker.ts")],
@@ -29,7 +45,7 @@ const worker = await build({
   main = await build({
     ...common,
     entryPoints: [resolve(here, "main.ts")],
-    define: { WORKER_SOURCE: JSON.stringify(worker.outputFiles[0].text) },
+    define: { WORKER_SOURCE: JSON.stringify(worker.outputFiles[0].text), LAND_CODE: JSON.stringify(LAND_CODE) },
   });
 const script = main.outputFiles[0].text.replace(/<\/script/gi, "<\\/script");
 let html = readFileSync(resolve(here, "page.html"), "utf8").replace(
@@ -44,4 +60,4 @@ if (standalone)
     html +
     "\n</body>\n</html>\n";
 writeFileSync(out, html);
-console.log(`${out}: ${(html.length / 1024).toFixed(0)} KB`);
+console.log(`${out}: ${(html.length / 1024).toFixed(0)} KB (land code ${LAND_CODE})`);

@@ -11,8 +11,11 @@ import { hex, rampOf, shiftColor } from "./color";
 import { HMAX, type Plan, type SlotPack } from "./pack";
 import { LEAF_HEX, TREE_NAMES, familyOf, slotDefs, slotIndex } from "./sprites";
 import { ROCK_KINDS } from "./rocks";
+import { FORMAT, forget, list, load, save } from "./cache";
 
 declare const WORKER_SOURCE: string;
+/** A hash of the code that makes the day's land (build.mjs): what a saved land must have been made by. */
+declare const LAND_CODE: string;
 const $ = (id: string) => document.getElementById(id)!;
 
 // ---- State ------------------------------------------------------------------------------------
@@ -1590,22 +1593,69 @@ const t0 = performance.now();
 let buildMs = 0,
   started = false;
 
-// Today's world first, so a worker starts on it at once (it sends back the world's land: far less
-// than the world). The sprites take the other workers: trees and shrubs one slot a job (the heavy
-// ones), the rest a dozen at a time.
-run({ type: "world", seed: SEED, n: 512 }, (d) => onLand(d.land));
-const nSlots = DEFS.length;
-for (let a = 0; a < nSlots; ) {
-  const heavy = DEFS[a].maxClass >= 25 || DEFS[a].name.startsWith("shrub");
-  let to = a + 1;
-  if (!heavy) while (to < Math.min(nSlots, a + 12) && !(DEFS[to].maxClass >= 25 || DEFS[to].name.startsWith("shrub"))) to++;
-  spritesLeft++;
-  run({ type: "sprites", from: a, to }, (d) => {
-    spritePacks.push(...d.slots);
-    if (--spritesLeft === 0) spritesDone();
-  });
-  a = to;
+// Today's land: saved in this browser by an earlier visit today (cache.ts), if it was made by this
+// very code; otherwise made, today's world first so a worker starts on it at once (it sends back the
+// world's land: far less than the world). The sprites take the other workers: trees and shrubs one
+// slot a job (the heavy ones), the rest a dozen at a time.
+const WORLD_N = 512,
+  LAND_META = { format: FORMAT, code: typeof LAND_CODE === "string" ? LAND_CODE : "dev", seed: SEED, n: WORLD_N };
+/** Where today's land came from: "saved" (an earlier visit today), "made", or "" until known. */
+let landFrom = "",
+  forgotten = false;
+/** Does a saved value look like a whole land of this size? */
+const isLand = (v: unknown) => {
+  const L = v as LandData | undefined;
+  return !!L && L.n === WORLD_N && L.h?.length === WORLD_N * WORLD_N && L.rock?.length === WORLD_N * WORLD_N && !!L.derived && Array.isArray(L.places) && L.places.length > 0;
+};
+void load<LandData>("land", LAND_META, isLand).then((L) => {
+  landFrom = L ? "saved" : "made";
+  if (L) onLand(L);
+  else run({ type: "world", seed: SEED, n: WORLD_N }, (d) => onLand(d.land));
+  const nSlots = DEFS.length;
+  for (let a = 0; a < nSlots; ) {
+    const heavy = DEFS[a].maxClass >= 25 || DEFS[a].name.startsWith("shrub");
+    let to = a + 1;
+    if (!heavy) while (to < Math.min(nSlots, a + 12) && !(DEFS[to].maxClass >= 25 || DEFS[to].name.startsWith("shrub"))) to++;
+    spritesLeft++;
+    run({ type: "sprites", from: a, to }, (d) => {
+      spritePacks.push(...d.slots);
+      if (--spritesLeft === 0) spritesDone();
+    });
+    a = to;
+  }
+  void showSaved();
+});
+/** Save the land just made for the next visit today: once the page is running (writing it takes the
+ * main thread a moment), unless it has been forgotten since. */
+function saveLand() {
+  if (landFrom !== "made" || forgotten) return;
+  setTimeout(() => {
+    if (!forgotten) void save("land", LAND_META, land()).then(() => showSaved());
+  }, 2000);
 }
+/** What this browser has saved, in the Saved readout. */
+async function showSaved() {
+  const el = $("saved-note"),
+    all = await list();
+  if (all === null) {
+    el.textContent = "This browser keeps nothing here; the world is made each visit.";
+    return;
+  }
+  const L = all.find((r) => r.kind === "land");
+  if (!L) {
+    el.textContent = landFrom === "made" && !forgotten ? "Nothing yet: today's land is saved once the walk starts." : "Nothing saved.";
+    return;
+  }
+  const mb = (L.bytes / 1048576).toFixed(1),
+    today = L.seed === SEED && L.code === LAND_META.code;
+  el.textContent = today ? `Today's land, ${mb} MB${landFrom === "saved" ? " (this visit started from it)" : ""}.` : `An older land, ${mb} MB (replaced on the next save).`;
+}
+$("forget").onclick = async () => {
+  forgotten = true;
+  const ok = await forget();
+  await showSaved();
+  if (ok) $("saved-note").textContent = "Forgotten. Today's land will be made again on the next visit.";
+};
 /** The sprites are all here: on to the GPU now (while the land is still being made), and the clouds. */
 function spritesDone() {
   renderer.setSprites(buildSprites(spritePacks));
@@ -1647,6 +1697,7 @@ function maybeStart() {
   if (started || !spritesSet || !landReady) return;
   started = true;
   buildMs = performance.now() - t0;
+  saveLand();
   treesList = renderer.sprites(new Float32Array(0));
   coverList = renderer.sprites(new Float32Array(0));
   partyList = renderer.sprites(new Float32Array(0));
@@ -2015,6 +2066,10 @@ Object.assign(window, {
       return out;
     },
     slotNames: () => DEFS.map((d) => d.name),
+    /** The saved land: where this visit's came from ("saved" or "made"), and what is saved now. */
+    async saved() {
+      return { landFrom, code: LAND_META.code, records: await list() };
+    },
     /** Tiles of ground cover the view still waits for (made a few a frame after a seek). */
     get coverPending() {
       return coverNeed ? coverNeed.filter((t) => !coverCache.has(t.k)).length : 0;
