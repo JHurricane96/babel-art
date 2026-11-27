@@ -548,7 +548,9 @@ function renderCamera(): Camera {
 const SLOTS = slotIndex(),
   DEFS = slotDefs(),
   /** Each tree kind's first slot. */
-  TREE_SLOT0 = TREE_KINDS.map((k) => SLOTS.get(`${k.name} 0`)!);
+  TREE_SLOT0 = TREE_KINDS.map((k) => SLOTS.get(`${k.name} 0`)!),
+  /** The trees' slots come first: those below this. */
+  TREE_END = TREE_SLOT0[TREE_SLOT0.length - 1] + TREE_KINDS[TREE_KINDS.length - 1].n;
 /** Families of drawings placed as one (a rock family's drawings: "boulder 0" ..), by name; anything
  * else a family of one. Their height in the world, for what is low enough to walk through. */
 const FAMILY = new Map<string, number[]>(),
@@ -851,7 +853,8 @@ function partsFrame(c: Camera, lists: { data: Float32Array; near: number; far: n
     draws.push({ slot, partBase: PART_BASE[slot], nc: PART_N[slot], treeBase: k, count: b.length, K: pl.K, T: pl.T, near: l0.near, far: l0.far });
     for (const { l, i } of b) {
       const d = lists[l].data;
-      partTrees.set([d[i], d[i + 1], d[i + 2], d[i + 3], slot, d[i + 5], 0, 0], k * 8);
+      // (Last, which list and which of it: for checks, vista.idFrame.)
+      partTrees.set([d[i], d[i + 1], d[i + 2], d[i + 3], slot, d[i + 5], l, i / 6], k * 8);
       k++;
     }
   }
@@ -1142,6 +1145,9 @@ function cullTrees(c: Camera) {
  * NEAR_COVER is ready (a far tile not made yet left out until it is: everything there is a pixel or
  * so), and again once they all are. A tile to be made again (coverStale) is drawn as it was until it
  * is. The first time, and after travelling somewhere new, all at once. */
+/** The ground cover as last handed to the GPU (a view of the buffer it is made in, which stands
+ * until the next list is made; for checks). */
+let lastCover = new Float32Array(0);
 let keepDrawn = false,
   drawnCover = new Float32Array(0);
 let coverNeed: { tx: number; tz: number; far: boolean; k: number; d: number }[] | null = null,
@@ -1686,6 +1692,8 @@ let buildMs = 0,
 // very code; otherwise made, today's world first so a worker starts on it at once (it sends back the
 // world's land: far less than the world). The sprites take the other workers: trees and shrubs one
 // slot a job (the heavy ones), the rest a dozen at a time.
+/** `?lab=sprites`: the sprites alone, without the land (for checks of sprites: harness/README.md). */
+const LAB = new URLSearchParams(location.search).get("lab") === "sprites";
 const WORLD_N = 512,
   LAND_META = { format: FORMAT, code: typeof LAND_CODE === "string" ? LAND_CODE : "dev", seed: SEED, n: WORLD_N };
 /** The sprites hang on the code alone (seed 0; n, how many slots). */
@@ -1702,11 +1710,11 @@ const isLand = (v: unknown) => {
   const L = v as LandData | undefined;
   return !!L && L.n === WORLD_N && L.h?.length === WORLD_N * WORLD_N && L.rock?.length === WORLD_N * WORLD_N && !!L.derived && Array.isArray(L.places) && L.places.length > 0;
 };
-void Promise.all([load<LandData>("land", LAND_META, isLand), load<SlotPack[]>("sprites", SPRITE_META, isSprites)]).then(([L, packs]) => {
-  landFrom = L ? "saved" : "made";
+void Promise.all([LAB ? undefined : load<LandData>("land", LAND_META, isLand), load<SlotPack[]>("sprites", SPRITE_META, isSprites)]).then(([L, packs]) => {
+  landFrom = LAB ? "" : L ? "saved" : "made";
   spritesFrom = packs ? "saved" : "made";
   if (L) onLand(L);
-  else run({ type: "world", seed: SEED, n: WORLD_N }, (d) => onLand(d.land));
+  else if (!LAB) run({ type: "world", seed: SEED, n: WORLD_N }, (d) => onLand(d.land));
   if (packs) {
     spritePacks.push(...packs);
     spritesDone();
@@ -1800,13 +1808,20 @@ function onLand(L: LandData) {
   buildGrid(0, placement(0, a.x, a.z), true);
 }
 function maybeStart() {
-  if (started || !spritesSet || !landReady) return;
+  if (started || !spritesSet || (!landReady && !LAB)) return;
   started = true;
   buildMs = performance.now() - t0;
   saveMade();
   treesList = renderer.sprites(new Float32Array(0));
   coverList = renderer.sprites(new Float32Array(0));
   partyList = renderer.sprites(new Float32Array(0));
+  if (LAB) {
+    // Nothing to walk: ready for vista.walk, .spriteGrowth and the like.
+    $("loading").textContent = "Sprite lab: the sprites alone (window.vista.walk).";
+    hold = true;
+    ready = true;
+    return;
+  }
   $("loading").hidden = true;
   layout();
   ready = true;
@@ -2013,13 +2028,31 @@ let treeVis = new Float32Array(0),
   coverVis = new Float32Array(0);
 let last = 0,
   hold = false,
-  frameLog: number[][] | null = null;
+  frameLog: number[][] | null = null,
+  /** False for a frame that moves everything on but draws nothing (checks: vista.step(dt, false)). */
+  drawThis = true,
+  /** The camera the last frame was made for, and the trees and cover it drew in parts. */
+  lastRc: Camera = { x: 0, y: 0, z: 0, yaw: 0 },
+  lastPartsIn: { data: Float32Array; near: number; far: number }[] = [];
 /** What the last frame drawn while paused showed; set `redraw` when the picture changes otherwise
  * (a grid swapped in, the page resized). */
 let pausedSig = "",
   redraw = false,
   /** Frames drawn so far (not counting those skipped while paused). */
   framesDrawn = 0;
+/** Draw the world from `rc` as the last frame left it (`ids`: the ID pass, for checks). */
+function drawFrame(rc: Camera, o: { ids?: number }) {
+  renderer.draw(
+    rc,
+    [
+      { sprites: treesList!, near: 10, far: TREE_FAR },
+      { sprites: coverList!, near: 3, far: COVER_FAR },
+      { sprites: partyList!, near: 1.5, far: 20000, ghost: opt.ghost && o.ids === undefined },
+    ],
+    { bands: opt.bands, wall: opt.wall && o.ids === undefined, path: opt.path, time: simTime, ids: o.ids },
+    partsFrame(rc, lastPartsIn),
+  );
+}
 function frame(now: number, forced = -1) {
   if (hold && forced < 0) return;
   const dtReal = forced >= 0 ? forced : Math.min(0.1, (now - last) / 1000 || 0);
@@ -2062,25 +2095,21 @@ function frame(now: number, forced = -1) {
   redraw = false;
   if (cover && coverList) {
     if (keepDrawn) drawnCover = cover.slice();
+    lastCover = cover;
     renderer.sprites(cover, coverList);
     coverVis = nearSubset(coverNear, rc.x, rc.z, 90);
   }
   if (partyList) renderer.sprites(actors(rc), partyList);
-  renderer.draw(
-    rc,
-    [
-      { sprites: treesList!, near: 10, far: TREE_FAR },
-      { sprites: coverList!, near: 3, far: COVER_FAR },
-      { sprites: partyList!, near: 1.5, far: 20000, ghost: opt.ghost },
-    ],
-    { bands: opt.bands, wall: opt.wall, path: opt.path, time: simTime },
-    partsFrame(rc, [
-      { data: treeVis, near: 10, far: TREE_FAR },
-      { data: coverVis, near: 3, far: COVER_FAR },
-    ]),
-  );
-  framesDrawn++;
-  drawMap(rc);
+  lastRc = rc;
+  lastPartsIn = [
+    { data: treeVis, near: 10, far: TREE_FAR },
+    { data: coverVis, near: 3, far: COVER_FAR },
+  ];
+  if (drawThis) {
+    drawFrame(rc, {});
+    framesDrawn++;
+    drawMap(rc);
+  }
   const cpuNow = performance.now() - t1;
   cpuMs = cpuMs * 0.9 + cpuNow * 0.1;
   if (frameLog && forced < 0) frameLog.push([dtReal * 1000, cpuNow]);
@@ -2147,7 +2176,8 @@ Object.assign(window, {
     state() {
       return { s, mode, current, cam: { ...cam }, stats: { ...renderer.stats }, gpuMs: renderer.timer.ms, cpuMs, fps, total: TOTAL, framesDrawn };
     },
-    readArt: () => renderer.readArt(),
+    /** The image as drawn (art pixels, rows bottom first): all of it, or [x, y from the top, w, h]. */
+    readArt: (r?: number[]) => renderer.readArt(r),
     /** How a sprite grows: drawn alone against the sky at each size it should be (px tall), what it
      * draws: its height (from its base to its topmost pixel) and width on screen. */
     spriteGrowth(name: string, wants: number[], crops = false) {
@@ -2197,6 +2227,67 @@ Object.assign(window, {
       return out;
     },
     slotNames: () => DEFS.map((d) => d.name),
+    /**
+     * A sprite walked up to, from where it is first drawn to as near as its list draws it, alone
+     * against the sky but otherwise as the page draws it: with its list's fades (trees from 10 m,
+     * cover from 3 m; `flags` as an instance's, e.g. 1 mirrored, 16384 cover only near tiles hold),
+     * in parts near the camera, and in pixels twice or more the size past its tallest drawing. At
+     * each step (1% nearer, or 0.1 px taller while it is tiny; `step` sets the share), up to `maxPx`
+     * tall: how far it stands (m), how tall it should be (px), and what it drew (from the ID pass):
+     * its height and width (px) and how many pixels. `side` stands it off the middle of the view
+     * (a share of the way to the edge).
+     */
+    walk(name: string, o: { flags?: number; list?: "trees" | "cover"; side?: number; maxPx?: number; step?: number } = {}) {
+      const slot = SLOTS.get(name);
+      if (slot === undefined) return null;
+      const H = DEFS[slot].worldH,
+        list = o.list ?? (slot < TREE_END ? "trees" : "cover"),
+        near = list === "trees" ? 10 : 3,
+        far = list === "trees" ? TREE_FAR : COVER_FAR,
+        maxPx = Math.min(o.maxPx ?? 560, ART_H - 40),
+        step = o.step ?? 0.01,
+        tan = Math.tan(FOV / 2),
+        c: Camera = { x: 0, y: 20000, z: 0, yaw: 0, hz: HORIZON },
+        before = renderer.crop,
+        out: number[][] = [];
+      for (let want = 0.5; want <= maxPx; want = Math.max(want * (1 + step), want + 0.1)) {
+        const d = (H * F) / want;
+        if (d < near * 0.9) break;
+        if (d > far) continue;
+        const base = Math.min(ART_H - 10, Math.round(want) + 20),
+          x = (o.side ?? 0) * d * tan,
+          data = Float32Array.of(x, c.y - ((base - HORIZON) * d) / F, d, H, slot, o.flags ?? 0),
+          cx = Math.round(ART_W / 2 + (F * x) / d),
+          w = Math.min(ART_W, Math.ceil(want * 4 + 40)),
+          x0 = Math.max(0, Math.min(ART_W - w, cx - (w >> 1))),
+          y0 = Math.max(0, Math.floor(base - want * 1.3 - 20)),
+          r = [x0, y0, w, Math.min(ART_H - y0, base + 4 - y0)];
+        growthList = renderer.sprites(data, growthList ?? undefined);
+        // (The whole frame, reading back only round the sprite: under ANGLE on SwiftShader a frame
+        // cropped to part of the view does not always draw its sky there.)
+        renderer.crop = null;
+        renderer.draw(c, [{ sprites: growthList, near, far }], { bands: false, wall: false, time: 0, spritesOnly: true, ids: 0 }, partsFrame(c, [{ data, near, far }]));
+        const img = renderer.readArt(r);
+        let n = 0,
+          top = 1e9,
+          bottom = -1,
+          left = 1e9,
+          right = -1;
+        for (let yy = 0; yy < r[3]; yy++)
+          for (let xx = 0; xx < r[2]; xx++) {
+            if (img[(yy * r[2] + xx) * 4 + 3] !== 0) continue;
+            const row = r[1] + r[3] - 1 - yy;
+            n++;
+            top = Math.min(top, row);
+            bottom = Math.max(bottom, row);
+            left = Math.min(left, xx);
+            right = Math.max(right, xx);
+          }
+        out.push([Math.round(d * 100) / 100, Math.round(want * 100) / 100, n ? bottom - top + 1 : 0, n ? right - left + 1 : 0, n]);
+      }
+      renderer.crop = before;
+      return out;
+    },
     /** The saved land: where this visit's came from ("saved" or "made"), and what is saved now. */
     async saved() {
       return { landFrom, spritesFrom, code: LAND_META.code, spriteCode: SPRITE_META.code, records: await list() };
@@ -2260,8 +2351,107 @@ Object.assign(window, {
     hold() {
       hold = true;
     },
-    step(dt: number) {
-      frame(performance.now(), dt);
+    /** Move on by dt seconds (after hold()), drawing the frame unless `draw` is false (much faster
+     * under software GL: draw only the frames a check looks at). */
+    step(dt: number, draw = true) {
+      drawThis = draw;
+      try {
+        frame(performance.now(), dt);
+      } finally {
+        drawThis = true;
+      }
+    },
+    /**
+     * The ID pass: the last frame drawn again with each sprite of one list (0 trees, 1 ground cover,
+     * 2 the party) and every tree or shrub in parts marking its own pixels; for each that shows (in
+     * the crop, if set): which it is, where it stands, and the pixels it covers (behind what stands
+     * in front of it): their count and its top and bottom rows and leftmost and rightmost columns.
+     * Rows count from the top. (The frame on screen is left as the ID pass drew it.)
+     */
+    idFrame(list = 1) {
+      const rc = lastRc,
+        data = list === 1 ? lastCover : null;
+      drawFrame(rc, { ids: list });
+      const r = renderer.crop ?? [0, 0, ART_W, ART_H],
+        img = renderer.readArt(r),
+        pf = partsFrame(rc, lastPartsIn),
+        at = new Map<number, number[]>();
+      for (let y = 0; y < r[3]; y++)
+        for (let x = 0; x < r[2]; x++) {
+          const o = (y * r[2] + x) * 4;
+          if (img[o + 3] !== 0) continue;
+          const id = img[o] | (img[o + 1] << 8) | (img[o + 2] << 16),
+            row = r[1] + r[3] - 1 - y,
+            col = r[0] + x;
+          let a = at.get(id);
+          if (!a) at.set(id, (a = [0, 1e9, -1, 1e9, -1]));
+          a[0]++;
+          a[1] = Math.min(a[1], row);
+          a[2] = Math.max(a[2], row);
+          a[3] = Math.min(a[3], col);
+          a[4] = Math.max(a[4], col);
+        }
+      const out: { x: number; y: number; z: number; h: number; slot: number; flags: number; parts: boolean; n: number; top: number; bottom: number; left: number; right: number }[] = [];
+      for (const [id, a] of at) {
+        let src: ArrayLike<number> | null, i: number;
+        const parts = id >= 0x800000;
+        if (parts) {
+          const k = id - 0x800000,
+            l = pf.trees[k * 8 + 6];
+          if (l !== list) continue;
+          src = pf.trees;
+          i = k * 8;
+        } else {
+          src = data;
+          i = (id - 1) * 6;
+        }
+        if (!src) continue;
+        out.push({ x: src[i], y: src[i + 1], z: src[i + 2], h: src[i + 3], slot: src[i + 4], flags: src[i + 5], parts, n: a[0], top: a[1], bottom: a[2], left: a[3], right: a[4] });
+      }
+      return { cam: { ...rc, hz: rc.hz ?? HORIZON }, F, seen: out };
+    },
+    /** The camera the last frame was made for (drawn or not), and the lens (F, px per unit at 1 m). */
+    camera: () => ({ ...lastRc, hz: lastRc.hz ?? HORIZON, F }),
+    /** The ground cover as last handed to the GPU (x, y, z, height, slot, flags each; a copy). */
+    cover: () => lastCover.slice(),
+    /** The ground as drawn for the last frame (its terrain patches) at each point [x, z, ..]: its
+     * height, and the spacing of the patch's vertices there (0 where no patch is drawn). */
+    groundUnder(pts: number[]) {
+      const P = renderer.patches(lastRc),
+        out: number[] = [];
+      // As the terrain's vertex shader reads the grids.
+      const at = (sp: number, x: number, z: number) => (sp < 12 && inside(0, x, z) ? heightIn(0, x, z) : sp < 90 && inside(1, x, z) ? heightIn(1, x, z) : heightIn(2, x, z));
+      for (let j = 0; j < pts.length; j += 2) {
+        const x = pts[j],
+          z = pts[j + 1];
+        let h = NaN,
+          spAt = 0;
+        for (let k = 0; k < P.length; k += 4) {
+          const x0 = P[k],
+            z0 = P[k + 1],
+            size = P[k + 2];
+          if (x < x0 || z < z0 || x >= x0 + size || z >= z0 + size) continue;
+          const sp = size / 32,
+            fi = (x - x0) / sp,
+            fj = (z - z0) / sp,
+            i0 = Math.floor(fi),
+            j0 = Math.floor(fj),
+            u = fi - i0,
+            v = fj - j0,
+            ax = x0 + i0 * sp,
+            az = z0 + j0 * sp,
+            a = at(sp, ax, az),
+            b = at(sp, ax + sp, az),
+            c = at(sp, ax, az + sp),
+            d = at(sp, ax + sp, az + sp);
+          // Each cell is two triangles, split from (i + 1, j) to (i, j + 1).
+          h = u + v <= 1 ? a + (b - a) * u + (c - a) * v : d + (c - d) * (1 - u) + (b - d) * (1 - v);
+          spAt = sp;
+          break;
+        }
+        out.push(h, spAt);
+      }
+      return out;
     },
     crop(r: number[] | null) {
       renderer.crop = r;

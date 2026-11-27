@@ -260,6 +260,9 @@ uniform highp usampler2D uIdx, uMat;
 uniform sampler2D uRgb, uSPal;
 uniform int uAutumn0, uWeather0;
 uniform float uGhost;
+// The ID pass (checks: Renderer.draw's ids): which sprite drew each pixel, in its colour, alpha 0.
+uniform float uIds;
+vec4 idColour(int i) { return vec4(float(i & 255), float((i >> 8) & 255), float((i >> 16) & 255), 0.0) / 255.0; }
 ivec2 wrap(int i) { return ivec2(i & 4095, i >> 12); }
 // info: the instance's own colour (a row added to its material's first, for materials that take
 // one: a rock's bedrock, a plant's biome), and its weathering (1 moss, 2 lichen, 3 snow; and how
@@ -317,8 +320,10 @@ flat out float vVis, vDepth;
 flat out int vFlip, vSlot;
 flat out uint vSeed;
 flat out ivec2 vInfo;
+flat out int vId;
 uint treeSeed(vec3 p) { return hashu(uvec2(ivec2(floor(p.xz * 4.0)) + ivec2(1 << 20))); }
 void main() {
+  vId = gl_InstanceID;
   float vz;
   project(iPos.xyz, vz);
   int flags = int(iInfo.y + 0.5);
@@ -367,6 +372,7 @@ flat in float vVis, vDepth;
 flat in int vFlip, vSlot;
 flat in uint vSeed;
 flat in ivec2 vInfo;
+flat in int vId;
 uniform highp usampler2D uTab;
 out vec4 oColor;
 void main() {
@@ -378,6 +384,7 @@ void main() {
   if (vMap.x == 2) s = ivec2(int(texelFetch(uTab, wrap(vMap.w + l.x), 0).r), int(texelFetch(uTab, wrap(vMap.z + l.y), 0).r));
   vec4 c = spriteColour(vMap.y, vRect.xy + s, vSlot, vSeed, vInfo);
   if (c.a < 0.5) discard;
+  if (uIds > 0.5) { oColor = idColour(vId + 1); return; }
   // The party seen through what stands in front of them: a pale silhouette.
   if (uGhost > 0.5) { oColor = vec4(0.99, 0.94, 0.78, 0.55); return; }
   oColor = vec4(mix(c.rgb, uHaze, hazeT(vDepth)), 1.0);
@@ -398,10 +405,12 @@ flat out float vVis, vDepth;
 flat out int vFlip;
 flat out uint vSeed;
 flat out ivec2 vInfo;
+flat out int vId;
 ivec2 wrap(int i) { return ivec2(i & 4095, i >> 12); }
 uint treeSeed(vec3 p) { return hashu(uvec2(ivec2(floor(p.xz * 4.0)) + ivec2(1 << 20))); }
 void main() {
   int ti = gl_InstanceID / uNC, pi = gl_InstanceID - ti * uNC, tb = (uTreeBase + ti) * 2;
+  vId = uTreeBase + ti;
   vec4 tp = texelFetch(uTrees, wrap(tb), 0), tq = texelFetch(uTrees, wrap(tb + 1), 0);
   float vz;
   project(tp.xyz, vz);
@@ -443,6 +452,7 @@ flat in float vVis, vDepth;
 flat in int vFlip;
 flat in uint vSeed;
 flat in ivec2 vInfo;
+flat in int vId;
 uniform highp usampler2D uPTab;
 uniform int uSlot;
 out vec4 oColor;
@@ -454,6 +464,7 @@ void main() {
   ivec2 s = ivec2(int(texelFetch(uPTab, wrap(vTab.y + l.x), 0).r), int(texelFetch(uPTab, wrap(vTab.x + l.y), 0).r));
   vec4 c = spriteColour(0, vRect.xy + s, uSlot, vSeed, vInfo);
   if (c.a < 0.5) discard;
+  if (uIds > 0.5) { oColor = idColour(0x800000 | vId); return; }
   oColor = vec4(mix(c.rgb, uHaze, hazeT(vDepth)), 1.0);
 }`;
 
@@ -599,6 +610,11 @@ export class Renderer {
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.color, 0);
     gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
+    // Cleared whole once now: a target first drawn in part (a crop, for checks) is otherwise cleared
+    // late by the browser's own first-use clear, under ANGLE after the sky of the next whole frame
+    // was drawn (a frame of sprites on nothing).
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     // Grids (filled band by band as workers finish).
     const set = (spec: GridSpec) => ({
@@ -825,8 +841,9 @@ export class Renderer {
     return { buf, vao, count: data.length / 6 };
   }
 
-  /** Choose the terrain patches for this camera: finer near it, none behind it. */
-  private patches(cam: Camera) {
+  /** Choose the terrain patches for this camera: finer near it, none behind it (x0, z0, size, 0 each;
+   * public for checks of the ground as drawn). */
+  patches(cam: Camera) {
     const out: number[] = [],
       fx = Math.sin(cam.yaw),
       fz = Math.cos(cam.yaw),
@@ -902,7 +919,12 @@ export class Renderer {
     return unit;
   }
 
-  draw(cam: Camera, lists: { sprites: Sprites; near: number; far: number; ghost?: boolean }[], opt: { bands: boolean; wall: boolean; path?: boolean; time: number; spritesOnly?: boolean }, parts?: PartsFrame) {
+  /**
+   * Draw a frame. For checks, `ids`: the sprites of `lists[ids]`, and all drawn in parts, write
+   * which they are instead of their colours, with alpha 0 (the rest as usual): a sprite as its
+   * index in its list plus 1, a tree or shrub in parts as 0x800000 + its index in `parts.trees`.
+   */
+  draw(cam: Camera, lists: { sprites: Sprites; near: number; far: number; ghost?: boolean }[], opt: { bands: boolean; wall: boolean; path?: boolean; time: number; spritesOnly?: boolean; ids?: number }, parts?: PartsFrame) {
     const gl = this.gl,
       t = this.timer;
     if (t.ext && !t.q) {
@@ -911,14 +933,19 @@ export class Renderer {
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
     gl.viewport(0, 0, ART_W, ART_H);
+    gl.disable(gl.DEPTH_TEST);
+    gl.depthMask(true);
+    gl.clearDepth(1);
+    // The whole target, before any crop; and for the ID pass its colour too, so no mark of an
+    // earlier frame is left (checks under ANGLE on SwiftShader have found the sky not always drawn
+    // over everything).
+    gl.disable(gl.SCISSOR_TEST);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.DEPTH_BUFFER_BIT | (opt.ids === undefined ? 0 : gl.COLOR_BUFFER_BIT));
     if (this.crop) {
       gl.enable(gl.SCISSOR_TEST);
       gl.scissor(this.crop[0], ART_H - this.crop[1] - this.crop[3], this.crop[2], this.crop[3]);
     }
-    gl.disable(gl.DEPTH_TEST);
-    gl.depthMask(true);
-    gl.clearDepth(1);
-    gl.clear(gl.DEPTH_BUFFER_BIT);
     // Sky.
     let p = this.progs.sky;
     this.common(p, cam, opt);
@@ -964,14 +991,16 @@ export class Renderer {
       gl.uniform1f(this.u(p, "uSunFlip"), sunRight ? 1 : 0);
       this.stats.sprites = 0;
       gl.uniform1f(this.u(p, "uGhost"), 0);
-      for (const l of lists) {
-        if (!l.sprites.count) continue;
+      lists.forEach((l, li) => {
+        gl.uniform1f(this.u(p, "uIds"), opt.ids === li ? 1 : 0);
+        if (!l.sprites.count) return;
         gl.uniform1f(this.u(p, "uNear2"), l.near);
         gl.uniform1f(this.u(p, "uFar2"), l.far);
         gl.bindVertexArray(l.sprites.vao);
         gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, l.sprites.count);
         this.stats.sprites += l.sprites.count;
-      }
+      });
+      gl.uniform1f(this.u(p, "uIds"), 0);
       // Trees near the camera, in parts; drawn in order, so each part covers those before it.
       this.stats.parts = 0;
       this.stats.partTrees = 0;
@@ -994,6 +1023,7 @@ export class Renderer {
         this.bindSpriteTextures(p, [["uIdx", "idx"], ["uRgb", "rgb"], ["uMat", "mat"], ["uSPal", "pal"], ["uMeta", "meta"], ["uPer", "per"], ["uPTab", "ptab"], ["uTrees", "trees"]]);
         gl.uniform1f(this.u(p, "uSunFlip"), sunRight ? 1 : 0);
         gl.uniform1f(this.u(p, "uGhost"), 0);
+        gl.uniform1f(this.u(p, "uIds"), opt.ids === undefined ? 0 : 1);
         gl.depthFunc(gl.LEQUAL);
         gl.bindVertexArray(this.partsVao);
         for (const d of parts.draws) {
@@ -1066,12 +1096,14 @@ export class Renderer {
     }
   }
 
-  /** Read the art-resolution image back (for scripted checks). */
-  readArt() {
+  /** Read the art-resolution image back (for scripted checks): all of it, or the rectangle [x, y
+   * (from the top), w, h]; rows bottom first, as GL gives them. */
+  readArt(r?: number[]) {
     const gl = this.gl,
-      out = new Uint8Array(ART_W * ART_H * 4);
+      [x, y, w, h] = r ?? [0, 0, ART_W, ART_H],
+      out = new Uint8Array(w * h * 4);
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
-    gl.readPixels(0, 0, ART_W, ART_H, gl.RGBA, gl.UNSIGNED_BYTE, out);
+    gl.readPixels(x, ART_H - y - h, w, h, gl.RGBA, gl.UNSIGNED_BYTE, out);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     return out;
   }
