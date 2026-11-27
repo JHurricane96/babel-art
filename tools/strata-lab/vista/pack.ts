@@ -137,12 +137,15 @@ function makeSpan(src: Img, h0: number, h1: number, N: number): Span {
   }
   return { pic: toPic(src), h0, h1, rows: Uint16Array.from(rows), cols: Uint16Array.from(cols), per };
 }
-/** Parts no taller or wider than 64 px: longer ones (a trunk, a long branch) cut in pieces overlapping by a line, so no gap opens between them. */
+/** Parts no taller or wider than 64 px: longer ones (a trunk, a long branch) cut in pieces 48 px
+ * long every 40, so they overlap by 8: each piece is shrunk and placed on its own, a pixel either
+ * way, and an overlap under a pixel (as a line's was, shrunk) opened cracks across trunks; 8 lines
+ * are still over 2 px at the smallest height drawn in parts (T / K = 1/3). */
 function slices(p: Part): Part[] {
   const cutRows = (q: Part): Part[] => {
     if (q.h <= 64) return [q];
     const out: Part[] = [];
-    for (let r0 = 0; r0 < q.h - 1; r0 += 47) {
+    for (let r0 = 0; r0 < q.h - 1; r0 += 40) {
       const h = Math.min(48, q.h - r0);
       out.push(sub(q, 0, r0, q.w, h));
       if (r0 + h >= q.h) break;
@@ -152,7 +155,7 @@ function slices(p: Part): Part[] {
   const cutCols = (q: Part): Part[] => {
     if (q.w <= 64) return [q];
     const out: Part[] = [];
-    for (let c0 = 0; c0 < q.w - 1; c0 += 47) {
+    for (let c0 = 0; c0 < q.w - 1; c0 += 40) {
       const w = Math.min(48, q.w - c0);
       out.push(sub(q, c0, 0, w, q.h));
       if (c0 + w >= q.w) break;
