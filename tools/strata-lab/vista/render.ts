@@ -269,7 +269,8 @@ vec4 spriteColour(int atlas, ivec2 src, int slot, uint seed, ivec2 info) {
   uint re = texelFetch(uMat, ivec2(int(m), slot), 0).r;
   int ramp = int(re & 0x1fffu);
   if ((re & 0x2000u) != 0u) {
-    ramp += info.x;
+    // (With 0x8000 too, each value has 16 rows, and the 0x8000 below picks one per plant.)
+    ramp += info.x * ((re & 0x8000u) != 0u ? 16 : 1);
     int wk = info.y & 3;
     if (wk > 0 && v.g > 0u) {
       // Patterns on the drawing's own pixels (so they stay put as it grows), different on each rock:

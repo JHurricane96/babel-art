@@ -11,8 +11,11 @@ import { hex, rampOf, shiftColor } from "./color";
 import { HMAX, type Plan, type SlotPack } from "./pack";
 import { LEAF_HEX, TREE_NAMES, familyOf, slotDefs, slotIndex } from "./sprites";
 import { ROCK_KINDS } from "./rocks";
+import { FORMAT, forget, list, load, save } from "./cache";
 
 declare const WORKER_SOURCE: string;
+/** A hash of the code that makes the day's land (build.mjs): what a saved land must have been made by. */
+declare const LAND_CODE: string;
 const $ = (id: string) => document.getElementById(id)!;
 
 // ---- State ------------------------------------------------------------------------------------
@@ -555,10 +558,15 @@ DEFS.forEach((d, i) => {
 const SLOT_KIND = DEFS.map((d) => d.name.split(" ")[0]),
   SLOT_ROCK = SLOT_KIND.map((k) => ROCK_KINDS.some((r) => r.kind === k));
 const isRock = (slot: number) => SLOT_ROCK[slot];
-/** What takes its colour from the place: grass from the biome's grass; bushes, sage, rosettes and
- * ferns from its leaves. */
-const GRASSY = ["grass", "grass2", "dry", "flowers"],
+/** What takes its colour from the place: grass (and grasses' and flowers' stems and leaves, and
+ * moss) from the biome's grass; bushes, sage, rosettes and ferns from its leaves; flowers from its
+ * bloom, each plant one of 16 colours (see buildSprites). */
+const GRASSY = ["grass", "grass2", "dry", "tallgrass", "sedge", "reed", "daisy", "spike", "umbel", "cup"],
+  MOSSY = ["moss", "cushion"],
+  BLOOMING = ["daisy", "spike", "cup", "cushion"],
   LEAFY = ["fern", "fern2", "shrub", "shrub2", "sage", "rosette"];
+/** Flowers' companion colours: purple, blue, pink, red, orange. */
+const COMPANIONS = ["#8a5ab8", "#5a78d0", "#d878a8", "#c84a3a", "#e08a3a"];
 /** Heather's own colours (whatever the biome), one per plant: in bloom, rusty, dark. */
 const HEATHER_HEX = ["#7a4a6a", "#8a5a78", "#6e4a3a", "#4f5236"];
 /** Rocks as they look in the sun at sprite size, by world2d ROCKS (the map colours are too dark or
@@ -615,6 +623,20 @@ function buildSprites(packs: SlotPack[]): SpriteData {
   for (const b of BIOME_DEFS) rampRows.push(rampOf(hex(b.leaf)));
   const heatherBase = rampRows.length;
   for (const c of HEATHER_HEX) rampRows.push(rampOf(hex(c)));
+  // Flowers: 16 colours a biome, most its own bloom a little varied, some white, some yellow, some
+  // a companion hue, so a meadow is mixed (each plant picks one by where it stands).
+  const flowerBase = rampRows.length;
+  BIOME_DEFS.forEach((b, i) => {
+    const R = mulberry(i * 7717 + 5),
+      own = hex(b.bloom),
+      // A companion from flowers' own colours (a turned hue can come out teal), unlike its bloom.
+      far = COMPANIONS.map(hex).filter((c) => Math.hypot(c[0] - own[0], c[1] - own[1], c[2] - own[2]) > 0.3),
+      other = far[Math.floor(R() * far.length)] ?? hex(COMPANIONS[0]);
+    for (let v = 0; v < 16; v++) {
+      const c = v < 9 ? shiftColor(own, (R() - 0.5) * 0.08, (R() - 0.5) * 0.3, 0.9 + 0.25 * R()) : v < 11 ? shiftColor(hex("#ece6d8"), (R() - 0.5) * 0.04, 0, 1) : v < 13 ? shiftColor(hex("#e6c440"), (R() - 0.5) * 0.06, (R() - 0.5) * 0.2, 1) : shiftColor(other, (R() - 0.5) * 0.06, (R() - 0.5) * 0.2, 1);
+      rampRows.push(rampOf(c));
+    }
+  });
   // Weathering on rocks: moss, lichen, snow.
   const weather0 = rampRows.length;
   for (const c of ["#5f7f38", "#b4ae7a", "#e8eef4"]) rampRows.push(rampOf(hex(c)));
@@ -631,6 +653,8 @@ function buildSprites(packs: SlotPack[]): SpriteData {
           tree && m === M.LEAF ? leafFamily(kind) | 0x8000 | (turns ? 0x4000 : 0)
           : isRock(pk.slot) && m === M.ROCK ? rockBase | 0x2000
           : GRASSY.includes(kind) && m === M.GRASS ? grassBase | 0x2000
+          : MOSSY.includes(kind) && m === M.LEAF ? grassBase | 0x2000
+          : BLOOMING.includes(kind) && m === M.FLOWER ? flowerBase | 0x2000 | 0x8000
           : LEAFY.includes(kind) && m === M.LEAF ? leafBase | 0x2000
           : kind === "heather" && m === M.LEAF ? heatherBase | 0x2000
           : addRamp(r);
@@ -829,7 +853,21 @@ function partsFrame(c: Camera, lists: { data: Float32Array; near: number; far: n
 
 /** Ground cover for one 32 m tile: what grows depends on the biome (its look: grass, flowers,
  * shrubs, boulders, scree) and on the ground (woods, rock, scree, shore, the road). */
-const BLOOMS: [string, number[]][] = [["white", [232, 228, 216]], ["yellow", [226, 192, 64]], ["purple", [138, 100, 176]], ["red", [196, 80, 60]]];
+/** Ground cover picks one thing in each spot with a chance of up to this, by the shares listed. */
+const COVER_ROOM = 0.65,
+  GRASSES = ["grass", "grass2", "dry grass", "tallgrass", "sedge", "moss"];
+/** Which kinds of flower grow in each climate, and in what shares. */
+function flowerForms(zone: number): [string, number][] {
+  if (zone === ZONE.ALPINE || zone === ZONE.TUNDRA) return [["cushion", 0.45], ["daisy", 0.35], ["spike", 0.2]];
+  if (zone === ZONE.BOREAL) return [["spike", 0.4], ["daisy", 0.3], ["umbel", 0.3]];
+  if (zone === ZONE.OCEANIC || zone === ZONE.CONTINENTAL) return [["daisy", 0.35], ["umbel", 0.25], ["spike", 0.2], ["cup", 0.2]];
+  if (zone === ZONE.MEDITERRANEAN || zone === ZONE.STEPPE) return [["cup", 0.4], ["spike", 0.35], ["daisy", 0.25]];
+  if (zone === ZONE.SAVANNA || zone === ZONE.DESERT) return [["cup", 0.45], ["daisy", 0.55]];
+  if (zone === ZONE.MONSOON || zone === ZONE.RAINFOREST) return [["spike", 0.4], ["cup", 0.3], ["daisy", 0.3]];
+  return [["daisy", 0.5], ["cup", 0.5]];
+}
+/** How tall a biome's tall grass stands (its `tall`: 1, turf, to 9, head-high), as a factor. */
+const TALL_SCALE = BIOME_DEFS.map((b) => (b.tall >= 8 ? 1.7 : b.tall >= 6 ? 1.3 : b.tall >= 5 ? 1 : 0.8));
 const coverLists = new Map<number, [string, number][]>();
 // (Rocks by family: each placed rock one of the family's drawings, as they come.)
 const ON_ROCK: [string, number][] = [["stone", 0.03], ["rubble", 0.01], ["slab", 0.006], ["boulder", 0.006], ["outcrop", 0.002]],
@@ -839,7 +877,7 @@ const ON_ROCK: [string, number][] = [["stone", 0.03], ["rubble", 0.01], ["slab",
 function coverFor(b: number, kind: number): [string, number][] {
   if (kind === KIND.ROCK) return ON_ROCK;
   if (kind === KIND.SCREE) return ON_SCREE;
-  if (kind === KIND.SHORE) return ON_SHORE;
+  if (kind === KIND.SHORE && BIOME_DEFS[b].reeds < 0.3) return ON_SHORE;
   if (kind === KIND.SNOW) return ON_SNOW;
   const key = b * 32 + kind;
   let list = coverLists.get(key);
@@ -848,14 +886,30 @@ function coverFor(b: number, kind: number): [string, number][] {
     dry = look.zone === ZONE.STEPPE || look.zone === ZONE.DESERT || look.zone === ZONE.SAVANNA || look.zone === ZONE.MEDITERRANEAN,
     woods = kind === KIND.FOREST || kind === KIND.CONIFER,
     moist = look.ground === "moss" || look.zone === ZONE.OCEANIC || look.zone === ZONE.RAINFOREST || look.zone === ZONE.MONSOON,
-    bc = [1, 3, 5].map((k) => parseInt(look.bloom.slice(k, k + 2), 16)),
-    bloom = BLOOMS.reduce((a, c) => (Math.hypot(...c[1].map((v, k) => v - bc[k])) < Math.hypot(...a[1].map((v, k) => v - bc[k])) ? c : a))[0];
-  const tufts = Math.min(0.5, look.tufts * (woods ? 0.25 : 0.55));
+    cold = look.zone === ZONE.TUNDRA || look.zone === ZONE.ALPINE;
   list = [];
-  if (tufts > 0) list.push(dry ? ["dry grass", tufts] : ["grass", tufts * 0.6], dry ? ["grass2", tufts * 0.15] : ["grass2", tufts * 0.4]);
-  if (look.flowers > 0) list.push([`flowers ${bloom}`, Math.min(0.08, look.flowers * 0.5)]);
-  if (woods && moist) list.push(["fern", 0.1], ["fern2", 0.06]);
-  if (look.reeds > 0) list.push(["grass2", look.reeds * 0.2]);
+  // Reed beds along the water where the biome has reeds.
+  if (kind === KIND.SHORE) {
+    list.push(["reed", 0.14 * look.reeds], ["sedge", 0.12], ["grass2", 0.08], ["stone", 0.04]);
+    coverLists.set(key, list);
+    return list;
+  }
+  // Grass: short tufts, and where the biome's grass grows tall, tall grass with seed heads.
+  const tufts = Math.min(0.5, look.tufts * (woods ? 0.25 : 0.55)),
+    tallShare = look.tall >= 5 ? 0.65 : look.tall >= 3 ? 0.2 : 0,
+    short = tufts * (1 - tallShare);
+  if (tufts > 0) {
+    list.push(dry ? ["dry grass", short * 0.75] : ["grass", short * 0.6], dry ? ["grass2", short * 0.25] : ["grass2", short * 0.4]);
+    if (tallShare) list.push(["tallgrass", tufts * tallShare]);
+  }
+  // Cold or wet ground: sedges and moss.
+  if (cold || look.ground === "moss") list.push(["sedge", 0.03 + tufts * 0.12], ["moss", look.ground === "moss" ? 0.06 : 0.02]);
+  if (woods && moist) list.push(["fern", 0.1], ["fern2", 0.06], ["moss", 0.03]);
+  // Reeds at the water (above); out in the open only in marshes and bogs.
+  if (look.reeds > 0) list.push(["sedge", look.reeds * 0.06]);
+  if (look.reeds >= 0.6) list.push(["reed", look.reeds * 0.012]);
+  // Flowers of the kinds the climate has, coloured by the biome's bloom.
+  if (look.flowers > 0) for (const [name, share] of flowerForms(look.zone)) list.push([name, Math.min(0.14, look.flowers * 1.4) * share]);
   // Bushes of the kinds the biome names, in its proportions (bush, fern, heather, sage, rosette).
   if (look.shrubs > 0) {
     const all = Math.min(0.12, look.shrubs * 0.35) + Math.min(0.06, look.shrubs * 0.15),
@@ -877,6 +931,15 @@ function coverFor(b: number, kind: number): [string, number][] {
       ["outcrop", woods ? 0 : Math.min(0.0015, look.boulders * 0.15)],
     );
   if (look.scree > 0.5 || kind === KIND.SAND) list.push(["stone", 0.015 * look.scree + (kind === KIND.SAND ? 0.01 : 0)], ["rubble", 0.004 * look.scree]);
+  // The shares must leave room under COVER_ROOM (coverTile picks down the list from a number below
+  // it, so what comes last would never be picked): too much, and the grasses give way.
+  const sum = (l: [string, number][]) => l.reduce((a, [, d]) => a + d, 0),
+    grassy = list.filter(([n]) => GRASSES.includes(n)),
+    others = sum(list) - sum(grassy);
+  if (sum(list) > COVER_ROOM * 0.95) {
+    const f = Math.max(0.2, (COVER_ROOM * 0.95 - others) / Math.max(1e-6, sum(grassy)));
+    list = list.map(([n, d]) => [n, GRASSES.includes(n) ? d * f : d]);
+  }
   coverLists.set(key, list);
   return list;
 }
@@ -904,10 +967,11 @@ const lowCover = (list: [string, number][]) => {
   return low;
 };
 const TILE = 32;
-/** Beyond this, a tile holds only what stands at least FAR_COVER_H tall: anything smaller is under
- * a pixel there anyway. */
+/** Beyond this, a tile holds only what stands at least FAR_COVER_H tall (each thing by its own
+ * height): anything smaller is at most a pixel and a half there, and drawn all but faded out (a
+ * sprite fades in from 1 to 3 px). */
 const NEAR_COVER = 560,
-  FAR_COVER_H = 0.6;
+  FAR_COVER_H = 0.95;
 /** What the ground is on an 8 m lattice over a tile outside the fine grid (from the land itself):
  * kind and biome (255 for water) per lattice point. */
 function latticeKinds(tx: number, tz: number) {
@@ -962,7 +1026,7 @@ function coverTile(tx: number, tz: number, far: boolean): Float32Array {
     if (b === 255) continue;
     const here = coverFor(b, kd),
       list = rd < 2.1 ? (opt.path ? COVER_PATH : lowCover(here)) : here;
-    let r = R() * 0.65;
+    let r = R() * COVER_ROOM;
     for (const [name, d] of list) {
       if ((r -= d) < 0) {
         // Which drawing, how big, and its colour and weathering: a rock the colour of the rock
@@ -972,11 +1036,13 @@ function coverTile(tx: number, tz: number, far: boolean): Float32Array {
           slot = fam[Math.min(fam.length - 1, Math.floor(R() * fam.length))],
           rock = isRock(slot),
           kind = SLOT_KIND[slot],
-          hgt = DEFS[slot].worldH * (rock ? 0.6 + 0.8 * R() : 0.75 + 0.5 * R()),
+          hgt = DEFS[slot].worldH * (rock ? 0.6 + 0.8 * R() : 0.75 + 0.5 * R()) * (kind === "tallgrass" ? TALL_SCALE[b] : 1),
           jit = R(),
           shade = R() < 0.5 ? 1 : 0,
           bare = R(),
-          less = R() < 0.5 ? 1 : 0;
+          less = R() < 0.5 ? 1 : 0,
+          // (Far off, grasses are a pixel or two of texture: a third of them is as good as all.)
+          thin = (kind === "tallgrass" || kind === "reed") && R() > 0.34;
         let info = b;
         if (kind === "heather") info = Math.floor(jit * HEATHER_HEX.length);
         else if (rock) {
@@ -985,7 +1051,7 @@ function coverTile(tx: number, tz: number, far: boolean): Float32Array {
             weather = w && ((w & 3) === 3 || bare > 0.25) ? (w & 3) | (Math.max(0, (w >> 2) - less) << 2) : 0;
           info = rockAt(x, z, jit) * 2 + shade + (weather << 7);
         }
-        if (!far || DEFS[slot].worldH >= FAR_COVER_H) out.push(x, y - 0.05, z, hgt, slot, 2 | (info << 3));
+        if (!far || (hgt >= FAR_COVER_H && !thin)) out.push(x, y - 0.05, z, hgt, slot, 2 | (info << 3));
         break;
       }
     }
@@ -1590,22 +1656,69 @@ const t0 = performance.now();
 let buildMs = 0,
   started = false;
 
-// Today's world first, so a worker starts on it at once (it sends back the world's land: far less
-// than the world). The sprites take the other workers: trees and shrubs one slot a job (the heavy
-// ones), the rest a dozen at a time.
-run({ type: "world", seed: SEED, n: 512 }, (d) => onLand(d.land));
-const nSlots = DEFS.length;
-for (let a = 0; a < nSlots; ) {
-  const heavy = DEFS[a].maxClass >= 25 || DEFS[a].name.startsWith("shrub");
-  let to = a + 1;
-  if (!heavy) while (to < Math.min(nSlots, a + 12) && !(DEFS[to].maxClass >= 25 || DEFS[to].name.startsWith("shrub"))) to++;
-  spritesLeft++;
-  run({ type: "sprites", from: a, to }, (d) => {
-    spritePacks.push(...d.slots);
-    if (--spritesLeft === 0) spritesDone();
-  });
-  a = to;
+// Today's land: saved in this browser by an earlier visit today (cache.ts), if it was made by this
+// very code; otherwise made, today's world first so a worker starts on it at once (it sends back the
+// world's land: far less than the world). The sprites take the other workers: trees and shrubs one
+// slot a job (the heavy ones), the rest a dozen at a time.
+const WORLD_N = 512,
+  LAND_META = { format: FORMAT, code: typeof LAND_CODE === "string" ? LAND_CODE : "dev", seed: SEED, n: WORLD_N };
+/** Where today's land came from: "saved" (an earlier visit today), "made", or "" until known. */
+let landFrom = "",
+  forgotten = false;
+/** Does a saved value look like a whole land of this size? */
+const isLand = (v: unknown) => {
+  const L = v as LandData | undefined;
+  return !!L && L.n === WORLD_N && L.h?.length === WORLD_N * WORLD_N && L.rock?.length === WORLD_N * WORLD_N && !!L.derived && Array.isArray(L.places) && L.places.length > 0;
+};
+void load<LandData>("land", LAND_META, isLand).then((L) => {
+  landFrom = L ? "saved" : "made";
+  if (L) onLand(L);
+  else run({ type: "world", seed: SEED, n: WORLD_N }, (d) => onLand(d.land));
+  const nSlots = DEFS.length;
+  for (let a = 0; a < nSlots; ) {
+    const heavy = DEFS[a].maxClass >= 25 || DEFS[a].name.startsWith("shrub");
+    let to = a + 1;
+    if (!heavy) while (to < Math.min(nSlots, a + 12) && !(DEFS[to].maxClass >= 25 || DEFS[to].name.startsWith("shrub"))) to++;
+    spritesLeft++;
+    run({ type: "sprites", from: a, to }, (d) => {
+      spritePacks.push(...d.slots);
+      if (--spritesLeft === 0) spritesDone();
+    });
+    a = to;
+  }
+  void showSaved();
+});
+/** Save the land just made for the next visit today: once the page is running (writing it takes the
+ * main thread a moment), unless it has been forgotten since. */
+function saveLand() {
+  if (landFrom !== "made" || forgotten) return;
+  setTimeout(() => {
+    if (!forgotten) void save("land", LAND_META, land()).then(() => showSaved());
+  }, 2000);
 }
+/** What this browser has saved, in the Saved readout. */
+async function showSaved() {
+  const el = $("saved-note"),
+    all = await list();
+  if (all === null) {
+    el.textContent = "This browser keeps nothing here; the world is made each visit.";
+    return;
+  }
+  const L = all.find((r) => r.kind === "land");
+  if (!L) {
+    el.textContent = landFrom === "made" && !forgotten ? "Nothing yet: today's land is saved once the walk starts." : "Nothing saved.";
+    return;
+  }
+  const mb = (L.bytes / 1048576).toFixed(1),
+    today = L.seed === SEED && L.code === LAND_META.code;
+  el.textContent = today ? `Today's land, ${mb} MB${landFrom === "saved" ? " (this visit started from it)" : ""}.` : `An older land, ${mb} MB (replaced on the next save).`;
+}
+$("forget").onclick = async () => {
+  forgotten = true;
+  const ok = await forget();
+  await showSaved();
+  if (ok) $("saved-note").textContent = "Forgotten. Today's land will be made again on the next visit.";
+};
 /** The sprites are all here: on to the GPU now (while the land is still being made), and the clouds. */
 function spritesDone() {
   renderer.setSprites(buildSprites(spritePacks));
@@ -1647,6 +1760,7 @@ function maybeStart() {
   if (started || !spritesSet || !landReady) return;
   started = true;
   buildMs = performance.now() - t0;
+  saveLand();
   treesList = renderer.sprites(new Float32Array(0));
   coverList = renderer.sprites(new Float32Array(0));
   partyList = renderer.sprites(new Float32Array(0));
@@ -2015,6 +2129,10 @@ Object.assign(window, {
       return out;
     },
     slotNames: () => DEFS.map((d) => d.name),
+    /** The saved land: where this visit's came from ("saved" or "made"), and what is saved now. */
+    async saved() {
+      return { landFrom, code: LAND_META.code, records: await list() };
+    },
     /** Tiles of ground cover the view still waits for (made a few a frame after a seek). */
     get coverPending() {
       return coverNeed ? coverNeed.filter((t) => !coverCache.has(t.k)).length : 0;

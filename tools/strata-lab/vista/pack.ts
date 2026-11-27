@@ -17,7 +17,7 @@
 // way. People are drawn in colour.
 import { colsFor, cut, kept, orderOf } from "./grow";
 import { ROCK_KINDS } from "./rocks";
-import { type Img, type Part, type SlotDef, PLANT_KINDS, TREE_NAMES, drawParts, indexMode, lastRamps } from "./sprites";
+import { type Img, type Part, type SlotDef, HERB_KINDS, PLANT_KINDS, TREE_NAMES, drawParts, indexMode, lastRamps } from "./sprites";
 
 export const HMAX = 384;
 /** Pixels of an image: RGBA bytes (in index form: red the material and shade, green the cell). */
@@ -56,6 +56,7 @@ export function planOf(def: SlotDef): Plan {
     return { E: 5, T: 0, K, N: K, direct: false };
   }
   if (PLANT_KINDS.some((p) => p.kind === kind)) return { E: 5, T: 0, K: 128, N: 128, direct: false };
+  if (HERB_KINDS.some((p) => p.kind === kind && p.blob)) return { E: 5, T: 0, K: 64, N: 64, direct: false };
   if (kind === "marker") return { E: 1, T: 0, K: 1, N: 1, direct: true };
   if (kind === "person") return { E: 48, T: 0, K: 96, N: 96, direct: true };
   return { E: 64, T: 0, K: 192, N: 192, direct: false };

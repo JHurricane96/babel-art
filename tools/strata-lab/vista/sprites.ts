@@ -1,7 +1,8 @@
 // Vista sprites: the drawings. Every kind of thing Vista shows (seven kinds of tree, each in a few
-// variants; shrubs, heather, sage and rosettes, grass, flowers, ferns; rocks in six families, from
-// rocks.ts; the party; the party's marker) as a drawing at any height in pixels. pack.ts turns
-// these into what the GPU draws at each size.
+// variants; shrubs, heather, sage and rosettes; grasses (tufts, tall grass, sedge, reeds, moss);
+// flowers (daisies, spikes, umbels, cups, cushions); ferns; rocks in six families, from rocks.ts;
+// the party; the party's marker) as a drawing at any height in pixels. pack.ts turns these into
+// what the GPU draws at each size.
 //
 // Trees are heaps of leaf clumps, each clump with its own fixed values, so a tree drawn a pixel
 // bigger moves its clumps a little instead of reshuffling them; trunks, branches and ferns come
@@ -608,16 +609,19 @@ export const GRASS_R = rampOf(hex("#6f9a3c")),
   ROSETTE_R = rampOf(hex("#5a7a5a")),
   TWIG_R = rampOf(hex("#5e4c3c")),
   SPIKE_R = rampOf(hex("#e8e0c0")),
-  BLOOM: Record<string, number[][]> = {
-    white: rampOf(hex("#e8e4d8")),
-    yellow: rampOf(hex("#e2c040")),
-    purple: rampOf(hex("#8a64b0")),
-    red: rampOf(hex("#c4503c")),
-  };
+  // Flowers are coloured by where they grow (main.ts); these are for drawings on their own.
+  BLOOM_R = rampOf(hex("#c86a9a")),
+  UMBEL_R = rampOf(hex("#ece6d4")),
+  EYE_R = rampOf(hex("#e0b030")),
+  STRAW_R = rampOf(hex("#c8b47a")),
+  CATKIN_R = rampOf(hex("#5a4632")),
+  CATTAIL_R = rampOf(hex("#6a4a30")),
+  PLUME_R = rampOf(hex("#b8a488")),
+  MOSS_R = rampOf(hex("#5e7a32"));
 
-/** A grass clump: blades fanning from one root, dark at the base, lit at the tips; blooms if given. */
-function grass(H: number, seed: number, dry: boolean, bloom?: string): Img {
-  // The same blades at every size (fewer drawn when small), the same flower heads.
+/** A grass clump: blades fanning from one root, dark at the base, lit at the tips. */
+function grass(H: number, seed: number, dry: boolean): Img {
+  // The same blades at every size (fewer drawn when small).
   const { c } = canvasFor(H, 1.2, seed),
     R = mulberry(seed),
     n = Math.max(2, Math.min(28, Math.round(H * 0.9)));
@@ -637,19 +641,289 @@ function grass(H: number, seed: number, dry: boolean, bloom?: string): Img {
         c.set(x, y, M.GRASS, t < 0.25 ? 2 : t < 0.6 ? 3 : t < 0.85 ? 4 : 5);
       }
     }
-  if (bloom) {
-    const B = mulberry(seed + 5),
-      all = 1 + Math.floor(B() * 3),
-      heads = H < 6 ? 1 : all;
-    for (let k = 0; k < heads; k++) {
-      const x = Math.round((B() - 0.5) * H * 0.6),
-        y = -Math.round(H * (0.75 + 0.3 * B())),
-        r = H >= 12 ? 1 : 0;
-      for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) c.set(x + dx, y + dy, M.FLOWER, dx < 0 || dy < 0 ? 5 : 3);
-      if (r) c.set(x, y, M.FLOWER, 6);
+  return c.toImg({ [M.GRASS]: dry ? DRY_R : GRASS_R }, 0, 0);
+}
+
+// ---- Grasses and flowers, stroke by stroke ----------------------------------------------------
+// Each is a few strokes with fixed values (the same random numbers drawn whatever the size), laid
+// out in fractions of the height, so a drawing a pixel bigger moves each stroke's end a little and
+// changes nothing else.
+
+/** A stroke from (x0, y0) going `len` px at `ang` from upright (positive leans right), bending by
+ * `curl` (positive bends right, more toward its end); its tone along it from tone(t). */
+function blade(c: MatCanvas, x0: number, y0: number, ang: number, len: number, curl: number, m: number, tone: (t: number) => number, width = 1) {
+  const n = Math.max(1, Math.ceil(len * 2)),
+    sx = Math.sin(ang),
+    sy = -Math.cos(ang);
+  let px = 1e9,
+    py = 1e9;
+  for (let i = 0; i <= n; i++) {
+    const t = i / n,
+      d = t * len,
+      bend = curl * t * t * len,
+      x = Math.round(x0 + sx * d + bend * Math.cos(ang)),
+      y = Math.round(y0 + sy * d + bend * Math.sin(ang));
+    if (x === px && y === py) continue;
+    px = x;
+    py = y;
+    const w = Math.max(1, Math.round(width * (1 - 0.6 * t)));
+    for (let k = 0; k < w; k++) c.set(x + k, y, m, tone(t) + (k === 0 && w > 1 ? 1 : 0));
+  }
+  return [px, py];
+}
+const SMALL_TUFT = (c: MatCanvas, H: number, m = M.GRASS) => {
+  c.set(0, -1, m, 3);
+  if (H >= 2) c.set(0, -2, m, 4);
+  if (H >= 3) (c.set(-1, -1, m, 2), c.set(1, -2, m, 5));
+};
+/** Tall grass: a bunch of long blades arching out and over, seed heads on stalks above them. */
+function tallgrassDraw(H: number, seed: number): Img {
+  const { c } = canvasFor(H, 1.5, seed),
+    R = mulberry(seed),
+    blades = Array.from({ length: 24 }, (_, k) => {
+      const side = ((k * 0.618) % 1) * 2 - 1;
+      return { side, ang: side * (0.25 + 0.4 * R()), len: 0.5 + 0.3 * R(), curl: side * (0.3 + 0.5 * R()) };
+    }),
+    stalks = Array.from({ length: 5 }, () => ({ ang: (R() - 0.5) * 0.5, len: 0.82 + 0.18 * R(), curl: (R() - 0.5) * 0.5 }));
+  if (H <= 3) SMALL_TUFT(c, H);
+  else {
+    const n = Math.max(3, Math.min(24, Math.round(H * 0.8)));
+    blades.slice(0, n).forEach(({ side, ang, len, curl }) => blade(c, Math.round(side * H * 0.05), -1, ang, len * H, curl, M.GRASS, (t) => (t < 0.3 ? 2 : t < 0.65 ? 3 : t < 0.9 ? 4 : 5)));
+    stalks.slice(0, H < 8 ? 1 : H < 16 ? 3 : 5).forEach(({ ang, len, curl }) => {
+      const [x, y] = blade(c, 0, -1, ang, len * H, curl, M.STALK, (t) => (t < 0.5 ? 3 : 4));
+      // The seed head: the stalk's top arching over and nodding, florets along it.
+      const h = Math.max(1, Math.round(H * 0.2)),
+        dir = curl + ang >= 0 ? 1 : -1;
+      let hx = x,
+        hy = y;
+      for (let k = 1; k <= h; k++) {
+        const a = ang + dir * (k / h) * 1.7;
+        hx += Math.sin(a);
+        hy -= Math.cos(a);
+        const px = Math.round(hx),
+          py = Math.round(hy);
+        c.set(px, py, M.STALK, 5);
+        if (H >= 16 && k % 2 === 0) {
+          c.set(px - Math.round(Math.cos(a)), py - Math.round(Math.sin(a)), M.STALK, 6);
+          c.set(px + Math.round(Math.cos(a)), py + Math.round(Math.sin(a)), M.STALK, 4);
+        }
+      }
+    });
+  }
+  return c.toImg({ [M.GRASS]: GRASS_R, [M.STALK]: STRAW_R }, 0, 0);
+}
+/** Sedge: a stiff clump of narrow, nearly upright leaves, dark, with a few brown spikes. */
+function sedgeDraw(H: number, seed: number): Img {
+  const { c } = canvasFor(H, 1, seed),
+    R = mulberry(seed),
+    leaves = Array.from({ length: 18 }, (_, k) => {
+      const side = ((k * 0.618) % 1) * 2 - 1;
+      return { side, ang: side * (0.08 + 0.4 * R()), len: 0.55 + 0.45 * R(), curl: side * 0.12 * R() };
+    }),
+    spikes = Array.from({ length: 3 }, () => ({ ang: (R() - 0.5) * 0.3, len: 0.85 + 0.2 * R() }));
+  if (H <= 3) SMALL_TUFT(c, H);
+  else {
+    const n = Math.max(3, Math.min(18, Math.round(H * 0.7)));
+    leaves.slice(0, n).forEach(({ side, ang, len, curl }) => blade(c, Math.round(side * H * 0.04), -1, ang, len * H, curl, M.GRASS, (t) => (t < 0.4 ? 1 : t < 0.8 ? 2 : 3) + (side < 0 ? 1 : 0)));
+    spikes.slice(0, H < 10 ? 1 : 3).forEach(({ ang, len }) => {
+      const [x, y] = blade(c, 0, -1, ang, len * H, 0, M.GRASS, () => 2),
+        h = Math.max(1, Math.round(H * 0.1));
+      for (let k = 0; k < h; k++) {
+        c.set(x, y + k, M.STALK, k === 0 ? 4 : 2);
+        if (H >= 20) c.set(x - 1, y + k, M.STALK, 3);
+      }
+    });
+  }
+  return c.toImg({ [M.GRASS]: GRASS_R, [M.STALK]: CATKIN_R }, 0, 0);
+}
+/** Reeds: tall stems with long leaves angled out, some topped with a brown cattail, some with a plume. */
+function reedDraw(H: number, seed: number): Img {
+  const { c } = canvasFor(H, 0.9, seed),
+    R = mulberry(seed),
+    stems = Array.from({ length: 7 }, (_, k) => ({
+      x: ((k * 0.618) % 1) - 0.5,
+      ang: (R() - 0.5) * 0.18,
+      len: 0.7 + 0.3 * R(),
+      cattail: R() < 0.55,
+      leaves: [0, 1, 2].map(() => ({ at: 0.1 + 0.45 * R(), ang: (R() < 0.5 ? -1 : 1) * (0.35 + 0.4 * R()), len: 0.25 + 0.2 * R() })),
+    }));
+  if (H <= 3) SMALL_TUFT(c, H);
+  else
+    stems.slice(0, H < 8 ? 2 : H < 20 ? 4 : 7).forEach((st) => {
+      const x0 = Math.round(st.x * H * 0.28),
+        [x, y] = blade(c, x0, -1, st.ang, st.len * H, 0, M.GRASS, (t) => (t < 0.5 ? 2 : 3));
+      if (H >= 12)
+        for (const lf of st.leaves) {
+          const ax = x0 + Math.sin(st.ang) * lf.at * st.len * H,
+            ay = -1 - Math.cos(st.ang) * lf.at * st.len * H;
+          blade(c, ax, ay, lf.ang, lf.len * H, lf.ang * 0.8, M.GRASS, (t) => (t < 0.5 ? 3 : 4));
+        }
+      if (st.cattail) {
+        // A brown cylinder below the stem's tip.
+        const h = Math.max(1, Math.round(H * 0.12)),
+          w = H >= 30 ? 1 : 0;
+        for (let k = 0; k < h; k++) for (let dx = -w; dx <= w; dx++) c.set(x + dx, y + Math.round(H * 0.05) + k, M.REED, dx < 0 ? 4 : dx > 0 ? 2 : 3);
+      } else {
+        // A plume: a loose, nodding fan of tufts.
+        const h = Math.max(1, Math.round(H * 0.14));
+        for (let k = 0; k < h; k++) {
+          const w = H >= 16 ? Math.round(Math.sin((Math.PI * (k + 1)) / (h + 1)) * H * 0.035) : 0;
+          for (let dx = -w; dx <= w; dx++) if (hashCell(dx, k, seed) < 0.75) c.set(x + dx + Math.round(k * 0.3), y + k, M.STALK, dx < 0 ? 6 : 5);
+        }
+      }
+    });
+  return c.toImg({ [M.GRASS]: GRASS_R, [M.REED]: CATTAIL_R, [M.STALK]: PLUME_R }, 0, 0);
+}
+/** Moss: a low, soft hummock of tiny tufts. */
+function mossDraw(H: number, seed: number): Img {
+  const { c } = canvasFor(H, 3.4, seed);
+  if (H < 4) for (let x = -1; x <= 1; x++) c.set(x, -1, M.LEAF, x < 0 ? 4 : 3);
+  else {
+    const R = mulberry(seed + 9),
+      k = Math.max(0.45, H / 14);
+    for (let i = 0; i < 2; i++) {
+      const x = (i - 0.5) * H * 1.3 + (R() - 0.5) * H * 0.4,
+        h = H * (i ? 0.75 + 0.25 * R() : 1);
+      crownV(c, x, -h / 2, H * (1 + 0.3 * R()), h / 2, { r0: 0.9 * k, r1: 1.5 * k, density: 3, speckle: 0.8, holes: 0, rag: 1.7 }, seed + i * 13);
     }
   }
-  return c.toImg({ [M.GRASS]: dry ? DRY_R : GRASS_R, [M.FLOWER]: BLOOM[bloom ?? "white"] }, 0, 0);
+  return c.toImg({ [M.LEAF]: MOSS_R }, 0, 0);
+}
+/** A few leaves at a plant's foot. */
+function basal(c: MatCanvas, H: number, R: () => number, n: number, len: number) {
+  for (let k = 0; k < n; k++) {
+    const side = ((k * 0.618) % 1) * 2 - 1;
+    blade(c, 0, -1, side * (0.7 + 0.5 * R()), len * H * (0.7 + 0.3 * R()), side * 0.4, M.GRASS, (t) => (t < 0.5 ? 2 : 3), H >= 24 ? 2 : 1);
+  }
+}
+/** Daisies: thin stems, each with a flat head, a ring of petals round a yellow eye. */
+function daisyDraw(H: number, seed: number): Img {
+  const { c } = canvasFor(H, 1.1, seed),
+    R = mulberry(seed),
+    stems = Array.from({ length: 6 }, (_, k) => ({ x: ((k * 0.618) % 1) - 0.5, ang: (R() - 0.5) * 0.7, len: 0.7 + 0.3 * R(), curl: (R() - 0.5) * 0.3 }));
+  if (H <= 3) {
+    c.set(0, -1, M.GRASS, 3);
+    c.set(0, -2, M.FLOWER, 5);
+  } else {
+    basal(c, H, R, 5, 0.25);
+    stems.slice(0, H < 8 ? 2 : H < 16 ? 4 : 6).forEach((st) => {
+      const [x, y] = blade(c, Math.round(st.x * H * 0.3), -1, st.ang, st.len * H, st.curl, M.GRASS, (t) => (t < 0.5 ? 2 : 3)),
+        r = H >= 28 ? 2 : H >= 10 ? 1 : 0;
+      // Seen from a little above: an ellipse, lit on its far (upper) side.
+      for (let dy = -r; dy <= r; dy++)
+        for (let dx = -r - 1; dx <= r + 1; dx++) if (dx * dx + dy * dy * 2.5 <= (r + 0.6) ** 2 + 0.3) c.set(x + dx, y + Math.round(dy * 0.6), M.FLOWER, dy < 0 ? 6 : dx > 0 ? 4 : 5);
+      if (r) c.set(x, y, M.CAP, 4);
+      else c.set(x, y, M.FLOWER, 5);
+    });
+  }
+  return c.toImg({ [M.GRASS]: GRASS_R, [M.FLOWER]: BLOOM_R, [M.CAP]: EYE_R }, 0, 0);
+}
+/** Spikes (lupin, foxglove): leaves at the foot and one to three tall stems crowded with flowers
+ * along their top half, smaller toward the tip. */
+function spikeDraw(H: number, seed: number): Img {
+  const { c } = canvasFor(H, 0.9, seed),
+    R = mulberry(seed),
+    stems = Array.from({ length: 3 }, (_, k) => ({ x: ((k * 0.618) % 1) - 0.5, ang: (R() - 0.5) * 0.35, len: k ? 0.65 + 0.25 * R() : 0.9 + 0.1 * R() }));
+  if (H <= 3) {
+    c.set(0, -1, M.GRASS, 3);
+    c.set(0, -2, M.FLOWER, 4);
+    if (H >= 3) c.set(0, -3, M.FLOWER, 5);
+  } else {
+    basal(c, H, R, 6, 0.28);
+    stems.slice(0, H < 10 ? 1 : 3).forEach((st) => {
+      const x0 = Math.round(st.x * H * 0.25),
+        len = st.len * H;
+      blade(c, x0, -1, st.ang, len * 0.5, 0, M.GRASS, () => 2);
+      for (let s = len * 0.45; s <= len; s += 1) {
+        const t = (s - len * 0.45) / (len * 0.55),
+          x = Math.round(x0 + Math.sin(st.ang) * s),
+          y = Math.round(-1 - Math.cos(st.ang) * s),
+          w = Math.round(Math.max(0, H * 0.05 * (1 - 0.75 * t)));
+        for (let dx = -w; dx <= w; dx++) c.set(x + dx, y, M.FLOWER, (t > 0.9 ? 6 : 4) + (dx < 0 ? 1 : dx > 0 ? -1 : 0) - (Math.round(s) % 3 === 0 && w ? 1 : 0));
+      }
+    });
+  }
+  return c.toImg({ [M.GRASS]: GRASS_R, [M.FLOWER]: BLOOM_R }, 0, 0);
+}
+/** Umbels (cow parsley, yarrow): stems branching at the top into rays, each ending in a little
+ * cluster of tiny white flowers, together a flat-topped head. */
+function umbelDraw(H: number, seed: number): Img {
+  const { c } = canvasFor(H, 1.2, seed),
+    R = mulberry(seed),
+    stems = Array.from({ length: 3 }, (_, k) => ({ x: ((k * 0.618) % 1) - 0.5, ang: (R() - 0.5) * 0.5, len: k ? 0.7 + 0.2 * R() : 0.95, rays: 5 + Math.floor(R() * 4), wide: 0.22 + 0.1 * R() }));
+  if (H <= 3) {
+    c.set(0, -1, M.GRASS, 3);
+    c.set(0, -2, M.FLOWER, 5);
+    if (H >= 3) c.set(1, -2, M.FLOWER, 4);
+  } else {
+    basal(c, H, R, 4, 0.22);
+    stems.slice(0, H < 10 ? 1 : 3).forEach((st) => {
+      const x0 = Math.round(st.x * H * 0.3),
+        [x, y] = blade(c, x0, -1, st.ang, st.len * H * 0.85, 0, M.GRASS, () => 2),
+        span = st.wide * H * (st.len > 0.9 ? 1 : 0.7);
+      for (let r = 0; r < st.rays; r++) {
+        const u = st.rays > 1 ? r / (st.rays - 1) - 0.5 : 0,
+          ex = Math.round(x + u * span * 2),
+          ey = Math.round(y - st.len * H * 0.15 * (1 - u * u * 1.2));
+        if (H >= 16) blade(c, x, y, Math.atan2(ex - x, -(ey - y)), Math.hypot(ex - x, ey - y), 0, M.GRASS, () => 3);
+        const w = H >= 30 ? 1 : 0;
+        for (let dx = -w - (H >= 20 ? 1 : 0); dx <= w; dx++) c.set(ex + dx, ey - (H >= 24 ? 1 : 0), M.FLOWER, 6 - (dx > 0 ? 1 : 0));
+        c.set(ex, ey, M.FLOWER, 5);
+      }
+    });
+  }
+  return c.toImg({ [M.GRASS]: GRASS_R, [M.FLOWER]: UMBEL_R }, 0, 0);
+}
+/** Cups (poppies, tulips): a few stems, some nodding, each holding up a cup-shaped flower. */
+function cupDraw(H: number, seed: number): Img {
+  const { c } = canvasFor(H, 1.1, seed),
+    R = mulberry(seed),
+    stems = Array.from({ length: 4 }, (_, k) => ({ x: ((k * 0.618) % 1) - 0.5, ang: (R() - 0.5) * 0.4, len: 0.6 + 0.4 * R(), curl: (R() - 0.5) * 0.25 }));
+  if (H <= 3) {
+    c.set(0, -1, M.GRASS, 3);
+    c.set(0, -2, M.FLOWER, 4);
+  } else {
+    basal(c, H, R, 4, 0.22);
+    stems.slice(0, H < 8 ? 1 : H < 16 ? 3 : 4).forEach((st) => {
+      const [x, y] = blade(c, Math.round(st.x * H * 0.35), -1, st.ang, st.len * H, st.curl, M.GRASS, (t) => (t < 0.5 ? 2 : 3)),
+        r = H >= 30 ? 2 : H >= 11 ? 1 : 0;
+      if (!r) {
+        c.set(x, y, M.FLOWER, 4);
+        return;
+      }
+      // A bowl: round below, its open top shadowed inside, lit on the left.
+      for (let dy = -r; dy <= r; dy++)
+        for (let dx = -r - 1; dx <= r + 1; dx++) {
+          if (dx * dx + (dy > 0 ? dy * dy * 1.6 : 0) > (r + 0.7) ** 2) continue;
+          c.set(x + dx, y - r + dy, M.FLOWER, dy === -r && Math.abs(dx) <= r - 1 ? 2 : dx < 0 ? 5 : dx > 0 ? 3 : 4);
+        }
+    });
+  }
+  return c.toImg({ [M.GRASS]: GRASS_R, [M.FLOWER]: BLOOM_R }, 0, 0);
+}
+/** Cushion flowers (moss campion, saxifrage): a low, tight cushion of leaves, starred with flowers. */
+function cushionDraw(H: number, seed: number): Img {
+  const { c } = canvasFor(H, 3, seed),
+    R = mulberry(seed + 21),
+    flowers = Array.from({ length: 24 }, () => ({ u: R() * 2 - 1, v: R() }));
+  if (H < 4) {
+    for (let x = -1; x <= 1; x++) c.set(x, -1, M.LEAF, 3);
+    c.set(0, -2, M.FLOWER, 5);
+  } else {
+    const k = Math.max(0.45, H / 14),
+      rx = H * 1.2;
+    crownV(c, 0, -H / 2, rx, H / 2, { r0: 0.8 * k, r1: 1.3 * k, density: 3, speckle: 0.5, holes: 0, rag: 1.5 }, seed);
+    // Flowers on its upper surface, at fixed places on the dome (so they hold still as it grows).
+    for (const { u, v } of flowers.slice(0, Math.min(24, Math.round(H * 1.5)))) {
+      const x = Math.round(u * rx * 0.85),
+        top = -H * Math.sqrt(Math.max(0, 1 - u * u * 0.85)),
+        y = Math.round(top + v * H * 0.45);
+      c.set(x, y, M.FLOWER, 5 + (v < 0.3 ? 1 : 0));
+      if (H >= 14) c.set(x + 1, y, M.FLOWER, 4);
+      if (H >= 24) (c.set(x, y - 1, M.FLOWER, 6), c.set(x + 1, y - 1, M.FLOWER, 5));
+    }
+  }
+  return c.toImg({ [M.LEAF]: MOSS_R, [M.FLOWER]: BLOOM_R }, 0, 0);
 }
 function fernDraw(H: number, seed: number): Img {
   const { c } = canvasFor(H, 2, seed);
@@ -947,8 +1221,21 @@ export function person(H: number, facing: number, frame: number, look: Look): Im
 // ---- The slots ----------------------------------------------------------------------------
 export const TREE_VARIANTS = 3;
 export const TREE_NAMES = ["oak", "beech", "maple", "birch", "spruce", "fir", "pine"];
-export const COVER = ["grass", "grass2", "dry grass", "flowers white", "flowers yellow", "flowers purple", "flowers red", "fern", "fern2", "shrub", "shrub2"];
-const COVER_H = [0.35, 0.3, 0.4, 0.45, 0.45, 0.45, 0.45, 0.8, 0.7, 1.5, 1.2];
+export const COVER = ["grass", "grass2", "dry grass", "fern", "fern2", "shrub", "shrub2"];
+const COVER_H = [0.35, 0.3, 0.4, 0.8, 0.7, 1.5, 1.2];
+/** Grasses and flowers beyond the plain tuft, a few drawings each; `blob`: a mound (grown from one
+ * drawing like a shrub) rather than strokes (drawn at each size). */
+export const HERB_KINDS = [
+  { kind: "tallgrass", n: 3, worldH: 0.9, blob: false, draw: tallgrassDraw },
+  { kind: "sedge", n: 2, worldH: 0.5, blob: false, draw: sedgeDraw },
+  { kind: "reed", n: 2, worldH: 1.8, blob: false, draw: reedDraw },
+  { kind: "moss", n: 2, worldH: 0.15, blob: true, draw: mossDraw },
+  { kind: "daisy", n: 2, worldH: 0.35, blob: false, draw: daisyDraw },
+  { kind: "spike", n: 2, worldH: 0.75, blob: false, draw: spikeDraw },
+  { kind: "umbel", n: 2, worldH: 0.8, blob: false, draw: umbelDraw },
+  { kind: "cup", n: 2, worldH: 0.45, blob: false, draw: cupDraw },
+  { kind: "cushion", n: 2, worldH: 0.12, blob: true, draw: cushionDraw },
+];
 
 /** Bushes beyond the plain shrub, by the names the biomes give them (biomes.ts `bushes`). */
 export const PLANT_KINDS = [
@@ -959,7 +1246,7 @@ export const PLANT_KINDS = [
 /** Families placed as one (any of their drawings, as they come): rocks and bushes, by kind. */
 export function familyOf(name: string) {
   const kind = name.split(" ")[0];
-  return ROCK_KINDS.some((r) => r.kind === kind) || PLANT_KINDS.some((p) => p.kind === kind) ? kind : name;
+  return ROCK_KINDS.some((r) => r.kind === kind) || PLANT_KINDS.some((p) => p.kind === kind) || HERB_KINDS.some((p) => p.kind === kind) ? kind : name;
 }
 
 export function slotDefs(): SlotDef[] {
@@ -968,7 +1255,6 @@ export function slotDefs(): SlotDef[] {
     for (let v = 0; v < TREE_VARIANTS; v++) out.push({ name: `${name} ${v}`, worldH: 20, maxClass: NC - 1, sunFlip: true, draw: (H, s) => treeDraw(name)(H, s + v * 7919) });
   COVER.forEach((name, k) => {
     const draw = (H: number, s: number): Img => {
-      if (name.startsWith("flowers")) return grass(H, s, false, name.split(" ")[1]);
       if (name === "dry grass") return grass(H, s, true);
       if (name.startsWith("grass")) return grass(H, s + (name === "grass2" ? 31 : 0), false);
       if (name.startsWith("fern")) return fernDraw(H, s + (name === "fern2" ? 17 : 0));
@@ -987,6 +1273,9 @@ export function slotDefs(): SlotDef[] {
           return kind === "heather" ? heatherDraw(H, sd) : kind === "sage" ? sageDraw(H, sd) : rosetteDraw(H, sd, v === n - 1);
         },
       });
+  });
+  HERB_KINDS.forEach(({ kind, n, worldH, draw }, f) => {
+    for (let v = 0; v < n; v++) out.push({ name: `${kind} ${v}`, worldH, maxClass: 18, sunFlip: true, draw: (H) => draw(H, 907 + f * 1031 + v * 53) });
   });
   // Rocks: each family a few drawings, each its own shape (rocks.ts); its seed fixed by family and
   // number, so adding slots elsewhere never changes a rock.

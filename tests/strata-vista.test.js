@@ -109,7 +109,7 @@ import { assemble, packSlot, partAt, partH } from "../tools/strata-lab/vista/pac
 
 test("vista packs: every height has an image, spans grow by whole rows, parts step a pixel at a time", () => {
   const defs = slotDefs();
-  for (const name of ["oak 0", "spruce 1", "pine 2", "shrub", "grass", "boulder 0", "outcrop 2", "rubble 1", "heather 0", "sage 1", "rosette 2", "person 0 0 0"]) {
+  for (const name of ["oak 0", "spruce 1", "pine 2", "shrub", "grass", "boulder 0", "outcrop 2", "rubble 1", "heather 0", "sage 1", "rosette 2", "tallgrass 0", "reed 1", "moss 1", "daisy 0", "cushion 1", "person 0 0 0"]) {
     const slot = defs.findIndex((d) => d.name === name),
       p = packSlot(slot, defs[slot]),
       pl = p.plan;
@@ -156,4 +156,21 @@ test("vista packs: every height has an image, spans grow by whole rows, parts st
       assert.equal(diff, 0, `${name}: the same pixels at ${pl.T} px`);
     }
   }
+});
+
+import { FORMAT, bytesOf, matches } from "../tools/strata-lab/vista/cache.ts";
+
+test("vista saved land: only a record made by the same code, for the same day and size, is used", () => {
+  const want = { format: FORMAT, code: "abc", seed: 20261126, n: 512 },
+    value = { n: 512, h: new Float32Array(4) },
+    rec = { kind: "land", ...want, made: 0, bytes: 16, value },
+    valid = (v) => v?.n === 512;
+  assert.ok(matches(rec, "land", want, valid));
+  for (const [k, v] of [["format", FORMAT + 1], ["code", "abd"], ["seed", 20261127], ["n", 256], ["kind", "sprites"]])
+    assert.ok(!matches({ ...rec, [k]: v }, "land", want, valid), `a different ${k} is not used`);
+  assert.ok(!matches({ ...rec, value: { n: 256 } }, "land", want, valid), "a value of the wrong shape is not used");
+  for (const junk of [null, undefined, 3, "land", {}]) assert.ok(!matches(junk, "land", want, valid));
+  // Its size: the bytes in its typed arrays (each counted once).
+  const a = new Uint8Array(10);
+  assert.equal(bytesOf({ a, b: { c: new Float32Array(5), again: a }, n: 3 }), 30);
 });
