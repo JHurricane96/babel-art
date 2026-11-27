@@ -16,6 +16,9 @@
 //   columns of one drawing, trees and shrubs near the camera in parts (pack.ts).
 import { GRIDS, type GridSpec, KIND_COUNT } from "./common";
 
+/** Ground cover only near tiles hold has faded out by this distance (m), short of where main.ts
+ * stops holding it (NEAR_COVER, 560 m, less a tile's reach). */
+export const NEAR_ONLY_FADE = 525;
 export const ART_W = 980,
   ART_H = 637,
   FOV = Math.PI / 3,
@@ -336,6 +339,9 @@ void main() {
   if (mode == 0 || mode == 3) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
   vec2 sc = vec2(uRes.x * 0.5 + uF * dot(v.xz, uRight) / vz, uHz - uF * v.y / vz);
   float vis = clamp((want - 1.0) / 2.0, 0.0, 1.0) * clamp((vz - uNear2) / (uNear2 * 0.5), 0.0, 1.0) * clamp((uFar2 - vz) / (uFar2 * 0.15), 0.0, 1.0);
+  // Cover only near tiles hold (flag 16384): gone by NEAR_ONLY_FADE (main.ts holds it within
+  // NEAR_COVER, 560 m), fading over the 100 m before.
+  if ((flags & 16384) != 0) vis *= clamp((${NEAR_ONLY_FADE.toFixed(1)} - length(v.xz)) / 100.0, 0.0, 1.0);
   if (top) vis = 1.0;
   bool flip = (flags & 1) == 1;
   if ((flags & 2) == 2 && uSunFlip > 0.5) flip = !flip;

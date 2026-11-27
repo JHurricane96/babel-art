@@ -42,6 +42,17 @@ const landCode = await build({
     format: "esm",
   }),
   LAND_CODE = createHash("sha256").update(landCode.outputFiles[0].text).digest("hex").slice(0, 16);
+// SPRITE_CODE, the same for the sprites (they hang on the code alone, not the day): the slots, the
+// drawings and how they are packed.
+const spriteCode = await build({
+    ...common,
+    minify: false,
+    minifyWhitespace: true,
+    minifySyntax: true,
+    stdin: { contents: 'export { slotDefs } from "./sprites"; export { packSlot } from "./pack";', resolveDir: here, loader: "ts" },
+    format: "esm",
+  }),
+  SPRITE_CODE = createHash("sha256").update(spriteCode.outputFiles[0].text).digest("hex").slice(0, 16);
 const worker = await build({
     ...common,
     entryPoints: [resolve(here, "worker.ts")],
@@ -49,7 +60,7 @@ const worker = await build({
   main = await build({
     ...common,
     entryPoints: [resolve(here, "main.ts")],
-    define: { WORKER_SOURCE: JSON.stringify(worker.outputFiles[0].text), LAND_CODE: JSON.stringify(LAND_CODE) },
+    define: { WORKER_SOURCE: JSON.stringify(worker.outputFiles[0].text), LAND_CODE: JSON.stringify(LAND_CODE), SPRITE_CODE: JSON.stringify(SPRITE_CODE) },
   });
 const script = main.outputFiles[0].text.replace(/<\/script/gi, "<\\/script");
 let html = readFileSync(resolve(here, "page.html"), "utf8").replace(
@@ -64,4 +75,4 @@ if (standalone)
     html +
     "\n</body>\n</html>\n";
 writeFileSync(out, html);
-console.log(`${out}: ${(html.length / 1024).toFixed(0)} KB (land code ${LAND_CODE})`);
+console.log(`${out}: ${(html.length / 1024).toFixed(0)} KB (land code ${LAND_CODE}, sprite code ${SPRITE_CODE})`);

@@ -14,8 +14,10 @@ import { ROCK_KINDS } from "./rocks";
 import { FORMAT, forget, list, load, save } from "./cache";
 
 declare const WORKER_SOURCE: string;
-/** A hash of the code that makes the day's land (build.mjs): what a saved land must have been made by. */
+/** Hashes of the code that makes the day's land and that which draws and packs the sprites
+ * (build.mjs): what a saved land or saved sprites must have been made by. */
 declare const LAND_CODE: string;
+declare const SPRITE_CODE: string;
 const $ = (id: string) => document.getElementById(id)!;
 
 // ---- State ------------------------------------------------------------------------------------
@@ -230,6 +232,7 @@ function buildGrid(gi: number, spec: GridSpec, blocking: boolean) {
 }
 function swapIn(gi: number, b: Build) {
   renderer.swapGrid(gi);
+  redraw = true;
   Object.assign(GRIDS[gi], b.spec);
   spareH[gi] = HGT[gi];
   HGT[gi] = b.h;
@@ -984,8 +987,9 @@ const lowCover = (list: [string, number][]) => {
 };
 const TILE = 32;
 /** Beyond this, a tile holds only what stands at least FAR_COVER_H tall (each thing by its own
- * height): anything smaller is at most a pixel and a half there, and drawn all but faded out (a
- * sprite fades in from 1 to 3 px). */
+ * height), and a third of its tall grass: the rest is a pixel or two there, and fades out with
+ * distance before it is reached (render.ts NEAR_ONLY_FADE), so tiles turning near or far add or
+ * drop nothing to be seen. */
 const NEAR_COVER = 560,
   FAR_COVER_H = 0.95;
 /** What the ground is on an 8 m lattice over a tile outside the fine grid (from the land itself):
@@ -1067,7 +1071,10 @@ function coverTile(tx: number, tz: number, far: boolean): Float32Array {
             weather = w && ((w & 3) === 3 || bare > 0.25) ? (w & 3) | (Math.max(0, (w >> 2) - less) << 2) : 0;
           info = rockAt(x, z, jit) * 2 + shade + (weather << 7);
         }
-        if (!far || (hgt >= FAR_COVER_H && !thin)) out.push(x, y - 0.05, z, hgt, slot, 2 | (info << 3));
+        // What only near tiles hold is marked (bit 14), and fades out before NEAR_COVER (render.ts),
+        // so a tile turning far (or near) as the camera moves never drops (or adds) a speck.
+        const nearOnly = hgt < FAR_COVER_H || thin;
+        if (!far || !nearOnly) out.push(x, y - 0.05, z, hgt, slot, 2 | (info << 3) | (nearOnly ? 1 << 14 : 0));
         break;
       }
     }
@@ -1135,6 +1142,8 @@ function cullTrees(c: Camera) {
  * NEAR_COVER is ready (a far tile not made yet left out until it is: everything there is a pixel or
  * so), and again once they all are. A tile to be made again (coverStale) is drawn as it was until it
  * is. The first time, and after travelling somewhere new, all at once. */
+let keepDrawn = false,
+  drawnCover = new Float32Array(0);
 let coverNeed: { tx: number; tz: number; far: boolean; k: number; d: number }[] | null = null,
   coverNearDone = false,
   coverHave = false,
@@ -1312,6 +1321,7 @@ try {
   throw err;
 }
 function layout() {
+  redraw = true;
   const r = area.getBoundingClientRect(),
     aspect = ART_W / ART_H;
   let w = r.width,
@@ -1678,18 +1688,31 @@ let buildMs = 0,
 // slot a job (the heavy ones), the rest a dozen at a time.
 const WORLD_N = 512,
   LAND_META = { format: FORMAT, code: typeof LAND_CODE === "string" ? LAND_CODE : "dev", seed: SEED, n: WORLD_N };
-/** Where today's land came from: "saved" (an earlier visit today), "made", or "" until known. */
+/** The sprites hang on the code alone (seed 0; n, how many slots). */
+const SPRITE_META = { format: FORMAT, code: typeof SPRITE_CODE === "string" ? SPRITE_CODE : "dev", seed: 0, n: DEFS.length };
+/** Where today's land and the sprites came from: "saved" (an earlier visit), "made", or "" until known. */
 let landFrom = "",
+  spritesFrom = "",
   forgotten = false;
+/** Do saved sprites look whole: a pack for every slot, each with its images and plan? */
+const isSprites = (v: unknown) =>
+  Array.isArray(v) && v.length === DEFS.length && v.every((p) => p && typeof p.slot === "number" && p.plan && Array.isArray(p.exact) && Array.isArray(p.parts) && Array.isArray(p.ramps));
 /** Does a saved value look like a whole land of this size? */
 const isLand = (v: unknown) => {
   const L = v as LandData | undefined;
   return !!L && L.n === WORLD_N && L.h?.length === WORLD_N * WORLD_N && L.rock?.length === WORLD_N * WORLD_N && !!L.derived && Array.isArray(L.places) && L.places.length > 0;
 };
-void load<LandData>("land", LAND_META, isLand).then((L) => {
+void Promise.all([load<LandData>("land", LAND_META, isLand), load<SlotPack[]>("sprites", SPRITE_META, isSprites)]).then(([L, packs]) => {
   landFrom = L ? "saved" : "made";
+  spritesFrom = packs ? "saved" : "made";
   if (L) onLand(L);
   else run({ type: "world", seed: SEED, n: WORLD_N }, (d) => onLand(d.land));
+  if (packs) {
+    spritePacks.push(...packs);
+    spritesDone();
+    void showSaved();
+    return;
+  }
   const nSlots = DEFS.length;
   for (let a = 0; a < nSlots; ) {
     const heavy = DEFS[a].maxClass >= 25 || DEFS[a].name.startsWith("shrub");
@@ -1704,12 +1727,15 @@ void load<LandData>("land", LAND_META, isLand).then((L) => {
   }
   void showSaved();
 });
-/** Save the land just made for the next visit today: once the page is running (writing it takes the
- * main thread a moment), unless it has been forgotten since. */
-function saveLand() {
-  if (landFrom !== "made" || forgotten) return;
-  setTimeout(() => {
-    if (!forgotten) void save("land", LAND_META, land()).then(() => showSaved());
+/** Save what this visit made (the land, for the rest of today; the sprites, until the code that
+ * draws them changes) once the page is running (writing takes the main thread a moment), unless it
+ * has been forgotten since. */
+function saveMade() {
+  if (forgotten || (landFrom !== "made" && spritesFrom !== "made")) return;
+  setTimeout(async () => {
+    if (!forgotten && landFrom === "made") await save("land", LAND_META, land());
+    if (!forgotten && spritesFrom === "made") await save("sprites", SPRITE_META, spritePacks);
+    void showSaved();
   }, 2000);
 }
 /** What this browser has saved, in the Saved readout. */
@@ -1720,20 +1746,21 @@ async function showSaved() {
     el.textContent = "This browser keeps nothing here; the world is made each visit.";
     return;
   }
-  const L = all.find((r) => r.kind === "land");
-  if (!L) {
-    el.textContent = landFrom === "made" && !forgotten ? "Nothing yet: today's land is saved once the walk starts." : "Nothing saved.";
-    return;
-  }
-  const mb = (L.bytes / 1048576).toFixed(1),
-    today = L.seed === SEED && L.code === LAND_META.code;
-  el.textContent = today ? `Today's land, ${mb} MB${landFrom === "saved" ? " (this visit started from it)" : ""}.` : `An older land, ${mb} MB (replaced on the next save).`;
+  const mb = (r: { bytes: number }) => `${(r.bytes / 1048576).toFixed(r.bytes < 1e7 ? 1 : 0)} MB`,
+    L = all.find((r) => r.kind === "land"),
+    Sp = all.find((r) => r.kind === "sprites"),
+    said: string[] = [];
+  if (L) said.push(L.seed === SEED && L.code === LAND_META.code ? `today's land, ${mb(L)}` : `an older land, ${mb(L)} (replaced on the next save)`);
+  if (Sp) said.push(Sp.code === SPRITE_META.code ? `the sprites, ${mb(Sp)}` : `older sprites, ${mb(Sp)} (replaced on the next save)`);
+  const used = [landFrom === "saved" ? "land" : "", spritesFrom === "saved" ? "sprites" : ""].filter(Boolean).join(" and ");
+  if (!said.length) el.textContent = (landFrom === "made" || spritesFrom === "made") && !forgotten ? "Nothing yet: what this visit made is saved once the walk starts." : "Nothing saved.";
+  else el.textContent = `Saved: ${said.join("; ")}.${used ? ` This visit started from the saved ${used}.` : ""}`;
 }
 $("forget").onclick = async () => {
   forgotten = true;
   const ok = await forget();
   await showSaved();
-  if (ok) $("saved-note").textContent = "Forgotten. Today's land will be made again on the next visit.";
+  if (ok) $("saved-note").textContent = "Forgotten. The next visit makes the land and the sprites again.";
 };
 /** The sprites are all here: on to the GPU now (while the land is still being made), and the clouds. */
 function spritesDone() {
@@ -1776,7 +1803,7 @@ function maybeStart() {
   if (started || !spritesSet || !landReady) return;
   started = true;
   buildMs = performance.now() - t0;
-  saveLand();
+  saveMade();
   treesList = renderer.sprites(new Float32Array(0));
   coverList = renderer.sprites(new Float32Array(0));
   partyList = renderer.sprites(new Float32Array(0));
@@ -1987,6 +2014,12 @@ let treeVis = new Float32Array(0),
 let last = 0,
   hold = false,
   frameLog: number[][] | null = null;
+/** What the last frame drawn while paused showed; set `redraw` when the picture changes otherwise
+ * (a grid swapped in, the page resized). */
+let pausedSig = "",
+  redraw = false,
+  /** Frames drawn so far (not counting those skipped while paused). */
+  framesDrawn = 0;
 function frame(now: number, forced = -1) {
   if (hold && forced < 0) return;
   const dtReal = forced >= 0 ? forced : Math.min(0.1, (now - last) / 1000 || 0);
@@ -2016,7 +2049,19 @@ function frame(now: number, forced = -1) {
     treeVis = nearSubset(visTrees, rc.x, rc.z, 40);
   }
   const cover = coverAround(rc.x, rc.z, rc.yaw);
+  // Paused, with nothing that changes the picture (the camera, what is shown, the land or its
+  // cover, the page's size): draw nothing, so the GPU rests; look again next frame.
+  if (paused && forced < 0) {
+    const sig = [rc.x, rc.y, rc.z, rc.yaw, rc.hz, s, mode, opt.bands, opt.wall, opt.path, opt.ghost, opt.marker, opt.snap].join();
+    if (sig === pausedSig && !visTrees && !cover && !redraw) {
+      requestAnimationFrame((t) => frame(t));
+      return;
+    }
+    pausedSig = sig;
+  } else pausedSig = "";
+  redraw = false;
   if (cover && coverList) {
+    if (keepDrawn) drawnCover = cover.slice();
     renderer.sprites(cover, coverList);
     coverVis = nearSubset(coverNear, rc.x, rc.z, 90);
   }
@@ -2034,6 +2079,7 @@ function frame(now: number, forced = -1) {
       { data: coverVis, near: 3, far: COVER_FAR },
     ]),
   );
+  framesDrawn++;
   drawMap(rc);
   const cpuNow = performance.now() - t1;
   cpuMs = cpuMs * 0.9 + cpuNow * 0.1;
@@ -2099,7 +2145,7 @@ Object.assign(window, {
     },
     opt,
     state() {
-      return { s, mode, current, cam: { ...cam }, stats: { ...renderer.stats }, gpuMs: renderer.timer.ms, cpuMs, fps, total: TOTAL };
+      return { s, mode, current, cam: { ...cam }, stats: { ...renderer.stats }, gpuMs: renderer.timer.ms, cpuMs, fps, total: TOTAL, framesDrawn };
     },
     readArt: () => renderer.readArt(),
     /** How a sprite grows: drawn alone against the sky at each size it should be (px tall), what it
@@ -2153,7 +2199,13 @@ Object.assign(window, {
     slotNames: () => DEFS.map((d) => d.name),
     /** The saved land: where this visit's came from ("saved" or "made"), and what is saved now. */
     async saved() {
-      return { landFrom, code: LAND_META.code, records: await list() };
+      return { landFrom, spritesFrom, code: LAND_META.code, spriteCode: SPRITE_META.code, records: await list() };
+    },
+    /** The ground cover as last handed to the GPU (x, y, z, height, slot, flags each), for checks;
+     * kept from the first call on. */
+    drawnCover() {
+      keepDrawn = true;
+      return drawnCover;
     },
     /** Tiles of ground cover the view still waits for (made a few a frame after a seek). */
     get coverPending() {

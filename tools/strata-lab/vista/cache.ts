@@ -1,14 +1,14 @@
-// Vista's saved world: today's land, kept in the browser (IndexedDB) so a second visit the same
-// day starts in a few seconds instead of making the world again.
+// Vista's saved world: today's land, and the sprites (the same every day), kept in the browser
+// (IndexedDB) so a visit starts in a few seconds instead of making them again.
 //
 // What is kept is only ever used by the code that made it:
 // - Each record carries what it was made from: the cache's own FORMAT, the hash of the code that
-//   makes the land (`code`: build.mjs hashes the bundled world generator and land code, so any
-//   change there, and only there, changes it), the day's seed and the world's size. A record that
-//   differs in any of them, or does not look like a land, is deleted when read and the land is made
-//   again.
-// - There is one record per kind (today: "land"). Saving one deletes everything else in the store,
-//   and on opening anything this version does not know is deleted, so nothing old piles up.
+//   makes it (`code`: build.mjs hashes the bundled code that makes the land, and that which draws
+//   and packs the sprites, so any change there, and only there, changes it), and for the land the
+//   day's seed and the world's size (for the sprites, 0 and how many slots). A record that differs
+//   in any of them, or does not look whole, is deleted when read and made again.
+// - There is one record per kind ("land", "sprites"): saving one replaces the last of its kind, and
+//   on opening anything this version does not know is deleted, so nothing old piles up.
 // - A change to how records are laid out bumps FORMAT; a change to the store itself bumps
 //   DB_VERSION (which empties it).
 // Everything fails quietly: without storage (a private window, blocked site data, a sandboxed frame,
@@ -17,8 +17,10 @@ const DB = "strata-vista",
   DB_VERSION = 2,
   STORE = "saved";
 export const FORMAT = 1;
-/** The kinds of record this version keeps. */
-const KINDS = ["land"];
+/** The kinds of record this version keeps; beside each, a small note of what it holds (`meta:`
+ * and the kind), so what is saved can be listed without reading tens of MB back. */
+const KINDS = ["land", "sprites"],
+  KEYS = [...KINDS, ...KINDS.map((k) => `meta:${k}`)];
 
 export interface Meta {
   format: number;
@@ -73,7 +75,7 @@ function db(wait = 500): Promise<IDBDatabase | null> {
         done(d);
         // Anything this version does not keep.
         void keysOf(d).then((keys) => {
-          for (const k of keys) if (!KINDS.includes(String(k))) void remove(d, k);
+          for (const k of keys) if (!KEYS.includes(String(k))) void remove(d, k);
         });
       };
       rq.onerror = rq.onblocked = () => done(null);
@@ -106,19 +108,21 @@ export async function load<T>(kind: string, want: Meta, valid: (v: unknown) => b
   if (r === undefined) return undefined;
   if (matches(r, kind, want, valid)) return (r as Saved<T>).value;
   await remove(d, kind);
+  await remove(d, `meta:${kind}`);
   return undefined;
 }
-/** Save `value` as `kind`, and delete everything else in the store. True if it was saved. */
+/** Save `value` as `kind` (in place of the last of its kind). True if it was saved. */
 export async function save(kind: string, want: Meta, value: unknown): Promise<boolean> {
   const d = await db();
   if (!d) return false;
-  const rec: Saved<unknown> = { kind, ...want, made: Date.now(), bytes: bytesOf(value), value };
+  const rec: Saved<unknown> = { kind, ...want, made: Date.now(), bytes: bytesOf(value), value },
+    { value: _, ...note } = rec;
   return new Promise<boolean>((resolve) => {
     try {
       const tx = d.transaction(STORE, "readwrite"),
         st = tx.objectStore(STORE);
-      st.clear();
       st.put(rec, kind);
+      st.put(note, `meta:${kind}`);
       tx.oncomplete = () => resolve(true);
       tx.onerror = tx.onabort = () => resolve(false);
     } catch {
@@ -130,7 +134,7 @@ export async function save(kind: string, want: Meta, value: unknown): Promise<bo
 export async function list(): Promise<{ kind: string; made: number; bytes: number; code: string; seed: number }[] | null> {
   const d = await db();
   if (!d) return null;
-  const all = ((await request(d, "readonly", (s) => s.getAll())).result ?? []) as Saved<unknown>[];
+  const all = ((await request(d, "readonly", (s) => s.getAll(IDBKeyRange.bound("meta:", "meta:\uffff")))).result ?? []) as Omit<Saved<unknown>, "value">[];
   return all.map((r) => ({ kind: r.kind, made: r.made, bytes: r.bytes, code: r.code, seed: r.seed }));
 }
 /** Forget everything saved. True if the store could be emptied. */
