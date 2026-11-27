@@ -15,7 +15,7 @@
 // shade; green: for a tree, which cell of it the pixel belongs to, for autumn colour; for a rock,
 // how open it is to the sky, for moss, lichen or snow), so the renderer can colour each one its own
 // way. People are drawn in colour.
-import { colsFor, cut, kept, orderOf } from "./grow";
+import { type Order, before, colsFor, cut, kept, orderOf, vdc } from "./grow";
 import { ROCK_KINDS } from "./rocks";
 import { type Img, type Part, type SlotDef, HERB_KINDS, PLANT_KINDS, TREE_NAMES, drawParts, indexMode, lastRamps } from "./sprites";
 
@@ -40,25 +40,34 @@ export interface Plan {
   N: number;
   direct: boolean;
 }
+/**
+ * Sprites up to this many px tall (all but trees and people) are made from the sprite as it is
+ * first drawn above them (SMALL + 1 px), by area, as full as it is (areaShrink): a sprite so fills
+ * out evenly as it comes nearer. Drawn at their own sizes, or by whole rows and columns of a big
+ * drawing, a sprite of a few pixels could gain or lose half of them from one height to the next
+ * (a bush 5 px tall more than twice as full as at 4 or 6 px, a blade of grass 2 rows tall at 3 px
+ * and 5 at 4), and seemed to swell and shrink as the walk went on.
+ */
+export const SMALL = 12;
 export function planOf(def: SlotDef): Plan {
   const kind = def.name.split(" ")[0];
-  // Trees, shrubs and rocks grow from one drawing by whole rows and columns from 6 px up (each
-  // height the one below and a row or column more), so they never change their look as they grow;
-  // only the tiniest are drawn at their own size. Grass, flowers and ferns are strokes, redrawn at
-  // every size (a stroke drawn a pixel bigger just moves its ends; shrunk by rows and columns, thin
-  // fronds break into dots).
+  // Trees, shrubs and rocks grow from one drawing by whole rows and columns (each height the one
+  // below and a row or column more), so they never change their look as they grow; trees under 6 px
+  // are drawn at their own size, the rest under SMALL px made by area. Grass, flowers and ferns are
+  // strokes, redrawn at every size above SMALL (a stroke drawn a pixel bigger just moves its ends;
+  // shrunk by rows and columns, thin fronds break into dots).
   if (TREE_NAMES.includes(kind)) return { E: 5, T: 128, K: 384, N: 128, direct: false };
-  if (kind.startsWith("shrub")) return { E: 5, T: 64, K: 256, N: 64, direct: false };
+  if (kind.startsWith("shrub")) return { E: SMALL, T: 64, K: 256, N: 64, direct: false };
   // Rocks: drawn as big as they are ever seen before they grow by whole pixels (a stone is 96 px
   // tall only 4 m from the camera; a crag, 192 px at 20 m).
   if (ROCK_KINDS.some((r) => r.kind === kind)) {
     const K = def.worldH < 1 ? 96 : def.worldH < 2 ? 128 : 192;
-    return { E: 5, T: 0, K, N: K, direct: false };
+    return { E: SMALL, T: 0, K, N: K, direct: false };
   }
-  if (PLANT_KINDS.some((p) => p.kind === kind)) return { E: 5, T: 0, K: 128, N: 128, direct: false };
-  if (kind === "saguaro") return { E: 5, T: 0, K: 192, N: 192, direct: false };
-  if (kind === "barrel" || kind === "pricklypear") return { E: 5, T: 0, K: 96, N: 96, direct: false };
-  if (HERB_KINDS.some((p) => p.kind === kind && p.blob)) return { E: 5, T: 0, K: 64, N: 64, direct: false };
+  if (PLANT_KINDS.some((p) => p.kind === kind)) return { E: SMALL, T: 0, K: 128, N: 128, direct: false };
+  if (kind === "saguaro") return { E: SMALL, T: 0, K: 192, N: 192, direct: false };
+  if (kind === "barrel" || kind === "pricklypear") return { E: SMALL, T: 0, K: 96, N: 96, direct: false };
+  if (HERB_KINDS.some((p) => p.kind === kind && p.blob)) return { E: SMALL, T: 0, K: 64, N: 64, direct: false };
   if (kind === "marker") return { E: 1, T: 0, K: 1, N: 1, direct: true };
   if (kind === "person") return { E: 48, T: 0, K: 96, N: 96, direct: true };
   return { E: 64, T: 0, K: 192, N: 192, direct: false };
@@ -116,24 +125,112 @@ function toPic(im: Img, cells?: number): Pic {
       }
   return { w: im.w, h: im.h, ax: im.ax, ay: im.ay, data };
 }
-/** A drawing shrunk to stand for H px when it was drawn standing for N px (its own rows may differ a little). */
-function shrink(src: Img, order: ReturnType<typeof orderOf>, H: number, N: number) {
+/** A drawing shrunk to stand for H px when it was drawn standing for N px (its own rows may differ
+ * a little), or with `rowsPer` rows for each px of H. */
+function shrink(src: Img, order: ReturnType<typeof orderOf>, H: number, N: number, rowsPer = src.h / N) {
   // Rows in proportion: the drawing stands for N px, whatever its own height (a boulder drawn for
   // 192 px is 162 rows; taking away N - H rows would leave it far too small).
-  const r = Math.min(src.h, Math.max(1, Math.round((src.h * H) / N))),
+  const r = Math.min(src.h, Math.max(1, Math.round(rowsPer * H))),
     { rows, cols } = kept(src, order, r, colsFor(src, r));
   return { rows, cols };
 }
-function makeSpan(src: Img, h0: number, h1: number, N: number): Span {
-  const order = orderOf(src),
-    rows: number[] = [],
+/**
+ * An image made smaller by area, to stand for H px where `src` stands for `ref`: each new pixel a
+ * box of the old, those the drawing covers most kept, as many as keep it as full as it was (so
+ * from one height to the next a sprite gains pixels in proportion, never half of them at once),
+ * each taking the old pixel nearest its middle (its material and shade, or for a tree its cell).
+ */
+export function areaShrink(src: Img, H: number, ref: number): Pic {
+  const h = Math.max(1, Math.round((src.h * H) / ref)),
+    w = Math.max(1, Math.round((src.w * H) / ref)),
+    sx = src.w / w,
+    sy = src.h / h,
+    cover = new Float32Array(w * h),
+    from = new Int32Array(w * h).fill(-1),
+    near = new Float32Array(w * h).fill(1e9);
+  let count = 0;
+  for (let y = 0; y < src.h; y++)
+    for (let x = 0; x < src.w; x++) {
+      if (!src.data[(y * src.w + x) * 4 + 3]) continue;
+      count++;
+      const x0 = x / sx,
+        x1 = (x + 1) / sx,
+        y0 = y / sy,
+        y1 = (y + 1) / sy;
+      for (let oy = Math.floor(y0); oy < Math.min(h, Math.ceil(y1)); oy++)
+        for (let ox = Math.floor(x0); ox < Math.min(w, Math.ceil(x1)); ox++) {
+          const a = (Math.min(x1, ox + 1) - Math.max(x0, ox)) * (Math.min(y1, oy + 1) - Math.max(y0, oy));
+          if (a <= 0) continue;
+          const o = oy * w + ox,
+            d = (x + 0.5 - (ox + 0.5) * sx) ** 2 + (y + 0.5 - (oy + 0.5) * sy) ** 2;
+          cover[o] += a;
+          if (d < near[o]) {
+            near[o] = d;
+            from[o] = y * src.w + x;
+          }
+        }
+    }
+  // The best covered of each row first, so its outline stands as tall as it should at every size
+  // (a twig or stalk at the top otherwise came and went from one size to the next).
+  const order = Array.from({ length: w * h }, (_, i) => i)
+      .filter((i) => from[i] >= 0)
+      .sort((a, b) => cover[b] - cover[a] || near[a] - near[b] || a - b),
+    first = new Set<number>(),
+    rowDone = new Set<number>();
+  for (const o of order)
+    if (!rowDone.has(Math.floor(o / w))) {
+      rowDone.add(Math.floor(o / w));
+      first.add(o);
+    }
+  const n = Math.max(first.size, Math.min(w * h, Math.round((count * w * h) / (src.w * src.h)))),
+    keep = [...first, ...order.filter((o) => !first.has(o))].slice(0, n),
+    data = new Uint8Array(w * h * 4);
+  for (const o of keep) data.set(src.data.subarray(from[o] * 4, from[o] * 4 + 4), o * 4);
+  return { w, h, ax: Math.min(w - 1, Math.max(0, Math.round(src.ax / sx))), ay: h - Math.round((src.h - src.ay) / sy), data };
+}
+/** The span's image at height H (its rows and columns of the drawing). */
+function spanAt(src: Img, sp: Span, H: number): Img {
+  const o = (H - sp.h0) * 6;
+  return cut(src, Array.from(sp.rows.subarray(sp.per[o], sp.per[o] + sp.per[o + 2])), Array.from(sp.cols.subarray(sp.per[o + 1], sp.per[o + 1] + sp.per[o + 3])));
+}
+/** The order to take a grown image's lines out in: the repeats first, spread evenly, so down to
+ * its first size every line of the drawing it was grown from stays. */
+function grownOrder(n0: number, n: number): number[] {
+  const firsts: number[] = [],
+    repeats: number[] = [];
+  for (let i = 0, last = -1; i < n; i++) {
+    const o = Math.min(n0 - 1, Math.floor((i * n0) / n));
+    (o === last ? repeats : firsts).push(i);
+    last = o;
+  }
+  const spread = (a: number[]) => a.map((v, k) => [v, vdc(k + 1)]).sort((p, q) => p[1] - q[1]).map((p) => p[0]);
+  return [...spread(repeats), ...spread(firsts)];
+}
+/** An image grown s times by whole pixels (each pixel repeated), its foot moved with it, and the
+ * order to take its lines out in (grownOrder). */
+function grown(src: Img, s: number): { im: Img; order: Order } {
+  const h = Math.round(src.h * s),
+    w = Math.round(src.w * s),
+    data = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const o = (Math.min(src.h - 1, Math.floor((y * src.h) / h)) * src.w + Math.min(src.w - 1, Math.floor((x * src.w) / w))) * 4;
+      data.set(src.data.subarray(o, o + 4), (y * w + x) * 4);
+    }
+  const im = { w, h, ax: Math.min(w - 1, Math.floor((src.ax + 0.5) * s)), ay: h - Math.round((src.h - src.ay) * s), data };
+  return { im, order: { rows: grownOrder(src.h, h), cols: grownOrder(src.w, w) } };
+}
+/** Sizes 1 to SMALL made by area from `ref`, the sprite as drawn at SMALL + 1 px. */
+const smalls = (ref: Img) => Array.from({ length: SMALL }, (_, i) => areaShrink(ref, i + 1, SMALL + 1));
+function makeSpan(src: Img, h0: number, h1: number, N: number, rowsPer?: number, order = orderOf(src)): Span {
+  const rows: number[] = [],
     cols: number[] = [],
     per = new Int32Array((h1 - h0 + 1) * 6);
   for (let H = h0; H <= h1; H++) {
-    const k = shrink(src, order, H, N);
-    let ax = 0;
-    for (const c of k.cols) if (c < src.ax) ax++;
-    per.set([rows.length, cols.length, k.rows.length, k.cols.length, ax, k.rows.length - (src.h - src.ay)], (H - h0) * 6);
+    const k = shrink(src, order, H, N, rowsPer);
+    // The foot where as many kept lines lie before it as before the drawing's (those below it,
+    // a drooping frond's or a sunk stone's, are taken out like any).
+    per.set([rows.length, cols.length, k.rows.length, k.cols.length, before(k.cols, src.ax), before(k.rows, src.ay)], (H - h0) * 6);
     rows.push(...k.rows);
     cols.push(...k.cols);
   }
@@ -200,7 +297,8 @@ export function packSlot(slot: number, def: SlotDef): SlotPack {
       n24 = draw(24),
       o12 = orderOf(n12),
       o24 = orderOf(n24);
-    for (let H = 1; H <= plan.E; H++) {
+    // (Shrubs make theirs by area, below.)
+    for (let H = 1; H <= plan.E && plan.E < SMALL; H++) {
       if (H < 6) exact.push(toPic(draw(H), H));
       else {
         const [src, o, N] = H < 12 ? [n12, o12, 12] : [n24, o24, 24],
@@ -239,8 +337,29 @@ export function packSlot(slot: number, def: SlotDef): SlotPack {
     // Mid: the parts put together at T px, grown and shrunk by rows and columns from E + 1 to T - 1.
     const whole = assemble(parts, plan.T, plan.K);
     span = makeSpan(whole, plan.E + 1, plan.T - 1, plan.T);
+    // (Shrubs: the smallest by area from the span's first height.)
+    if (plan.E === SMALL) exact.push(...smalls(spanAt(whole, span, SMALL + 1)));
     note();
+  } else if (plan.E === SMALL) {
+    // The smallest by area from the span's first height.
+    const src = draw(plan.K);
+    span = makeSpan(src, SMALL + 1, plan.K, plan.N);
+    exact.push(...smalls(spanAt(src, span, SMALL + 1)));
+  } else if (!plan.direct && plan.E > SMALL) {
+    // Strokes: drawn at every size above SMALL; the smallest by area from the first of those.
+    exact.push(...smalls(draw(SMALL + 1)));
+    for (let H = SMALL + 1; H <= plan.E; H++) exact.push(toPic(draw(H)));
+    if (plan.K > plan.E) {
+      // Past the last drawn size, that size grown by whole rows and columns: a drawing made big has
+      // strokes and flower heads in true proportion, thinner and smaller than those drawn small
+      // (1 px strokes, heads big enough to see), and shrunk to the size where it took over it lost
+      // half its pixels and its heads all at once.
+      const last = draw(plan.E),
+        g = grown(last, plan.K / plan.E);
+      span = makeSpan(g.im, plan.E + 1, plan.K, plan.N, last.h / plan.E, g.order);
+    }
   } else {
+    // People and the marker: drawn at every size.
     for (let H = 1; H <= plan.E; H++) exact.push(toPic(draw(H)));
     if (plan.K > plan.E) span = makeSpan(draw(plan.K), plan.E + 1, plan.K, plan.N);
   }

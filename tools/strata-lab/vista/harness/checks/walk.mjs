@@ -2,7 +2,8 @@
 // near as the page draws it, as the page draws it (vista.walk). Flags what should never happen:
 //   shrink   it gets shorter as it comes nearer
 //   jump     it grows by more in one step than it should (more than 2 px, or 6% of its height)
-//   out/in   the pixels it draws fall or rise suddenly (a pop out or in), fades being gradual
+//   out/in   how full it is (its pixels over its height x width) falls or rises 1.6x at once (a pop
+//            out or in), fades being gradual
 //   gap      it is not drawn at all where it should be
 //
 //   run.mjs walk names="sage 0,shrub"   (or match=REGEX, or all=1)
@@ -18,8 +19,8 @@ function judge(rows, o) {
   let best = 0,
     seen = false;
   for (let i = 1; i < rows.length; i++) {
-    const [d, want, h, , n] = rows[i],
-      [, want0, h0, , n0] = rows[i - 1];
+    const [d, want, h, w, n] = rows[i],
+      [, want0, h0, w0, n0] = rows[i - 1];
     if (fading(d, want, o) || fading(rows[i - 1][0], want0, o)) {
       best = Math.max(best, h);
       if (n) seen = true;
@@ -31,10 +32,14 @@ function judge(rows, o) {
       continue;
     }
     seen = true;
-    if (h < best - 1) ev.push(["shrink", d, want, `${best}->${h}`]);
+    // (Drawn twice the size past its tallest drawing, it may come out a few pixels short: 3%.)
+    if (h < best - Math.max(1, 0.03 * best)) ev.push(["shrink", d, want, `${best}->${h}`]);
     if (h0 && h - h0 > Math.max(2, 0.06 * want) + (want - want0)) ev.push(["jump", d, want, `${h0}->${h}`]);
-    if (n0 >= 8 && n < n0 * 0.6) ev.push(["out", d, want, `${n0}->${n} px`]);
-    if (n0 >= 4 && n > n0 * 1.8 + 4 && want > 3) ev.push(["in", d, want, `${n0}->${n} px`]);
+    // Pops: how full its outline is (pixels over height x width) changing by more than 1.6x at once.
+    const fill = n / (h * w),
+      fill0 = n0 / (h0 * w0);
+    if (n0 && Math.abs(n - n0) >= 6 && h * w >= 6 && fill < fill0 / 1.6) ev.push(["out", d, want, `${n0}->${n} px`]);
+    if (n0 && Math.abs(n - n0) >= 6 && h * w >= 6 && fill > fill0 * 1.6) ev.push(["in", d, want, `${n0}->${n} px`]);
     best = Math.max(best, h);
   }
   return ev;

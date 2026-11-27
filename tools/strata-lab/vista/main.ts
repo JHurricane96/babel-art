@@ -2183,32 +2183,34 @@ Object.assign(window, {
     spriteGrowth(name: string, wants: number[], crops = false) {
       const slot = SLOTS.get(name);
       if (slot === undefined) return null;
+      // Each size drawn twice: in colour, and as the ID pass (what it covers, exactly: told apart
+      // from the sky by colour, pale stone went missing).
       const H = DEFS[slot].worldH,
         c: Camera = { x: 0, y: 20000, z: 0, yaw: 0, hz: HORIZON },
-        draw = (data: Float32Array) => {
+        draw = (data: Float32Array, ids?: number) => {
           growthList = renderer.sprites(data, growthList ?? undefined);
-          renderer.draw(c, [{ sprites: growthList, near: 0.5, far: 1e7 }], { bands: false, wall: false, time: 0, spritesOnly: true }, partsFrame(c, [{ data, near: 0.5, far: 1e7 }]));
+          renderer.draw(c, [{ sprites: growthList, near: 0.5, far: 1e7 }], { bands: false, wall: false, time: 0, spritesOnly: true, ids }, partsFrame(c, [{ data, near: 0.5, far: 1e7 }]));
           return renderer.readArt();
         },
-        bg = draw(new Float32Array(0)),
         out: number[][] = [];
       for (const want of wants) {
         const d = (H * F) / want,
           base = Math.round(want) + 20,
-          img = draw(Float32Array.of(0, c.y - ((base - HORIZON) * d) / F, d, H, slot, 0));
+          data = Float32Array.of(0, c.y - ((base - HORIZON) * d) / F, d, H, slot, 0),
+          img = crops ? draw(data) : null,
+          mask = draw(data, 0);
         let top = 1e9,
           x0 = 1e9,
           x1 = -1;
         for (let y = 0; y < ART_H; y++)
           for (let x = 0; x < ART_W; x++) {
-            const o = (y * ART_W + x) * 4;
-            if (Math.abs(img[o] - bg[o]) + Math.abs(img[o + 1] - bg[o + 1]) + Math.abs(img[o + 2] - bg[o + 2]) < 6) continue;
+            if (mask[(y * ART_W + x) * 4 + 3] !== 0) continue;
             const row = ART_H - 1 - y;
             if (row < top) top = row;
             if (x < x0) x0 = x;
             if (x > x1) x1 = x;
           }
-        if (crops && x1 >= 0) {
+        if (img && x1 >= 0) {
           // The pixels it drew (others clear), from its top to its base.
           const w = x1 - x0 + 1,
             h = base - top + 1,
@@ -2216,7 +2218,7 @@ Object.assign(window, {
           for (let r = top; r <= base; r++)
             for (let x = x0; x <= x1; x++) {
               const o = ((ART_H - 1 - r) * ART_W + x) * 4,
-                on = Math.abs(img[o] - bg[o]) + Math.abs(img[o + 1] - bg[o + 1]) + Math.abs(img[o + 2] - bg[o + 2]) >= 6;
+                on = mask[o + 3] === 0;
               px.push(on ? img[o] : 0, on ? img[o + 1] : 0, on ? img[o + 2] : 0, on ? 255 : 0);
             }
           out.push([want, h, w, ...px]);
@@ -2414,6 +2416,14 @@ Object.assign(window, {
     camera: () => ({ ...lastRc, hz: lastRc.hz ?? HORIZON, F }),
     /** The ground cover as last handed to the GPU (x, y, z, height, slot, flags each; a copy). */
     cover: () => lastCover.slice(),
+    /** What the last frame draws in parts: x, y, z, height, slot, flags, list (0 trees, 1 cover)
+     * each; and each slot's sizes in parts (T to K px, T 0 for none). */
+    parts() {
+      const t = partsFrame(lastRc, lastPartsIn).trees,
+        out: number[] = [];
+      for (let k = 0; k < t.length; k += 8) out.push(t[k], t[k + 1], t[k + 2], t[k + 3], t[k + 4], t[k + 5], t[k + 6]);
+      return { trees: out, T: PLANS.map((p) => p?.T ?? 0), K: PLANS.map((p) => p?.K ?? 0) };
+    },
     /** The ground as drawn for the last frame (its terrain patches) at each point [x, z, ..]: its
      * height, and the spacing of the patch's vertices there (0 where no patch is drawn). */
     groundUnder(pts: number[]) {

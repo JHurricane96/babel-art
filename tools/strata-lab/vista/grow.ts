@@ -26,7 +26,7 @@ function lineDiff(im: Img, a: number, b: number, rows: boolean) {
   return d;
 }
 /** Van der Corput: 1/2, 1/4, 3/4, 1/8 ... any prefix spread evenly over [0, 1). */
-function vdc(k: number) {
+export function vdc(k: number) {
   let v = 0,
     b = 0.5;
   while (k) {
@@ -78,11 +78,16 @@ export function kept(im: Img, o: Order, rowsKept: number, colsKept: number) {
 }
 /** Columns to keep for a number of rows: the drawing's proportions. */
 export const colsFor = (im: Img, rowsKept: number) => Math.max(1, Math.round((im.w * rowsKept) / im.h));
-/** The image made of the given rows and columns, its foot moved with them. */
+/** The image made of the given rows and columns, its foot moved with them (where as many kept
+ * lines lie before it as before the old: not all those below the foot need be kept). */
 export function cut(im: Img, rows: number[], cols: number[]): Img {
   const data = new Uint8ClampedArray(rows.length * cols.length * 4);
   rows.forEach((sy, y) => cols.forEach((sx, x) => data.set(im.data.subarray((sy * im.w + sx) * 4, (sy * im.w + sx) * 4 + 4), (y * cols.length + x) * 4)));
-  let ax = 0;
-  for (const c of cols) if (c < im.ax) ax++;
-  return { w: cols.length, h: rows.length, ax, ay: rows.length - (im.h - im.ay), data };
+  return { w: cols.length, h: rows.length, ax: before(cols, im.ax), ay: before(rows, im.ay), data };
 }
+/** How many of the kept lines come before line `at`. */
+export const before = (kept: ArrayLike<number>, at: number) => {
+  let n = 0;
+  for (let i = 0; i < kept.length; i++) if (kept[i] < at) n++;
+  return n;
+};

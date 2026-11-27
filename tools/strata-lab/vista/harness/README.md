@@ -30,10 +30,10 @@ cover, sizes and distances are all plain arithmetic. With a GPU, `VISTA_GL=gpu` 
 
 | Check | Page | What it finds |
 | --- | --- | --- |
-| `walk` | lab | Each sprite walked up to from where it is first drawn to as near as the page draws it, with its list's fades, in parts near the camera, and in pixels twice the size past its tallest drawing. Flags it **shrinking**, **jumping** in height, **popping in or out** (its pixels rising or falling suddenly), and **gaps**, outside the fades meant to be there. `all=1` checks every sprite (about 3 min); `variants=1` adds mirrored, off to the side, and near-only. |
+| `walk` | lab | Each sprite walked up to from where it is first drawn to as near as the page draws it, with its list's fades, in parts near the camera, and in pixels twice the size past its tallest drawing. Flags it **shrinking**, **jumping** in height, **popping in or out** (how full its outline is changing 1.6x at once), and **gaps**, outside the fades meant to be there. `all=1` checks every sprite (about 3 min); `variants=1` adds mirrored, off to the side, and near-only. |
 | `sheet` | lab | A contact sheet (PNG) of sprites as the GPU draws them, at the sizes given. |
-| `ground` | world | Nothing drawn: the ground as drawn (the terrain's patches) under every cover sprite in view, frame to frame. Flags bushes sinking into or rising out of the ground. 300 frames take about 8 s. |
-| `pops` | world | The ID pass (`vista.idFrame`): every cover sprite as drawn, behind whatever stands in front of it, frame to frame. Flags size pops and puts each down to parts, ground, or other. Slow: about 4 s a frame. |
+| `ground` | world | Nothing drawn: the ground as drawn (the terrain's patches) under every cover sprite in view, frame to frame. Flags bushes sinking into or rising out of the ground, and bushes big enough to be drawn in parts that the frame's parts leave out. 300 frames take about 8 s. |
+| `pops` | world | The ID pass (`vista.idFrame`): every cover sprite as drawn, behind whatever stands in front of it, frame to frame. Flags size pops and puts each down to parts, ground, front (only its foot end changed: something nearer moving across it), or other. Overlap with neighbours still shows up as other, so use it to look, not as a pass or fail. Slow: about 4 s a frame. |
 
 A check is a module: `export const page = "lab" | "world"` and
 `export default async ({ page, args, log, out }) => result`. `page` is a Playwright page, so

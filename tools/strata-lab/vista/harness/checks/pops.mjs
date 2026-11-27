@@ -4,7 +4,9 @@
 // to the next when its distance hardly changed. Each is put down to what changed with it:
 //   parts   it went from being drawn whole to in parts (near the camera), or back
 //   ground  the ground as drawn under it moved (the terrain's patches changing detail) by 1 px or more
-//   other   neither (something in front of it, or the sprite itself)
+//   front   only its foot end changed, its top stayed: something in front of it (moving across it
+//           faster, being nearer) covers more or less of it; not a pop
+//   other   none of those: the sprite itself
 // Only the frames measured are drawn (vista.step(dt, false) between), so it runs at a few frames a
 // second under software GL.
 //
@@ -58,7 +60,7 @@ export default async ({ page, args, log }) => {
             dw = cur.w - p.w,
             still = Math.abs(want - p.want) < Math.max(0.6, 0.05 * want);
           if (!still || !((Math.abs(dh) >= 2 && Math.abs(dh) / Math.max(cur.h, p.h) >= 0.2) || (Math.abs(dw) >= 3 && Math.abs(dw) / Math.max(cur.w, p.w) >= 0.25))) return;
-          const cause = p.parts !== cur.parts ? "parts" : Math.abs(buried - p.buried) >= 1 ? "ground" : "other";
+          const cause = p.parts !== cur.parts ? "parts" : Math.abs(buried - p.buried) >= 1 ? "ground" : Math.abs(cur.top - p.top) <= 1 && cur.bottom !== p.bottom ? "front" : "other";
           P.ev.push({ f, name: P.names[s.slot], cause, dist: Math.round(vz), want: +want.toFixed(1), h: `${p.h}->${cur.h}`, w: `${p.w}->${cur.w}`, top: `${p.top}->${cur.top}`, bottom: `${p.bottom}->${cur.bottom}`, buried: `${p.buried.toFixed(1)}->${buried.toFixed(1)} px`, patch: `${p.sp}->${cur.sp} m` });
         });
         P.prev = now;
@@ -68,10 +70,16 @@ export default async ({ page, args, log }) => {
     const P = window.__pops;
     return { ev: P.ev, tracked: P.tracked, ground: P.ground, s: Math.round(window.vista.state().s) };
   });
-  const by = {};
-  for (const e of P.ev) by[`${e.cause} ${e.name}`] = (by[`${e.cause} ${e.name}`] ?? 0) + 1;
-  log(`from ${at} m to ${P.s} m, ${frames} frames, ${P.tracked} sprite-frames: ${P.ev.length} pops; the ground under a sprite 2 px or taller moved 1 px or more ${P.ground} times`);
-  if (P.ev.length) log(`by cause and sprite: ${JSON.stringify(by)}`);
-  for (const e of P.ev.slice(0, args.show ?? 12)) log(JSON.stringify(e));
-  return { ok: P.ev.length === 0, pops: P.ev.length, by };
+  const by = {},
+    causes = {};
+  for (const e of P.ev) {
+    by[`${e.cause} ${e.name}`] = (by[`${e.cause} ${e.name}`] ?? 0) + 1;
+    causes[e.cause] = (causes[e.cause] ?? 0) + 1;
+  }
+  const pops = P.ev.filter((e) => e.cause !== "front");
+  log(`from ${at} m to ${P.s} m, ${frames} frames, ${P.tracked} sprite-frames: ${pops.length} pops (and ${causes.front ?? 0} changes from what stands in front); the ground under a sprite 2 px or taller moved 1 px or more ${P.ground} times`);
+  log(`by cause: ${JSON.stringify(causes)}`);
+  if (pops.length) log(`pops by cause and sprite: ${JSON.stringify(Object.fromEntries(Object.entries(by).filter(([k]) => !k.startsWith("front"))))}`);
+  for (const e of pops.slice(0, args.show ?? 12)) log(`  ${JSON.stringify(e)}`);
+  return { ok: pops.length === 0, pops: pops.length, front: causes.front ?? 0 };
 };
