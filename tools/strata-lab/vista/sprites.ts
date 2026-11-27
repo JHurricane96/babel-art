@@ -10,7 +10,8 @@ import { mulberry } from "./common";
 import { ROCK_KINDS, rockImg } from "./rocks";
 import { type Img, type MatCanvas, type SlotDef, CLASS_H, NC, blade, canvasFor, crownV, hashCell, isIndexMode, useRamps } from "./draw";
 import { branch } from "../../../engine/strata/art";
-import { TREE_NAMES, treeDraw } from "./trees";
+import { treeDraw } from "./trees";
+import { TREE_KINDS } from "./common";
 export { type Img, type Part, type SlotDef, CLASS_H, NC, drawParts, indexMode, lastRamps } from "./draw";
 export { LEAF_HEX, TREE_NAMES } from "./trees";
 
@@ -33,7 +34,11 @@ export const GRASS_R = rampOf(hex("#6f9a3c")),
   CATKIN_R = rampOf(hex("#5a4632")),
   CATTAIL_R = rampOf(hex("#6a4a30")),
   PLUME_R = rampOf(hex("#b8a488")),
-  MOSS_R = rampOf(hex("#5e7a32"));
+  MOSS_R = rampOf(hex("#5e7a32")),
+  CACTUS_R = rampOf(hex("#5a7a48")),
+  SPINE_R = rampOf(hex("#d8cc98")),
+  CACTUS_BLOOM_R = rampOf(hex("#e0a040")),
+  PEAR_R = rampOf(hex("#a83a5a"));
 
 /** A grass clump: blades fanning from one root, dark at the base, lit at the tips. */
 function grass(H: number, seed: number, dry: boolean): Img {
@@ -433,6 +438,97 @@ function rosetteDraw(HH: number, seed: number, spike: boolean): Img {
   return c.toImg({ [M.LEAF]: ROSETTE_R, [M.WOOD]: TWIG_R, [M.FLOWER]: SPIKE_R }, 0, 0);
 }
 
+// ---- Cacti ---------------------------------------------------------------------------------
+/** A ribbed upright stem, cx..: lit on the left, a rib line every other column, round at the top. */
+function ribbed(c: MatCanvas, cx: number, y0: number, y1: number, w: number, m: number) {
+  const half = Math.max(0.5, w / 2);
+  for (let y = Math.round(y1); y <= Math.round(y0); y++) {
+    // Rounded top: narrower over its last half-width.
+    const fromTop = y - y1,
+      hw = fromTop < half ? Math.sqrt(Math.max(0, half * half - (half - fromTop) ** 2)) : half;
+    for (let x = Math.round(cx - hw); x <= Math.round(cx + hw); x++) {
+      const u = (x - (cx - half)) / (2 * half),
+        rib = w >= 5 && Math.round(x - cx) % 2 === 0 ? -1 : 0;
+      c.set(x, y, m, Math.max(1, (u < 0.3 ? 5 : u < 0.6 ? 4 : u < 0.85 ? 3 : 2) + rib));
+    }
+  }
+}
+/** A saguaro: a tall ribbed column, and up to three arms turning upward. */
+function saguaroDraw(H: number, seed: number): Img {
+  const R = mulberry(seed),
+    { c } = canvasFor(H, 0.8, seed),
+    w = Math.max(1, H * 0.13),
+    arms = Array.from({ length: R() < 0.2 ? 0 : 1 + Math.floor(R() * 3) }, (_, k) => {
+      const at = 0.3 + 0.25 * R();
+      return { side: k % 2 ? 1 : -1, at, out: 0.17 + 0.07 * R(), top: Math.min(0.9, at + 0.2 + 0.2 * R()) };
+    }),
+    bloom = R() < 0.4;
+  for (const a of H >= 8 ? arms : []) {
+    const aw = Math.max(1, w * 0.7),
+      x = a.side * a.out * H,
+      y0 = -a.at * H;
+    // Out from the trunk (an elbow as thick as the arm), then up.
+    for (let k = 0; k <= Math.abs(x); k++) for (let d = -aw / 2; d <= aw / 2; d += 0.5) c.set(a.side * k, Math.round(y0 + d), M.LEAF, d < -aw / 6 ? 5 : d < aw / 4 ? 4 : 3);
+    ribbed(c, x, y0 + aw / 2, -a.top * H, aw, M.LEAF);
+  }
+  ribbed(c, 0, -1, -H, w, M.LEAF);
+  if (bloom && H >= 12) for (let k = -1; k <= 1; k++) c.set(k, -H - 1, M.FLOWER, 6 - Math.abs(k));
+  return c.toImg({ [M.LEAF]: CACTUS_R, [M.FLOWER]: UMBEL_R }, 0, 0);
+}
+/** A barrel cactus: a squat ribbed globe, spines along its ribs, a crown of flowers. */
+function barrelDraw(H: number, seed: number): Img {
+  const R = mulberry(seed),
+    { c } = canvasFor(H, 1.2, seed),
+    rx = H * 0.42,
+    ry = H * 0.5,
+    ribs = 7 + Math.floor(R() * 4);
+  for (let y = -Math.round(2 * ry); y <= -1; y++)
+    for (let x = -Math.round(rx); x <= Math.round(rx); x++) {
+      const dx = x / rx,
+        dy = (y + ry) / ry;
+      if (dx * dx + dy * dy > 1) continue;
+      const nz = Math.sqrt(Math.max(0, 1 - dx * dx - dy * dy)),
+        lam = Math.max(0, -0.55 * dx - 0.7 * dy + 0.45 * nz),
+        // Ribs: bands across the globe, by the angle round it.
+        rib = H >= 10 && Math.round(((Math.asin(Math.max(-1, Math.min(1, dx))) / Math.PI + 0.5) * ribs * 2)) % 2 === 0;
+      c.set(x, y, rib && H >= 16 && hashCell(x, y, seed) < 0.25 ? M.CAP : M.LEAF, 1 + Math.round(lam * 4) - (rib ? 1 : 0));
+    }
+  if (H >= 8) for (let k = -2; k <= 2; k++) c.set(k, -Math.round(2 * ry) - (Math.abs(k) < 2 ? 1 : 0), M.FLOWER, 5 - Math.abs(k));
+  return c.toImg({ [M.LEAF]: CACTUS_R, [M.CAP]: SPINE_R, [M.FLOWER]: CACTUS_BLOOM_R }, 0, 0);
+}
+/** A prickly pear: flat oval pads growing from the rims of others, dotted with spines, a few fruits. */
+function pricklyDraw(H: number, seed: number): Img {
+  const R = mulberry(seed),
+    { c } = canvasFor(H, 1.4, seed),
+    pads: { x: number; y: number; a: number; s: number }[] = [{ x: 0, y: -0.25, a: 0, s: 1 }];
+  for (let k = 1; k < 8; k++) {
+    const p = pads[Math.floor(R() * pads.length)],
+      a = p.a + (R() - 0.5) * 1.4,
+      s = p.s * (0.75 + 0.2 * R());
+    pads.push({ x: p.x + Math.sin(a) * 0.32 * p.s, y: p.y - Math.cos(a) * 0.32 * p.s, a, s });
+  }
+  const kept = pads.filter((p) => p.y - 0.25 * p.s > -1);
+  for (const p of kept.slice(0, H < 8 ? 2 : kept.length)) {
+    const rx = 0.17 * p.s * H,
+      ry = 0.25 * p.s * H,
+      ca = Math.cos(p.a),
+      sa = Math.sin(p.a);
+    for (let y = Math.floor(p.y * H - ry - 1); y <= Math.ceil(p.y * H + ry + 1); y++)
+      for (let x = Math.floor(p.x * H - ry - 1); x <= Math.ceil(p.x * H + ry + 1); x++) {
+        const lx = x - p.x * H,
+          ly = y - p.y * H,
+          u = (lx * ca + ly * sa) / Math.max(0.6, rx),
+          v = (-lx * sa + ly * ca) / Math.max(0.6, ry);
+        if (u * u + v * v > 1) continue;
+        const tone = 1 + Math.round(Math.max(0, 0.6 - 0.45 * u - 0.35 * v) * 5);
+        c.set(x, y, H >= 16 && hashCell(Math.round(u * 6), Math.round(v * 6), seed) < 0.12 && (Math.round(u * 6) + Math.round(v * 6)) % 2 === 0 ? M.CAP : M.LEAF, tone);
+      }
+    // A fruit or two on the rim.
+    if (H >= 12 && R() < 0.4) c.set(Math.round(p.x * H - sa * ry), Math.round(p.y * H - ca * ry) - 1, M.FLOWER, 4);
+  }
+  return c.toImg({ [M.LEAF]: CACTUS_R, [M.CAP]: SPINE_R, [M.FLOWER]: PEAR_R }, 0, 0);
+}
+
 // ---- People: drawn in colours directly -------------------------------------------------------
 type RGB = [number, number, number];
 class Px {
@@ -613,7 +709,6 @@ export function person(H: number, facing: number, frame: number, look: Look): Im
 
 
 // ---- The slots ----------------------------------------------------------------------------
-export const TREE_VARIANTS = 3;
 export const COVER = ["grass", "grass2", "dry grass", "fern", "fern2", "shrub", "shrub2"];
 const COVER_H = [0.35, 0.3, 0.4, 0.8, 0.7, 1.5, 1.2];
 /** Grasses and flowers beyond the plain tuft, a few drawings each; `blob`: a mound (grown from one
@@ -628,6 +723,10 @@ export const HERB_KINDS = [
   { kind: "umbel", n: 2, worldH: 0.8, blob: false, draw: umbelDraw },
   { kind: "cup", n: 2, worldH: 0.45, blob: false, draw: cupDraw },
   { kind: "cushion", n: 2, worldH: 0.12, blob: true, draw: cushionDraw },
+  // Cacti, as the biomes name them (cactusKinds).
+  { kind: "saguaro", n: 3, worldH: 6, blob: true, draw: saguaroDraw },
+  { kind: "barrel", n: 2, worldH: 0.7, blob: true, draw: barrelDraw },
+  { kind: "pricklypear", n: 2, worldH: 1.2, blob: true, draw: pricklyDraw },
 ];
 
 /** Bushes beyond the plain shrub, by the names the biomes give them (biomes.ts `bushes`). */
@@ -644,8 +743,8 @@ export function familyOf(name: string) {
 
 export function slotDefs(): SlotDef[] {
   const out: SlotDef[] = [];
-  for (const name of TREE_NAMES)
-    for (let v = 0; v < TREE_VARIANTS; v++) out.push({ name: `${name} ${v}`, worldH: 20, maxClass: NC - 1, sunFlip: true, draw: (H, s) => treeDraw(name)(H, s + v * 7919) });
+  for (const { name, n } of TREE_KINDS)
+    for (let v = 0; v < n; v++) out.push({ name: `${name} ${v}`, worldH: 20, maxClass: NC - 1, sunFlip: true, draw: (H, s) => treeDraw(name)(H, s + v * 7919) });
   COVER.forEach((name, k) => {
     const draw = (H: number, s: number): Img => {
       if (name === "dry grass") return grass(H, s, true);

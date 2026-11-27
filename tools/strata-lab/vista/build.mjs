@@ -30,6 +30,10 @@ const here = dirname(fileURLToPath(import.meta.url)),
 
 const landCode = await build({
     ...common,
+    // (Names kept: renaming would shift with any code added to these files, used here or not.)
+    minify: false,
+    minifyWhitespace: true,
+    minifySyntax: true,
     stdin: {
       contents: 'export { generateWorld } from "../../../engine/strata/world2d"; export { landFromWorld, setLand } from "./land";',
       resolveDir: here,

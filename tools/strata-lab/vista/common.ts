@@ -149,16 +149,40 @@ export const KIND = {
 } as const;
 export const KIND_COUNT = 12;
 
-/** Tree kinds, as sprite families (sprites.ts draws them; heights in metres). */
-export const TREE_KINDS = [
-  { name: "oak", h: [13, 21] },
-  { name: "beech", h: [18, 28] },
-  { name: "maple", h: [11, 17] },
-  { name: "birch", h: [12, 19] },
-  { name: "spruce", h: [17, 30] },
-  { name: "fir", h: [15, 26] },
-  { name: "pine", h: [13, 22] },
+/** The trees Vista draws (trees.ts): heights in metres, how many drawings, leaf and bark colours,
+ * whether the leaves turn in autumn. Slot names are `${name} ${drawing}`, so a name is one word. */
+export const TREE_KINDS: { name: string; h: [number, number]; n: number; leaf: string; bark: string; turns?: boolean }[] = [
+  { name: "oak", h: [13, 21], n: 3, leaf: "#4a7428", bark: "#5a4636", turns: true },
+  { name: "beech", h: [18, 28], n: 3, leaf: "#5d8a2e", bark: "#8a8478", turns: true },
+  { name: "maple", h: [11, 17], n: 3, leaf: "#527c2a", bark: "#5e4c3e", turns: true },
+  { name: "birch", h: [12, 19], n: 3, leaf: "#86a23e", bark: "#e4e0d4", turns: true },
+  { name: "spruce", h: [17, 30], n: 3, leaf: "#24402f", bark: "#4a3a2e" },
+  { name: "fir", h: [15, 26], n: 3, leaf: "#2a4a3a", bark: "#4a3a30" },
+  { name: "pine", h: [13, 22], n: 3, leaf: "#2f4a2c", bark: "#9a6040" },
+  { name: "stone-pine", h: [10, 18], n: 2, leaf: "#35552e", bark: "#8a5a3a" },
+  { name: "larch", h: [16, 28], n: 2, leaf: "#6a9a3c", bark: "#6a4a36", turns: true },
+  { name: "palm", h: [10, 20], n: 3, leaf: "#4f7f2f", bark: "#8a7a62" },
+  { name: "fan-palm", h: [8, 16], n: 2, leaf: "#5a8236", bark: "#7a6a54" },
+  { name: "acacia", h: [6, 11], n: 3, leaf: "#5c7a30", bark: "#5a4a3a" },
+  { name: "juniper", h: [3, 7], n: 3, leaf: "#3f5c44", bark: "#6a4a38" },
+  { name: "cypress", h: [12, 22], n: 2, leaf: "#2c4a2e", bark: "#5a4636" },
+  { name: "poplar", h: [18, 30], n: 2, leaf: "#5e8a30", bark: "#8a8478", turns: true },
+  { name: "willow", h: [9, 15], n: 2, leaf: "#7a9a3a", bark: "#5e5040", turns: true },
+  { name: "olive", h: [4, 8], n: 2, leaf: "#7a8a5e", bark: "#6a6050" },
+  { name: "baobab", h: [10, 18], n: 2, leaf: "#5a7a30", bark: "#9a8a7a" },
+  { name: "joshua-tree", h: [4, 9], n: 2, leaf: "#6a7a3a", bark: "#6a5a48" },
+  { name: "tree-fern", h: [3, 7], n: 2, leaf: "#4f8a34", bark: "#4a3a2a" },
+  { name: "banana", h: [3, 6], n: 2, leaf: "#6a9a34", bark: "#6a7a3a" },
+  { name: "snag", h: [8, 18], n: 2, leaf: "#4a5a30", bark: "#8a8274" },
 ];
+/** The trees the biomes name (biomes.ts `trees`), as what Vista draws for them. */
+export const TREE_OF: Record<string, string> = {
+  oak: "oak", "cork oak": "oak", fig: "oak", beech: "beech", kapok: "beech", "canopy tree": "beech", teak: "beech",
+  maple: "maple", alder: "maple", mangrove: "maple", birch: "birch", aspen: "birch", spruce: "spruce", fir: "fir", redwood: "fir",
+  pine: "pine", "stone pine": "stone-pine", larch: "larch", palm: "palm", "fan palm": "fan-palm", acacia: "acacia",
+  "dragon tree": "acacia", juniper: "juniper", cypress: "cypress", poplar: "poplar", bamboo: "poplar", willow: "willow",
+  olive: "olive", baobab: "baobab", "joshua tree": "joshua-tree", "tree fern": "tree-fern", banana: "banana", snag: "snag",
+};
 
 // ---- Walking the route ----------------------------------------------------------------------
 export function cumulative(pts: [number, number][]) {

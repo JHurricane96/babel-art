@@ -16,7 +16,7 @@
 // Vista's axes: x east, z north (the world map's rows run south, so they are turned over).
 import { BIOMES as BIOME_DEFS, ZONE } from "../../../engine/strata/biomes";
 import { WATER, type World2D } from "../../../engine/strata/world2d";
-import { KIND, TREE_KINDS, fbm, hash2, smooth, vnoise } from "./common";
+import { KIND, TREE_KINDS, TREE_OF, fbm, hash2, smooth, vnoise } from "./common";
 
 export interface Place {
   name: string;
@@ -456,12 +456,7 @@ export function kindOf(x: number, z: number, h: number, slope: number, b: number
   return zone === ZONE.ALPINE || zone === ZONE.TUNDRA || (zone === ZONE.ICE && nz5 > 0.3) ? KIND.ALPINE : KIND.GRASS;
 }
 
-// Trees: the strip's species, drawn as Vista's seven kinds.
-const SPECIES: Record<string, number> = {
-  oak: 0, "cork oak": 0, olive: 0, fig: 0, baobab: 0, beech: 1, kapok: 1, "canopy tree": 1, teak: 1, maple: 2, willow: 2, alder: 2,
-  banana: 2, "tree fern": 2, mangrove: 2, birch: 3, aspen: 3, poplar: 3, spruce: 4, snag: 4, fir: 5, juniper: 5, cypress: 5, redwood: 5,
-  pine: 6, "stone pine": 6, larch: 6, acacia: 6, "dragon tree": 6, "joshua tree": 6, palm: 6, "fan palm": 6, bamboo: 6,
-};
+// Trees: the biome's species, as what Vista draws for them (common.ts TREE_OF).
 const treeMix = new Map<number, [number, number][]>();
 /** The tree kinds a biome grows, with weights. */
 export function treesOf(b: number): [number, number][] {
@@ -472,8 +467,8 @@ export function treesOf(b: number): [number, number][] {
   for (const part of look.trees.split(",")) {
     const t = part.trim().match(/^(.*?)\s+([\d.]+)$/);
     if (!t) continue;
-    const k = SPECIES[t[1]];
-    if (k !== undefined) w.set(k, (w.get(k) ?? 0) + Number(t[2]));
+    const k = TREE_KINDS.findIndex((tk) => tk.name === TREE_OF[t[1]]);
+    if (k >= 0) w.set(k, (w.get(k) ?? 0) + Number(t[2]));
   }
   if (!w.size) w.set(look.pines > look.broad ? 4 : 0, 1);
   m = [...w];
@@ -487,5 +482,4 @@ export function pickTree(b: number, r: number) {
   for (const [k, v] of m) if ((x -= v) < 0) return k;
   return m[m.length - 1][0];
 }
-void TREE_KINDS;
 void hash2;

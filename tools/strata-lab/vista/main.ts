@@ -5,7 +5,7 @@ import { BIOMES as BIOME_DEFS, ZONE } from "../../../engine/strata/biomes";
 import { BIOMES as BIOME_MAP, ROCKS } from "../../../engine/strata/world2d";
 import { G, type LandData, biomeAt, ground, groundKind, land, rockAt, setLand, worldSize } from "./land";
 import { type Journey, append, planJourney, refine } from "./journey";
-import { FINE, type GridSpec, GRIDS, KIND, ROUTE, along, cumulative, mulberry } from "./common";
+import { FINE, type GridSpec, GRIDS, KIND, ROUTE, TREE_KINDS, along, cumulative, mulberry } from "./common";
 import { M } from "../../../engine/strata/world";
 import { hex, rampOf, shiftColor } from "./color";
 import { HMAX, type Plan, type SlotPack } from "./pack";
@@ -238,14 +238,14 @@ function swapIn(gi: number, b: Build) {
     FINE_K = b.k!;
     FINE_B = b.b!;
     FINE_R = b.r!;
-    // Trees: x, y, z, height, slot (kind * 3 + variant), flipped with the sun.
+    // Trees: x, y, z, height, slot (the kind's first, and one of its drawings), flipped with the sun.
     let n = 0;
     for (const t of b.trees) n += t.length / 6;
     const trees = new Float32Array(n * 6);
     let o = 0;
     for (const t of b.trees)
       for (let i = 0; i < t.length; i += 6) {
-        trees.set([t[i], t[i + 1], t[i + 2], t[i + 3], t[i + 4] * 3 + t[i + 5], 2], o);
+        trees.set([t[i], t[i + 1], t[i + 2], t[i + 3], TREE_SLOT0[t[i + 4]] + (t[i + 5] % TREE_KINDS[t[i + 4]].n), 2], o);
         o += 6;
       }
     bucketTrees(trees);
@@ -543,7 +543,9 @@ function renderCamera(): Camera {
 
 // ---- Sprites ----------------------------------------------------------------------------------
 const SLOTS = slotIndex(),
-  DEFS = slotDefs();
+  DEFS = slotDefs(),
+  /** Each tree kind's first slot. */
+  TREE_SLOT0 = TREE_KINDS.map((k) => SLOTS.get(`${k.name} 0`)!);
 /** Families of drawings placed as one (a rock family's drawings: "boulder 0" ..), by name; anything
  * else a family of one. Their height in the world, for what is low enough to walk through. */
 const FAMILY = new Map<string, number[]>(),
@@ -648,7 +650,7 @@ function buildSprites(packs: SlotPack[]): SpriteData {
     for (const [m, r] of pk.ramps) {
       // Leaves: the tree's own colour (0x8000), and broadleaves may turn for autumn (0x4000).
       // Rocks, grass, shrubs and ferns: the colour of their place (0x2000, see above).
-      const turns = ["oak", "beech", "maple", "birch"].includes(kind),
+      const turns = !!TREE_KINDS.find((k) => k.name === kind)?.turns,
         id =
           tree && m === M.LEAF ? leafFamily(kind) | 0x8000 | (turns ? 0x4000 : 0)
           : isRock(pk.slot) && m === M.ROCK ? rockBase | 0x2000
@@ -663,6 +665,8 @@ function buildSprites(packs: SlotPack[]): SpriteData {
     }
     for (let m = 0; m < 32; m++) if (!pk.ramps.some(([q]) => q === m)) mat[pk.slot * 32 + m] = Math.max(0, first);
   }
+  // (The palette is a texture a ramp a row: WebGL 2 promises 2048 rows.)
+  if (rampRows.length > 2048) console.warn(`sprite palette: ${rampRows.length} ramps, over 2048`);
   const pal = new Uint8Array(rampRows.length * 6 * 4);
   rampRows.forEach((r, i) => r.forEach((c, t) => pal.set([...c.map((v) => Math.round(v * 255)), 255], (i * 6 + t) * 4)));
   // Atlases: shelves 4096 wide, tallest first.
@@ -920,6 +924,18 @@ function coverFor(b: number, kind: number): [string, number][] {
       if (name === "bush") list.push(["shrub", d * 0.67], ["shrub2", d * 0.33]);
       else if (name === "fern") list.push(["fern", d * 0.6], ["fern2", d * 0.4]);
       else if (FAMILY.has(name)) list.push([name, d]);
+    }
+  }
+  // Cacti, of the kinds the biome names (sparse where it gives no number): only where it names its
+  // own (every biome inherits "saguaro 1", which is no reason for saguaros among baobabs).
+  if (look.cacti > 0 || (look.cactusKinds && look.cactusKinds !== "saguaro 1")) {
+    const kinds = look.cactusKinds.split(",").map((e) => e.trim().split(" ")).filter((e) => e[0]),
+      sum = kinds.reduce((a, e) => a + Number(e[e.length - 1] ?? 1), 0) || 1,
+      all = (look.cacti || 0.003) * 1.5;
+    // ("prickly pear 1": the name's words run together, as the drawing is named.)
+    for (const e of kinds) {
+      const fam = e.slice(0, -1).join("");
+      if (FAMILY.has(fam)) list.push([fam, (all * Number(e[e.length - 1] ?? 1)) / sum]);
     }
   }
   // Boulders, with now and then a slab, a lone big erratic, or a crag (fewer in woods).
@@ -2051,6 +2067,12 @@ Object.assign(window, {
     },
     get place() {
       const p = routeAt(s);
+      return BIOME_DEFS[biomeAt(p.x, p.z)].name;
+    },
+    /** The biome where the walk is v metres along (without going there). */
+    placeAt(v: number) {
+      ensureRoute(v + 100);
+      const p = routeAt(v);
       return BIOME_DEFS[biomeAt(p.x, p.z)].name;
     },
     get building() {

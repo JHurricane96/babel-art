@@ -56,6 +56,8 @@ export function planOf(def: SlotDef): Plan {
     return { E: 5, T: 0, K, N: K, direct: false };
   }
   if (PLANT_KINDS.some((p) => p.kind === kind)) return { E: 5, T: 0, K: 128, N: 128, direct: false };
+  if (kind === "saguaro") return { E: 5, T: 0, K: 192, N: 192, direct: false };
+  if (kind === "barrel" || kind === "pricklypear") return { E: 5, T: 0, K: 96, N: 96, direct: false };
   if (HERB_KINDS.some((p) => p.kind === kind && p.blob)) return { E: 5, T: 0, K: 64, N: 64, direct: false };
   if (kind === "marker") return { E: 1, T: 0, K: 1, N: 1, direct: true };
   if (kind === "person") return { E: 48, T: 0, K: 96, N: 96, direct: true };
